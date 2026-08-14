@@ -23,8 +23,12 @@ class Settings(BaseSettings):
 
     # Embeddings
     embedding_provider: str = "openai"
-    embedding_model: str = "text-embedding-3-large"
+    embedding_model: str = "ollama-embed"
     embedding_dim: int = 1024
+
+    # LiteLLM Proxy
+    litellm_base_url: str = "http://172.20.0.1:4000"  # Endpoint do proxy local (gateway Docker)
+    litellm_master_key: str = ""  # Chave mestra do proxy
 
     # Parâmetros ajustáveis
     ideia_similarity_threshold: float = 0.85

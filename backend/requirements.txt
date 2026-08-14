@@ -13,3 +13,4 @@ anthropic==0.39.*
 tavily-python==0.5.*
 pytrends==4.9.*
 feedparser==6.0.*
+openai==1.54.*

@@ -7,8 +7,6 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - ideas-hub-db-data:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d
@@ -24,8 +22,6 @@ services:
     container_name: ideas-hub-backend
     restart: unless-stopped
     env_file: .env
-    ports:
-      - "${API_PORT:-8000}:8000"
     volumes:
       - ./backend/app:/app/app
     depends_on:
@@ -37,8 +33,6 @@ services:
     container_name: ideas-hub-frontend
     restart: unless-stopped
     env_file: .env
-    ports:
-      - "${FRONTEND_PORT:-5173}:5173"
     volumes:
       - ./frontend/src:/app/src
     depends_on:
