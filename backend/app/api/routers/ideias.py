@@ -209,3 +209,92 @@ async def delete_ideia(
     deleted = await repo.delete(ideia_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Ideia não encontrada")
+
+
+@router.patch("/{ideia_id}/aprovar", response_model=IdeiaResponse)
+async def aprovar_ideia(
+    ideia_id: UUID,
+    repo: Annotated[IdeiaRepository, Depends(get_ideia_repo)],
+):
+    """
+    Aprova uma ideia.
+
+    Ideias aprovadas podem ser usadas para geração de roteiros.
+    """
+    ideia = await repo.get_by_id(ideia_id)
+    if not ideia:
+        raise HTTPException(status_code=404, detail="Ideia não encontrada")
+
+    if ideia.status != "rascunho":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ideia não está em rascunho (status: {ideia.status})"
+        )
+
+    from app.schemas.ideia import IdeiaUpdate
+    ideia_atualizada = await repo.update(ideia_id, IdeiaUpdate(status="aprovada"))
+    return ideia_atualizada
+
+
+@router.patch("/{ideia_id}/rejeitar", response_model=IdeiaResponse)
+async def rejeitar_ideia(
+    ideia_id: UUID,
+    repo: Annotated[IdeiaRepository, Depends(get_ideia_repo)],
+):
+    """
+    Rejeita uma ideia.
+
+    Ideias rejeitadas não serão usadas para geração de roteiros.
+    """
+    ideia = await repo.get_by_id(ideia_id)
+    if not ideia:
+        raise HTTPException(status_code=404, detail="Ideia não encontrada")
+
+    if ideia.status != "rascunho":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ideia não está em rascunho (status: {ideia.status})"
+        )
+
+    from app.schemas.ideia import IdeiaUpdate
+    ideia_atualizada = await repo.update(ideia_id, IdeiaUpdate(status="rejeitada"))
+    return ideia_atualizada
+
+
+class GerarRoteiroResponse(BaseModel):
+    """Response da geração de roteiro."""
+    ideia_id: str
+    roteiro_id: str
+    versao: int
+    titulo: str
+    duracao_total_segundos: int
+    num_blocos: int
+    status: str
+
+
+@router.post("/{ideia_id}/roteiro", response_model=GerarRoteiroResponse, status_code=201)
+async def gerar_roteiro(
+    ideia_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """
+    Gera um roteiro a partir de uma ideia aprovada.
+
+    O roteiro é gerado pelo Agente Roteirista com:
+    - Grounding via Tavily API (se configurado)
+    - Estrutura em blocos narrativos
+    - Dicas visuais e de áudio
+    - Se for continuação (parte 2+), usa roteiro anterior como contexto
+
+    O roteiro é criado com status "rascunho" para revisão.
+    """
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    generator = get_roteiro_generator(db)
+
+    try:
+        resultado = await generator.generate_from_ideia(ideia_id=ideia_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return resultado

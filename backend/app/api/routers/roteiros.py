@@ -5,6 +5,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -29,7 +30,11 @@ async def list_roteiros(
     ideia_id: UUID | None = None,
     status: str | None = None,
 ):
-    """Lista todos os roteiros com filtros opcionais."""
+    """
+    Lista todos os roteiros com filtros opcionais.
+
+    Use status=aprovado para listar roteiros prontos para produção.
+    """
     return await repo.list(
         skip=skip,
         limit=limit,
@@ -96,3 +101,52 @@ async def delete_roteiro(
     deleted = await repo.delete(roteiro_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Roteiro não encontrado")
+
+
+@router.patch("/{roteiro_id}/aprovar", response_model=RoteiroResponse)
+async def aprovar_roteiro(
+    roteiro_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """
+    Aprova um roteiro.
+
+    Roteiros aprovados ficam prontos para produção.
+    A ideia vinculada muda para status "roteirizada".
+    """
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    generator = get_roteiro_generator(db)
+    try:
+        resultado = await generator.aprovar_roteiro(roteiro_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Recarrega para retornar objeto completo
+    repo = RoteiroRepository(db)
+    roteiro = await repo.get_by_id(roteiro_id)
+    return roteiro
+
+
+@router.patch("/{roteiro_id}/rejeitar", response_model=RoteiroResponse)
+async def rejeitar_roteiro(
+    roteiro_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """
+    Rejeita um roteiro.
+
+    A ideia vinculada volta para status "aprovada" para gerar novo roteiro.
+    """
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    generator = get_roteiro_generator(db)
+    try:
+        resultado = await generator.rejeitar_roteiro(roteiro_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Recarrega para retornar objeto completo
+    repo = RoteiroRepository(db)
+    roteiro = await repo.get_by_id(roteiro_id)
+    return roteiro
