@@ -23,9 +23,10 @@ async def health():
 
 
 # Routers
-from app.api.routers import nichos, ideias, trends, roteiros
+from app.api.routers import nichos, ideias, trends, roteiros, fontes_trend
 
 app.include_router(nichos.router)
 app.include_router(ideias.router)
 app.include_router(trends.router)
 app.include_router(roteiros.router)
+app.include_router(fontes_trend.router)

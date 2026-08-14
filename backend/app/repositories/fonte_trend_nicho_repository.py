@@ -78,3 +78,11 @@ class FonteTrendNichoRepository:
         await self.session.delete(fonte)
         await self.session.commit()
         return True
+
+    async def list_by_nicho(
+        self,
+        nicho_id: UUID,
+        ativo: bool | None = None
+    ) -> Sequence[FonteTrendNicho]:
+        """Lista todas as fontes de um nicho específico."""
+        return await self.list(nicho_id=nicho_id, ativo=ativo, limit=1000)
