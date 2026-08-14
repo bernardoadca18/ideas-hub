@@ -5,11 +5,15 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.repositories.ideia_repository import IdeiaRepository
+from app.repositories.nicho_repository import NichoRepository
 from app.schemas.ideia import IdeiaCreate, IdeiaUpdate, IdeiaResponse
+from app.agents.curador import curador_service, IdeiaBruta
+from app.services.embeddings import embedding_service
 
 
 router = APIRouter(prefix="/ideias", tags=["ideias"])
@@ -19,6 +23,28 @@ def get_ideia_repo(
     db: Annotated[AsyncSession, Depends(get_db)]
 ) -> IdeiaRepository:
     return IdeiaRepository(db)
+
+
+def get_nicho_repo(
+    db: Annotated[AsyncSession, Depends(get_db)]
+) -> NichoRepository:
+    return NichoRepository(db)
+
+
+class IdeiaBrutaInput(BaseModel):
+    """Schema para entrada de ideia bruta manual."""
+    titulo: str = Field(..., max_length=300, description="Título da ideia")
+    descricao: str | None = Field(None, description="Descrição opcional da ideia")
+    nicho_id: UUID | None = Field(None, description="ID do nicho (opcional)")
+
+
+class IdeiaRefinadaResponse(IdeiaResponse):
+    """Response com informações de curadoria."""
+    eh_duplicada: bool = False
+    eh_continuacao: bool = False
+    ideia_similar_id: UUID | None = None
+    ideia_similar_titulo: str | None = None
+    similaridade: float | None = None
 
 
 @router.get("/", response_model=list[IdeiaResponse])
@@ -40,13 +66,113 @@ async def list_ideias(
     )
 
 
-@router.post("/", response_model=IdeiaResponse, status_code=201)
+@router.post("/", response_model=IdeiaRefinadaResponse, status_code=201)
 async def create_ideia(
-    ideia_data: IdeiaCreate,
-    repo: Annotated[IdeiaRepository, Depends(get_ideia_repo)],
+    ideia_data: IdeiaBrutaInput,
+    ideia_repo: Annotated[IdeiaRepository, Depends(get_ideia_repo)],
+    nicho_repo: Annotated[NichoRepository, Depends(get_nicho_repo)],
 ):
-    """Cria uma nova ideia."""
-    return await repo.create(ideia_data)
+    """
+    Cria uma nova ideia processada pelo Agente Curador.
+
+    A ideia bruta passa por:
+    1. Grounding via Tavily API (se configurado)
+    2. Busca de similaridade no banco
+    3. Refinamento via LLM com prompt do nicho (se definido)
+    4. Sinalização de duplicidade/continuação
+
+    Retorna a ideia refinada com metadados de curadoria.
+    """
+    # 1. Busca o nicho para obter o prompt (se nicho_id fornecido)
+    prompt_nicho = None
+    if ideia_data.nicho_id:
+        nicho = await nicho_repo.get_by_id(ideia_data.nicho_id)
+        if nicho:
+            prompt_nicho = nicho.prompt_ideacao
+
+    # 2. Gera embedding para busca de similaridade
+    embedding = await embedding_service.generate_for_ideia(
+        ideia_data.titulo,
+        ideia_data.descricao
+    )
+
+    # 3. Busca ideias similares
+    from app.core.config import settings
+    similares = await ideia_repo.find_similar(
+        embedding=embedding,
+        threshold=settings.ideia_similarity_threshold,
+        exclude_id=None,  # Nova ideia, nada a excluir
+        limit=3
+    )
+
+    # Converte para formato esperado pelo curador
+    ideias_similares = [
+        {
+            "id": str(s.id),
+            "titulo": s.titulo,
+            "similaridade": 1 - 0.15,  # Aproximação (distance já aplicada)
+        }
+        for s in similares
+    ] if similares else None
+
+    # 4. Processa via Agente Curador
+    ideia_bruta = IdeiaBruta(
+        titulo=ideia_data.titulo,
+        descricao=ideia_data.descricao,
+        nicho_id=str(ideia_data.nicho_id) if ideia_data.nicho_id else None,
+        origem="manual"
+    )
+
+    ideia_refinada = await curador_service.processar(
+        ideia_bruta=ideia_bruta,
+        prompt_nicho=prompt_nicho,
+        ideias_similares=ideias_similares,
+    )
+
+    # 5. Cria a ideia no banco com dados refinados
+    # Nota: eh_continuacao_de e numero_parte são definidos manualmente pelo usuário
+    # após revisão da sinalização de continuação/duplicidade
+    nova_ideia_data = IdeiaCreate(
+        nicho_id=ideia_data.nicho_id,
+        origem="manual",
+        titulo=ideia_refinada.titulo,
+        descricao_breve=ideia_refinada.descricao_breve,
+        status="rascunho",
+        eh_continuacao_de=None,  # Definido manualmente pelo usuário
+        numero_parte=None,  # Definido manualmente pelo usuário
+        justificativa_llm=ideia_refinada.justificativa_llm,
+    )
+
+    ideia_criada = await ideia_repo.create(nova_ideia_data)
+
+    # 6. Atualiza o embedding na ideia criada
+    await ideia_repo.update_embedding(ideia_criada.id, embedding)
+
+    # 7. Recarrega a ideia para garantir que todos os atributos estão disponíveis
+    ideia_criada = await ideia_repo.get_by_id(ideia_criada.id)
+
+    # 8. Prepara resposta com metadados de curadoria
+    response = IdeiaRefinadaResponse(
+        id=ideia_criada.id,
+        nicho_id=ideia_criada.nicho_id,
+        origem=ideia_criada.origem,
+        titulo=ideia_criada.titulo,
+        descricao_breve=ideia_criada.descricao_breve,
+        status=ideia_criada.status,
+        eh_continuacao_de=ideia_criada.eh_continuacao_de,
+        numero_parte=ideia_criada.numero_parte,
+        fonte_trend_id=ideia_criada.fonte_trend_id,
+        justificativa_llm=ideia_criada.justificativa_llm,
+        criado_em=ideia_criada.criado_em,
+        atualizado_em=ideia_criada.atualizado_em,
+        eh_duplicada=ideia_refinada.eh_duplicada,
+        eh_continuacao=ideia_refinada.eh_continuacao,
+        ideia_similar_id=UUID(ideia_refinada.ideia_similar_id) if ideia_refinada.ideia_similar_id else None,
+        ideia_similar_titulo=ideia_refinada.ideia_similar_titulo,
+        similaridade=ideia_refinada.similaridade,
+    )
+
+    return response
 
 
 @router.get("/{ideia_id}", response_model=IdeiaResponse)
