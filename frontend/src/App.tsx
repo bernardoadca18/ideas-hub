@@ -1,8 +1,32 @@
+import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
+import Ideias from './pages/Ideias';
+import Trends from './pages/Trends';
+import Roteiros from './pages/Roteiros';
+
 export default function App() {
   return (
-    <div>
-      <h1>ideas-hub</h1>
-      {/* Telas: Ideias, Trends, Roteiros — a implementar */}
-    </div>
+    <BrowserRouter>
+      <div className="app">
+        <nav className="nav">
+          <NavLink to="/ideias" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            Ideias
+          </NavLink>
+          <NavLink to="/trends" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            Trends
+          </NavLink>
+          <NavLink to="/roteiros" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            Roteiros
+          </NavLink>
+        </nav>
+        <main className="main">
+          <Routes>
+            <Route path="/" element={<Ideias />} />
+            <Route path="/ideias" element={<Ideias />} />
+            <Route path="/trends" element={<Trends />} />
+            <Route path="/roteiros" element={<Roteiros />} />
+          </Routes>
+        </main>
+      </div>
+    </BrowserRouter>
   );
 }

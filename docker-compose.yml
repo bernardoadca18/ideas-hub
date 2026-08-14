@@ -22,6 +22,8 @@ services:
     container_name: ideas-hub-backend
     restart: unless-stopped
     env_file: .env
+    ports:
+      - "${API_PORT:-8000}:8000"
     volumes:
       - ./backend/app:/app/app
     depends_on:
@@ -33,6 +35,8 @@ services:
     container_name: ideas-hub-frontend
     restart: unless-stopped
     env_file: .env
+    ports:
+      - "5173:5173"
     volumes:
       - ./frontend/src:/app/src
     depends_on:
