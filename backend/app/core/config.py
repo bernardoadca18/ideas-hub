@@ -17,8 +17,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
 
     # LLM / Agentes
-    anthropic_api_key: str = ""
-    llm_model: str = "claude-sonnet-4-6"
+    llm_model: str = ""  # Modelo a ser usado via LiteLLM Proxy (ex: gpt-4o, gemini-pro)
     tavily_api_key: str = ""
 
     # Embeddings
