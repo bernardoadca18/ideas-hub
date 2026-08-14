@@ -217,3 +217,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 setup_ideas_hub.sh
+.env
+.venv
+__pycache__
+*.pyc
+node_modules
+dist
+repomix*
