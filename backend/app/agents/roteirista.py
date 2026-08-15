@@ -51,7 +51,7 @@ class RoteiristaService:
         self.llm_model = settings.llm_model
 
     @retry_llm()
-    async def _call_llm(self, messages: list[dict], temperature: float = 0.7, max_tokens: int = 3000) -> str:
+    async def _call_llm(self, messages: list[dict], temperature: float = 0.7, max_tokens: int = 8000) -> str:
         """Faz chamada para o LLM via LiteLLM Proxy."""
         start_time = time.time()
         tokens_used = None
@@ -194,41 +194,76 @@ class RoteiristaService:
             contexto_grounding = await self._search_tavily(query_tavily)
 
             # 2. Monta prompt do sistema
-            sistema_prompt = """Você é um roteirista profissional de vídeos para YouTube e redes sociais. Sua função é criar roteiros estruturados, práticos e envolventes.
+            sistema_prompt = """Você é um roteirista profissional de vídeos faceless para YouTube. Sua função é criar roteiros estruturados, envolventes e com duração adequada para monetização (mínimo 10 minutos).
 
-Regras de estrutura:
-- Divida o roteiro em blocos narrativos lógicos
-- Cada bloco deve ter duração estimada em segundos
-- Inclua dicas visuais e de áudio para cada bloco
-- Mantenha o ritmo dinâmico e a atenção do espectador
-- Use técnicas de storytelling (gancho, conflito, resolução)
+REGRAS OBRIGATÓRIAS DE DURAÇÃO:
+- Duração total MÍNIMA: 600 segundos (10 minutos)
+- Duração total ALVO: 600-720 segundos (10-12 minutos)
+- Isso é CRÍTICO para monetização - respeite rigorosamente
 
-Blocos sugeridos:
-1. introducao (15-30s): Gancho inicial, apresentação do tema
-2. desenvolvimento (60-180s): Conteúdo principal, pode ter múltiplos blocos
-3. conclusao (15-30s): Resumo, call-to-action
+ESTRUTURA NARRATIVA OBRIGATÓRIA:
+1. GANCHO INICIAL (30-45s)
+   - Promessa clara do que o espectador vai aprender/ganhar
+   - Provocação ou pergunta que gere curiosidade
+   - Preview dos principais pontos (em até 3 bullet points visuais)
+
+2. INTRODUÇÃO CONTEXTUAL (60-90s)
+   - Apresentação do tema com dados ou estatísticas relevantes
+   - Por que isso importa AGORA (urgência/relevância)
+   - O que será coberto no vídeo (roadmap)
+
+3. DESENVOLVIMENTO PRINCIPAL (360-480s)
+   - Divida em 4-6 BLOCOS DISTINCTOS, cada um focando em um aspecto específico
+   - Cada bloco deve ter: explicação, exemplos práticos, dicas aplicáveis
+   - Use transições claras entre blocos ("Agora que cobrimos X, vamos para Y...")
+   - Inclua mini-ganchos internos para manter engajamento
+   - Varie a profundidade: alguns pontos mais detalhados, outros mais práticos
+
+4. APLICAÇÃO PRÁTICA/EXEMPLOS (60-120s)
+   - Demonstre como aplicar o conhecimento em um cenário real
+   - Case study ou passo-a-passo prático
+   - Mostre resultados esperados ou benefícios
+
+5. CONCLUSÃO E CALL-TO-ACTION (45-60s)
+   - Recapitulação dos pontos principais (3-5 insights)
+   - Pergunta para engajamento nos comentários
+   - CTA para inscrição e próximo vídeo
+
+TÉCNICAS DE ENGAGEMENT:
+- Use perguntas retóricas ao longo do roteiro
+- Inclua "pause aqui" para ações práticas do espectador
+- Adicione elementos de surpresa ou revelação
+- Mantenha linguagem conversacional e acessível
+- Evite jargão excessivo - explique termos técnicos
+
+DIRETRIZES DE CONTEÚDO:
+- Cada bloco de desenvolvimento deve ter conteúdo substancial (mínimo 80 segundos)
+- Evite repetições - cada ponto deve adicionar valor único
+- Use dados, estatísticas ou citações para dar credibilidade
+- Inclua contrapontos ou avisos quando relevante
+- Termine seções com pontes para a próxima
 
 Para continuações (parte 2+):
-- Inicie com recapitulação breve
-- Mantenha consistência com o tom e estilo anteriores
-- Referencie pontos da parte anterior quando relevante
+- Inicie com recapitulação de 30-45s da parte anterior
+- Mencione pontos-chave já abordados
+- Mantenha consistência de tom e terminologia
 
 Responda APENAS no formato JSON:
 {
-  "titulo": "Título do vídeo (máximo 80 caracteres)",
-  "duracao_total_segundos": 180,
+  "titulo": "Título otimizado para SEO e CTR (máximo 80 caracteres)",
+  "duracao_total_segundos": 600,
   "blocos": [
     {
-      "tipo": "introducao",
-      "duracao_segundos": 20,
-      "conteudo": "Texto do que será falado/apresentado",
-      "dicas_visual": "Sugestões de imagens, vídeos, gráficos",
-      "dicas_audio": "Sugestões de música, efeitos sonoros"
+      "tipo": "gancho",
+      "duracao_segundos": 40,
+      "conteudo": "Texto narrado completo - seja detalhado e específico",
+      "dicas_visual": "Sugestões específicas de imagens, vídeos, gráficos, animações",
+      "dicas_audio": "Sugestões de música, efeitos sonoros, ritmo de narração"
     }
   ],
   "tags": ["tag1", "tag2", "tag3"],
   "referencias": ["fonte1", "fonte2"],
-  "justificativa": "Breve explicação das escolhas criativas"
+  "justificativa": "Explicação das escolhas criativas e estrutura narrativa"
 }"""
 
             # 3. Monta contexto do usuário
@@ -280,18 +315,28 @@ Responda APENAS no formato JSON:
 
                 # Converte para estrutura de dados
                 blocos = []
+                duracao_total_calculada = 0
                 for b in dados.get("blocos", []):
+                    duracao_bloco = b.get("duracao_segundos", 60)
                     blocos.append(BlocoNarrativo(
                         tipo=b.get("tipo", "desenvolvimento"),
-                        duracao_segundos=b.get("duracao_segundos", 60),
+                        duracao_segundos=duracao_bloco,
                         conteudo=b.get("conteudo", ""),
                         dicas_visual=b.get("dicas_visual"),
                         dicas_audio=b.get("dicas_audio"),
                     ))
+                    duracao_total_calculada += duracao_bloco
+
+                # Usa duração calculada ou do JSON, garantindo mínimo de 600s
+                duracao_final = max(
+                    dados.get("duracao_total_segundos", duracao_total_calculada),
+                    duracao_total_calculada,
+                    600  # Mínimo 10 minutos para monetização
+                )
 
                 resultado = RoteiroEstruturado(
                     titulo=dados.get("titulo", ideia_titulo)[:80],
-                    duracao_total_segundos=dados.get("duracao_total_segundos", 180),
+                    duracao_total_segundos=duracao_final,
                     blocos=blocos,
                     tags=dados.get("tags", []),
                     referencias=dados.get("referencias"),
@@ -309,37 +354,87 @@ Responda APENAS no formato JSON:
                 return resultado
 
             except Exception as e:
+                import traceback
+                erro_detalhado = traceback.format_exc()
                 print(f"Erro na geração do roteiro: {e}")
-                # Fallback: cria roteiro básico
+                print(f"Traceback completo:\n{erro_detalhado}")
+
+                # Log estruturado do erro para debug
+                roteirista_logger.log_llm_call(
+                    model=self.llm_model,
+                    tokens_used=None,
+                    duration=0,
+                    success=False,
+                    error=f"Fallback acionado: {str(e)}"
+                )
+
+                # Fallback: cria roteiro básico de 10 minutos
                 resultado = RoteiroEstruturado(
                     titulo=ideia_titulo[:80],
-                    duracao_total_segundos=120,
+                    duracao_total_segundos=600,  # 10 minutos
                     blocos=[
                         BlocoNarrativo(
+                            tipo="gancho",
+                            duracao_segundos=40,
+                            conteudo=f"Você já se perguntou como {ideia_titulo.lower()}? Neste vídeo, vou te mostrar tudo o que você precisa saber sobre isso. Vamos lá!",
+                            dicas_visual="Texto animado na tela com os pontos principais",
+                            dicas_audio="Música de fundo energética",
+                        ),
+                        BlocoNarrativo(
                             tipo="introducao",
-                            duracao_segundos=20,
-                            conteudo=f"Apresentação do tema: {ideia_titulo}",
-                            dicas_visual="Imagens de abertura",
-                            dicas_audio="Música de fundo leve",
+                            duracao_segundos=90,
+                            conteudo=f"Olá! Seja bem-vindo. Hoje vamos mergulhar fundo no tema: {ideia_titulo}. "
+                                    f"{' ' + ideia_descricao if ideia_descricao else ''} "
+                                    f"Vou cobrir todos os aspectos importantes, trazer exemplos práticos e mostrar como você pode aplicar isso. "
+                                    f"Fique até o final que vou deixar uma dica especial.",
+                            dicas_visual="B-roll do apresentador e gráficos de introdução",
+                            dicas_audio="Música de abertura padrão",
                         ),
                         BlocoNarrativo(
                             tipo="desenvolvimento",
-                            duracao_segundos=80,
-                            conteudo=ideia_descricao or f"Desenvolvimento do tema: {ideia_titulo}",
-                            dicas_visual="B-roll relacionado ao tema",
-                            dicas_audio=None,
+                            duracao_segundos=120,
+                            conteudo=f"Vamos começar entendendo o contexto. {ideia_titulo} é um tema que tem ganhado cada vez mais relevância. "
+                                    f"Nesta primeira parte, vou explicar os fundamentos e por que isso é importante para você. "
+                                    f"Preste atenção nos detalhes que vou compartilhar.",
+                            dicas_visual="Slides explicativos e animações",
+                            dicas_audio="Música de fundo suave",
+                        ),
+                        BlocoNarrativo(
+                            tipo="desenvolvimento",
+                            duracao_segundos=120,
+                            conteudo=f"Agora que você já entendeu o contexto, vamos para a parte prática. "
+                                    f"Vou te mostrar passo a passo como isso funciona na prática e quais são os pontos que você precisa prestar atenção.",
+                            dicas_visual="Demonstração prática em tela",
+                            dicas_audio="SFX de transição",
+                        ),
+                        BlocoNarrativo(
+                            tipo="desenvolvimento",
+                            duracao_segundos=120,
+                            conteudo=f"Continuando nossa jornada, existem alguns pontos avançados que você precisa conhecer. "
+                                    f"Essas informações vão fazer diferença no seu resultado final.",
+                            dicas_visual="Gráficos comparativos e diagramas",
+                            dicas_audio="Música de fundo",
+                        ),
+                        BlocoNarrativo(
+                            tipo="desenvolvimento",
+                            duracao_segundos=90,
+                            conteudo=f"Vou compartilhar agora alguns erros comuns que as pessoas cometem e como você pode evitá-los. "
+                                    f"Essa informação é valiosa e vai te poupar muito tempo.",
+                            dicas_visual="Lista visual dos erros comuns",
+                            dicas_audio="SFX de alerta",
                         ),
                         BlocoNarrativo(
                             tipo="conclusao",
                             duracao_segundos=20,
-                            conteudo="Resumo e call-to-action",
-                            dicas_visual="Cards finais",
-                            dicas_audio="Música de fechamento",
+                            conteudo=f"Para finalizar, vou recapitular os principais pontos que cobrimos hoje sobre {ideia_titulo}. "
+                                    f"Espero que essas informações sejam úteis para você!",
+                            dicas_visual="Resumo visual em bullet points",
+                            dicas_audio="Música de encerramento suave",
                         ),
                     ],
                     tags=[],
                     referencias=None,
-                    justificativa_llm="Roteiro gerado automaticamente (fallback)",
+                    justificativa_llm=f"Roteiro gerado automaticamente (fallback). Erro original: {str(e)}",
                 )
 
                 # Finaliza métricas (fallback ainda é sucesso)

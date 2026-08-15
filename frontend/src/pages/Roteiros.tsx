@@ -152,10 +152,16 @@ export default function Roteiros() {
             {selectedRoteiro.status === 'rascunho' && (
               <div className="modal-footer">
                 <button onClick={() => handleRejeitar(selectedRoteiro.id)} className="btn btn-danger">
-                  ✗ Rejeitar
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M6 18L18 6M6 6l12 12"></path>
+                  </svg>
+                  Rejeitar
                 </button>
                 <button onClick={() => handleAprovar(selectedRoteiro.id)} className="btn btn-success">
-                  ✓ Aprovar Roteiro
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M5 13l4 4L19 7"></path>
+                  </svg>
+                  Aprovar Roteiro
                 </button>
               </div>
             )}
@@ -186,15 +192,25 @@ export default function Roteiros() {
               </div>
               <div className="card-actions">
                 <button onClick={() => setSelectedRoteiro(roteiro)} className="btn btn-sm btn-secondary">
-                  👁️ Ver Detalhes
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                    <path d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                  </svg>
+                  Ver Detalhes
                 </button>
                 {roteiro.status === 'rascunho' && (
                   <>
                     <button onClick={() => handleAprovar(roteiro.id)} className="btn btn-sm btn-success">
-                      ✓ Aprovar
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M5 13l4 4L19 7"></path>
+                      </svg>
+                      Aprovar
                     </button>
                     <button onClick={() => handleRejeitar(roteiro.id)} className="btn btn-sm btn-danger">
-                      ✗ Rejeitar
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M6 18L18 6M6 6l12 12"></path>
+                      </svg>
+                      Rejeitar
                     </button>
                   </>
                 )}

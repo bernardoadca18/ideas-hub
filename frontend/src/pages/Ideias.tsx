@@ -128,10 +128,16 @@ export default function Ideias() {
         <h1>Ideias</h1>
         <div className="actions">
           <button onClick={() => setShowTrendsModal(true)} className="btn btn-secondary">
-            📊 Buscar Trends
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+            </svg>
+            Buscar Trends
           </button>
           <button onClick={() => setShowForm(true)} className="btn btn-primary">
-            + Nova Ideia
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 5v14M5 12h14"></path>
+            </svg>
+            Nova Ideia
           </button>
         </div>
       </div>
@@ -262,16 +268,28 @@ export default function Ideias() {
                 {ideia.status === 'rascunho' && (
                   <>
                     <button onClick={() => handleAprovar(ideia.id)} className="btn btn-sm btn-success">
-                      ✓ Aprovar
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M5 13l4 4L19 7"></path>
+                      </svg>
+                      Aprovar
                     </button>
                     <button onClick={() => handleRejeitar(ideia.id)} className="btn btn-sm btn-danger">
-                      ✗ Rejeitar
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M6 18L18 6M6 6l12 12"></path>
+                      </svg>
+                      Rejeitar
                     </button>
                   </>
                 )}
                 {ideia.status === 'aprovada' && (
                   <button onClick={() => handleGerarRoteiro(ideia.id)} className="btn btn-sm btn-primary">
-                    📝 Gerar Roteiro
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M12 19l7-7 3 3-7 7-3-3z"></path>
+                      <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"></path>
+                      <path d="M2 2l7.586 7.586"></path>
+                      <circle cx="11" cy="11" r="2"></circle>
+                    </svg>
+                    Gerar Roteiro
                   </button>
                 )}
               </div>
