@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.logging import gerador_ideias_logger
 from app.models.trend_coletada import TrendColetada
 from app.repositories.trend_coletada_repository import TrendColetadaRepository
 from app.repositories.ideia_repository import IdeiaRepository
@@ -46,52 +47,80 @@ class TrendIdeiasGenerator:
         """
         num_ideias = num_ideias or settings.ideias_por_trend
 
-        # 1. Verifica se a trend existe e está aprovada
-        trend = await self.trend_repo.get_by_id(trend_id)
-        if not trend:
-            raise ValueError("Trend não encontrada")
+        # Inicia métricas
+        metrics = gerador_ideias_logger.start_operation(
+            operation="generate_from_trend",
+            trend_id=str(trend_id)
+        )
 
-        if trend.status != "aprovada":
-            raise ValueError(f"Trend não está aprovada (status: {trend.status})")
+        try:
+            # 1. Verifica se a trend existe e está aprovada
+            trend = await self.trend_repo.get_by_id(trend_id)
+            if not trend:
+                raise ValueError("Trend não encontrada")
 
-        # 2. Busca o nicho para obter prompt de ideação
-        prompt_nicho = None
-        if trend.nicho_id:
-            nicho = await self.nicho_repo.get_by_id(trend.nicho_id)
-            if nicho:
-                prompt_nicho = nicho.prompt_ideacao
+            if trend.status != "aprovada":
+                raise ValueError(f"Trend não está aprovada (status: {trend.status})")
 
-        # 3. Gera N ideias a partir da trend
-        ideias_geradas = []
-        erros = []
+            # 2. Busca o nicho para obter prompt de ideação
+            prompt_nicho = None
+            nicho_id = None
+            if trend.nicho_id:
+                nicho = await self.nicho_repo.get_by_id(trend.nicho_id)
+                if nicho:
+                    prompt_nicho = nicho.prompt_ideacao
+                    nicho_id = str(trend.nicho_id)
 
-        for i in range(num_ideias):
-            try:
-                ideia = await self._generate_single_ideia(
-                    trend=trend,
-                    prompt_nicho=prompt_nicho,
-                    indice=i + 1,
-                    total=num_ideias,
-                )
-                ideias_geradas.append(ideia)
-            except Exception as e:
-                erros.append(f"Ideia {i+1}: {str(e)}")
-                print(f"Erro ao gerar ideia {i+1}: {e}")
+            # 3. Gera N ideias a partir da trend
+            ideias_geradas = []
+            erros = []
 
-        return {
-            'trend_id': str(trend_id),
-            'termo_trend': trend.termo_bruto,
-            'ideias_geradas': len(ideias_geradas),
-            'ideias': [
-                {
-                    'id': str(ideia.id),
-                    'titulo': ideia.titulo,
-                    'status': ideia.status,
-                }
-                for ideia in ideias_geradas
-            ],
-            'erros': erros if erros else None,
-        }
+            for i in range(num_ideias):
+                try:
+                    ideia = await self._generate_single_ideia(
+                        trend=trend,
+                        prompt_nicho=prompt_nicho,
+                        indice=i + 1,
+                        total=num_ideias,
+                    )
+                    ideias_geradas.append(ideia)
+                except Exception as e:
+                    erros.append(f"Ideia {i+1}: {str(e)}")
+                    print(f"Erro ao gerar ideia {i+1}: {e}")
+
+            resultado = {
+                'trend_id': str(trend_id),
+                'termo_trend': trend.termo_bruto,
+                'ideias_geradas': len(ideias_geradas),
+                'ideias': [
+                    {
+                        'id': str(ideia.id),
+                        'titulo': ideia.titulo,
+                        'status': ideia.status,
+                    }
+                    for ideia in ideias_geradas
+                ],
+                'erros': erros if erros else None,
+            }
+
+            # Finaliza métricas
+            gerador_ideias_logger.end_operation(
+                metrics=metrics,
+                success=True,
+                num_ideias_geradas=len(ideias_geradas),
+                nicho_id=nicho_id
+            )
+
+            return resultado
+
+        except Exception as e:
+            # Finaliza métricas com erro
+            gerador_ideias_logger.end_operation(
+                metrics=metrics,
+                success=False,
+                error=str(e)
+            )
+            raise
 
     async def _generate_single_ideia(
         self,

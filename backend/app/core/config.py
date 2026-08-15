@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # Banco
-    database_url: str
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/ideas_hub"
 
     # API
     api_port: int = 8000

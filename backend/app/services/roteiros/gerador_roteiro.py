@@ -78,6 +78,7 @@ class RoteiroGenerator:
             prompt_roteiro=prompt_roteiro,
             roteiro_anterior=roteiro_anterior,
             numero_parte=numero_parte,
+            ideia_id=str(ideia_id),
         )
 
         # 5. Determina próxima versão
