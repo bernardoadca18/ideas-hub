@@ -1,0 +1,252 @@
+"""
+Registro de Production Profiles do Ideas Hub.
+
+Um ProductionProfile descreve *como* um canal/nicho quer que a ideação e a
+roteirização se comportem: política de duração, estrutura sugerida (não
+rígida), regras editoriais e qual workflow de roteiro ele usa por padrão.
+
+Isso não é uma tabela de banco de propósito: perfis são comportamento de
+código (prompts + regras), enquanto o Nicho continua sendo o dado editável
+pelo usuário (nome, prompts livres, fontes de trend). Adicionar um novo
+perfil = adicionar uma entrada aqui.
+"""
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class DurationPolicy:
+    """Política de duração de um perfil. Guia o modelo, não força truncamento."""
+    min_seconds: int | None
+    target_min_seconds: int | None
+    target_max_seconds: int | None
+    hard_minimum: bool = False  # se True, o serviço aplica um piso técnico (evitar micro-vídeos)
+    allow_extended: bool = True  # se o assunto justificar, pode passar do alvo
+    guidance: str = ""  # texto extra para o prompt sobre como tratar duração
+
+    def as_prompt_text(self) -> str:
+        if self.target_min_seconds is None and self.target_max_seconds is None:
+            base = (
+                "Não existe duração-alvo fixa para este formato. A duração final deve ser "
+                "determinada exclusivamente pela profundidade real do material disponível: "
+                "termine quando o conteúdo relevante tiver sido desenvolvido adequadamente, "
+                "não antes (perdendo argumentos importantes) nem depois (repetindo ou enchendo)."
+            )
+        else:
+            tmin = self.target_min_seconds // 60 if self.target_min_seconds else None
+            tmax = self.target_max_seconds // 60 if self.target_max_seconds else None
+            base = (
+                f"Duração de referência: aproximadamente {tmin}-{tmax} minutos. "
+                "Isto é uma referência, não uma meta rígida: um vídeo muito bom e um pouco "
+                "mais curto é preferível a um vídeo esticado artificialmente para bater esse "
+                "número. Se o assunto realmente sustentar um vídeo mais longo com conteúdo "
+                "relevante (sem repetição ou enchimento), pode exceder esse intervalo."
+            )
+        extra = f" {self.guidance}" if self.guidance else ""
+        return base + extra
+
+
+@dataclass(frozen=True)
+class ProductionProfile:
+    id: str
+    nome: str
+    descricao: str
+    duracao: DurationPolicy
+    estrutura_guidance: str        # como organizar o roteiro (guia, não template fixo)
+    ideacao_guidance: str          # o que geração/curadoria de ideias deve priorizar neste perfil
+    pesquisa_guidance: str         # como a pesquisa/grounding deve ser usada
+    regras_editoriais: list[str] = field(default_factory=list)
+    workflow_roteiro: str = "roteiro_padrao"  # id do WorkflowSpec usado para gerar roteiro
+    permite_grounding_automatico: bool = True
+
+
+FACELESS_POP_CULTURE_LISTS = ProductionProfile(
+    id="faceless_pop_culture_lists",
+    nome="Faceless / Cultura Pop — Listas e Explicações",
+    descricao=(
+        "Canal faceless de cultura pop, games, filmes, séries, quadrinhos e universos "
+        "ficcionais, com formatos estruturados como listas, rankings, breakdowns e "
+        "explicações de lore/personagens/eventos."
+    ),
+    duracao=DurationPolicy(
+        min_seconds=None, target_min_seconds=600, target_max_seconds=900, hard_minimum=False,
+        guidance=(
+            "Assuntos com lore extensa (ex.: 'todas as Joias do Infinito explicadas') podem "
+            "justificar mais tempo; um tópico simples não deve ser esticado só para chegar a 10 min."
+        ),
+    ),
+    estrutura_guidance=(
+        "Formatos de lista/ranking/breakdown funcionam bem aqui, mas cada item da lista "
+        "precisa ser tratado como uma mini-seção com começo, desenvolvimento e fechamento — "
+        "não como uma sequência de verbetes desconectados. Prefira ordenar os itens de forma "
+        "estratégica (crescente em interesse/impacto, ou agrupando por tema), não pela ordem "
+        "em que a informação foi encontrada na pesquisa. Conecte itens adjacentes com "
+        "transições que criem uma sensação de progressão, não apenas 'próximo da lista'."
+    ),
+    ideacao_guidance=(
+        "Priorize ângulos específicos e verificáveis dentro de universos ficcionais/cultura pop "
+        "(um personagem, um evento, uma mecânica, um conjunto de itens/objetos) em vez de temas "
+        "genéricos demais para sustentar um vídeo interessante. Evite títulos que prometam mais "
+        "do que o conteúdo pode entregar."
+    ),
+    pesquisa_guidance=(
+        "Fatos de lore/continuidade devem ser verificados via grounding sempre que possível — "
+        "erros de continuidade em conteúdo de cultura pop destroem credibilidade rapidamente."
+    ),
+    regras_editoriais=[
+        "Evite spoilers gratuitos sem aviso quando o formato permitir.",
+        "Diferencie claramente fato canônico de teoria/especulação do fandom.",
+    ],
+    workflow_roteiro="roteiro_padrao",
+)
+
+FACELESS_INFORMATIONAL = ProductionProfile(
+    id="faceless_informational",
+    nome="Faceless / Tecnologia e Conteúdo Informativo",
+    descricao=(
+        "Canal faceless educacional/informativo: tecnologia, ciência, história, geografia, "
+        "engenharia, curiosidades técnicas."
+    ),
+    duracao=DurationPolicy(
+        min_seconds=None, target_min_seconds=600, target_max_seconds=900,
+        guidance="Timelines históricas ou comparações técnicas complexas podem justificar mais tempo.",
+    ),
+    estrutura_guidance=(
+        "Escolha a estrutura pelo conteúdo: timeline para eventos históricos, comparação lado a "
+        "lado para tecnologias concorrentes, causa-e-consequência para fenômenos técnicos. Não "
+        "force todo assunto no mesmo molde de 'lista de 5 pontos'."
+    ),
+    ideacao_guidance=(
+        "Priorize ângulos com um 'porquê isso importa' claro logo no início. Fatos técnicos "
+        "isolados sem contexto de relevância tendem a gerar vídeos monótonos."
+    ),
+    pesquisa_guidance=(
+        "Números, datas e afirmações técnicas específicas DEVEM ser verificados via grounding "
+        "antes de entrar no roteiro. Não invente estatísticas nem valores aproximados como se "
+        "fossem exatos."
+    ),
+    regras_editoriais=[
+        "Explique jargão técnico na primeira aparição, sem se alongar além do necessário.",
+        "Não trate correlação como causalidade sem qualificar a afirmação.",
+    ],
+    workflow_roteiro="roteiro_padrao",
+)
+
+FACELESS_GENERAL = ProductionProfile(
+    id="faceless_general",
+    nome="Faceless / Geral",
+    descricao=(
+        "Canal faceless de propósito geral, maior liberdade editorial: curiosidades, "
+        "histórias, acontecimentos incomuns, sem exigir workflow especializado."
+    ),
+    duracao=DurationPolicy(
+        min_seconds=None, target_min_seconds=600, target_max_seconds=900,
+        guidance="Este perfil tem a maior liberdade de formato do conjunto faceless.",
+    ),
+    estrutura_guidance=(
+        "Liberdade total de estrutura narrativa — escolha a forma que melhor serve o assunto "
+        "específico (narrativa linear, lista, estudo de caso, pergunta-e-resposta), sem se "
+        "prender a um formato padrão do canal."
+    ),
+    ideacao_guidance=(
+        "Priorize originalidade e especificidade do ângulo acima de tudo — este perfil compete "
+        "por atenção justamente por trazer assuntos incomuns bem contados."
+    ),
+    pesquisa_guidance="Use grounding para checar qualquer alegação factual central da história.",
+    regras_editoriais=["Evite sensacionalismo vazio: a curiosidade deve vir de fatos reais bem contados."],
+    workflow_roteiro="roteiro_padrao",
+)
+
+FACELESS_POP_CULTURE = ProductionProfile(
+    id="faceless_pop_culture",
+    nome="Faceless / Cultura Pop Geral",
+    descricao=(
+        "Canal faceless de cultura pop amplo, sem se limitar a formato de lista: análises, "
+        "teorias, retrospectivas, lore, curiosidades sobre filmes, séries, games, franquias."
+    ),
+    duracao=DurationPolicy(
+        min_seconds=None, target_min_seconds=600, target_max_seconds=1200,
+        guidance="Retrospectivas de franquia ou análises de universo extenso podem passar de 15 min.",
+    ),
+    estrutura_guidance=(
+        "Mais liberdade narrativa que o perfil de listas: uma análise ou teoria pode (e deve, "
+        "quando fizer sentido) seguir uma linha argumentativa contínua em vez de tópicos "
+        "separados. Use o formato de lista apenas quando o assunto genuinamente pedir."
+    ),
+    ideacao_guidance=(
+        "Explore ângulos de análise, teoria ou retrospectiva, não apenas fatos objetivos — "
+        "este perfil pode ter opinião/interpretação editorial, desde que sinalizada como tal."
+    ),
+    pesquisa_guidance="Separe claramente fato canônico, declaração oficial de autores/estúdio e teoria de fã.",
+    regras_editoriais=["Teorias devem ser apresentadas como teorias, nunca como fato estabelecido."],
+    workflow_roteiro="roteiro_padrao",
+)
+
+GAME_ANALYSIS = ProductionProfile(
+    id="game_analysis",
+    nome="Análise de Jogos (a partir de anotações de gameplay)",
+    descricao=(
+        "Vídeos de análise baseados na experiência real de jogar, gravada e anotada pelo autor. "
+        "Workflow independente: a fonte primária é o material fornecido pelo autor, não pesquisa "
+        "ou ideação automática."
+    ),
+    duracao=DurationPolicy(
+        min_seconds=None, target_min_seconds=None, target_max_seconds=None, allow_extended=True,
+        guidance=(
+            "A duração é inteiramente derivada da profundidade das anotações fornecidas e da "
+            "quantidade de argumentos relevantes que elas sustentam. Não existe meta de minutos."
+        ),
+    ),
+    estrutura_guidance=(
+        "NÃO organize o roteiro como uma cronologia de sessão de jogo ('fiz isso, depois "
+        "aconteceu isso, depois fui ali'). Identifique os temas/argumentos maiores presentes "
+        "nas anotações (level design, combate, narrativa, progressão, exploração, IA, direção "
+        "de arte, dificuldade, pacing, world-building etc. — conforme o que as anotações "
+        "realmente sustentam) e agrupe observações relacionadas de momentos diferentes do jogo "
+        "sob o mesmo tema. Preserve ordem cronológica apenas quando ela for parte do argumento "
+        "ou da experiência que o autor quer transmitir (ex.: uma progressão de opinião ao longo "
+        "do jogo)."
+    ),
+    ideacao_guidance="Não aplicável — este perfil não passa pelo workflow de ideação/curadoria automática.",
+    pesquisa_guidance=(
+        "Grounding é opcional e só deve complementar fatos verificáveis sobre o jogo (data de "
+        "lançamento, estúdio, mecânicas documentadas) — nunca para substituir ou sobrepor a "
+        "experiência e opinião pessoal do autor registradas nas anotações."
+    ),
+    regras_editoriais=[
+        "As anotações do autor são a fonte de prioridade máxima e não podem ser contradizidas.",
+        "Nunca invente reações, opiniões ou experiências pessoais que não estejam nas anotações "
+        "ou razoavelmente implícitas nelas.",
+        "Preserve a perspectiva e as conclusões do autor — o agente edita e estrutura, não "
+        "substitui a opinião dele pela própria.",
+    ],
+    workflow_roteiro="roteiro_analise_jogos",
+    permite_grounding_automatico=False,
+)
+
+_REGISTRY: dict[str, ProductionProfile] = {
+    p.id: p
+    for p in [
+        FACELESS_POP_CULTURE_LISTS,
+        FACELESS_INFORMATIONAL,
+        FACELESS_GENERAL,
+        FACELESS_POP_CULTURE,
+        GAME_ANALYSIS,
+    ]
+}
+
+DEFAULT_PROFILE_ID = FACELESS_GENERAL.id
+
+
+def get_profile(profile_id: str | None) -> ProductionProfile:
+    """Resolve um perfil pelo id, com fallback seguro para o perfil default."""
+    if not profile_id:
+        return _REGISTRY[DEFAULT_PROFILE_ID]
+    return _REGISTRY.get(profile_id, _REGISTRY[DEFAULT_PROFILE_ID])
+
+
+def list_profiles() -> list[ProductionProfile]:
+    return list(_REGISTRY.values())
+
+
+def is_valid_profile_id(profile_id: str) -> bool:
+    return profile_id in _REGISTRY

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.repositories.roteiro_repository import RoteiroRepository
 from app.schemas.roteiro import RoteiroCreate, RoteiroUpdate, RoteiroResponse
+from app.schemas.analise_jogo import AnaliseJogoRequest, AnaliseJogoResponse
 
 
 router = APIRouter(prefix="/roteiros", tags=["roteiros"])
@@ -150,3 +151,22 @@ async def rejeitar_roteiro(
     repo = RoteiroRepository(db)
     roteiro = await repo.get_by_id(roteiro_id)
     return roteiro
+
+
+@router.post("/analise-jogo", response_model=AnaliseJogoResponse, status_code=201)
+async def criar_analise_de_jogo(
+    request: AnaliseJogoRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """
+    Workflow de Análise de Jogos: recebe as anotações de gameplay do autor e gera
+    diretamente uma Ideia (já aprovada) + Roteiro v1, fora do funil de trends.
+    """
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    generator = get_roteiro_generator(db)
+    try:
+        resultado = await generator.generate_from_notas(request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return resultado

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from app.models.base import Base, TimestampMixin
+from app.production_profiles import DEFAULT_PROFILE_ID
 
 if TYPE_CHECKING:
     from app.models.fonte_trend_nicho import FonteTrendNicho
@@ -27,6 +28,12 @@ class Nicho(Base, TimestampMixin):
     prompt_roteiro: Mapped[str] = mapped_column(Text, nullable=False)
     categoria_google_trends: Mapped[str | None] = mapped_column(String(80), nullable=True)
     ativo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Referencia o id de um ProductionProfile registrado em app.production_profiles.
+    # Guardado como string livre (não FK/enum de banco) para permitir adicionar novos
+    # perfis via código sem migration. Validado a nível de aplicação (schema Pydantic).
+    perfil_producao: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=DEFAULT_PROFILE_ID, server_default=DEFAULT_PROFILE_ID
+    )
 
     # Relacionamentos
     fontes_trend: Mapped[list["FonteTrendNicho"]] = relationship(

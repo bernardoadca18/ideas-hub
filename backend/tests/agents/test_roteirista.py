@@ -204,11 +204,12 @@ class TestRoteiristaService:
             prompt_roteiro="Crie roteiros"
         )
 
-        # Fallback cria roteiro básico com 3 blocos
+        # Fallback cria roteiro mínimo sinalizando erro (não um template genérico)
         assert isinstance(result, RoteiroEstruturado)
         assert result.titulo == "Título de teste"
-        assert len(result.blocos) == 3
-        assert result.blocos[0].tipo == "introducao"
+        assert len(result.blocos) == 1
+        assert result.blocos[0].tipo == "fallback_erro"
+        assert "FALLBACK" in result.blocos[0].conteudo
         assert "fallback" in result.justificativa_llm.lower()
 
     @pytest.mark.asyncio

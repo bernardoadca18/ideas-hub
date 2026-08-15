@@ -12,7 +12,7 @@ from pgvector.sqlalchemy import Vector
 from app.models.base import Base, TimestampMixin
 
 # Enums nativos do PostgreSQL
-OrigemIdeia = Enum("manual", "trend", "llm", name="origem_ideia", create_type=False)
+OrigemIdeia = Enum("manual", "trend", "llm", "notas_gameplay", name="origem_ideia", create_type=False)
 StatusIdeia = Enum("rascunho", "aprovada", "rejeitada", "em_roteiro", "roteirizada", "produzida", name="status_ideia", create_type=False)
 
 if TYPE_CHECKING:

@@ -2,15 +2,15 @@
 Agente Roteirista - Gera roteiros estruturados a partir de ideias aprovadas.
 
 Fluxo:
-1. Recebe ideia aprovada + nicho (prompt_roteiro)
+1. Recebe ideia aprovada + nicho + perfil de produção
 2. Se parte 2+, busca roteiro anterior como contexto
-3. Faz grounding via Tavily API
-4. Gera estrutura em blocos narrativos
-5. Retorna roteiro estruturado para revisão
+3. Faz grounding via Tavily API (se o perfil permitir)
+4. Compõe o prompt via PromptBuilder (base + qualidade editorial + perfil + nicho + workflow)
+5. Gera estrutura em blocos narrativos
+6. Retorna roteiro estruturado para revisão
 """
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID
 import time
 
 import httpx
@@ -18,12 +18,15 @@ import httpx
 from app.core.config import settings
 from app.core.logging import roteirista_logger
 from app.core.retry import retry_llm, retry_tavily
+from app.production_profiles import ProductionProfile, get_profile
+from app.prompts.builder import PromptBuilder
+from app.prompts.workflows import get_workflow, ROTEIRO_PADRAO
 
 
 @dataclass
 class BlocoNarrativo:
     """Bloco narrativo do roteiro."""
-    tipo: str  # introducao, desenvolvimento, conclusao, etc.
+    tipo: str  # rótulo descritivo do papel do bloco (varia por perfil/assunto)
     duracao_segundos: int
     conteudo: str
     dicas_visual: str | None = None
@@ -39,10 +42,16 @@ class RoteiroEstruturado:
     tags: list[str]
     referencias: list[str] | None = None
     justificativa_llm: str | None = None
+    prompt_trace: dict | None = None  # observabilidade: perfil/workflow/componentes usados
 
 
 class RoteiristaService:
     """Serviço de geração de roteiros via LiteLLM Proxy."""
+
+    # Piso técnico absoluto só para evitar um roteiro de poucos segundos em caso de
+    # resposta degenerada do modelo. Não é a "duração-alvo" (isso é responsabilidade
+    # do ProductionProfile) — é só uma rede de segurança.
+    _PISO_TECNICO_SEGUNDOS = 60
 
     def __init__(self):
         self.litellm_base_url = settings.litellm_base_url
@@ -74,7 +83,6 @@ class RoteiristaService:
                 response.raise_for_status()
                 data = response.json()
 
-                # Extrai tokens usados (se disponível)
                 usage = data.get("usage", {})
                 tokens_used = usage.get("total_tokens")
 
@@ -125,7 +133,6 @@ class RoteiristaService:
                 response.raise_for_status()
                 data = response.json()
 
-                # Extrai resposta e snippets relevantes
                 parts = []
                 if data.get("answer"):
                     parts.append(f"Resumo: {data['answer']}")
@@ -153,17 +160,18 @@ class RoteiristaService:
                 success=False,
                 error=str(e)
             )
-            # Não propaga erro - grounding é opcional
             return ""
 
     async def gerar_roteiro(
         self,
         ideia_titulo: str,
         ideia_descricao: str | None,
-        prompt_roteiro: str,
+        prompt_roteiro: str | None,
         roteiro_anterior: dict | None = None,
         numero_parte: int | None = None,
         ideia_id: str | None = None,
+        perfil_id: str | None = None,
+        workflow_id: str | None = None,
     ) -> RoteiroEstruturado:
         """
         Gera um roteiro estruturado a partir de uma ideia.
@@ -171,141 +179,63 @@ class RoteiristaService:
         Args:
             ideia_titulo: Título da ideia
             ideia_descricao: Descrição da ideia
-            prompt_roteiro: Prompt específico do nicho para roteiros
+            prompt_roteiro: Prompt específico do nicho (texto livre, camada NicheContext)
             roteiro_anterior: Roteiro da parte anterior (se continuação)
             numero_parte: Número da parte (se continuação)
             ideia_id: ID da ideia (para logging)
+            perfil_id: id do ProductionProfile ativo (resolvido a partir do Nicho)
+            workflow_id: override explícito do workflow (default: profile.workflow_roteiro)
 
         Returns:
             RoteiroEstruturado com blocos narrativos
         """
-        # Inicia métricas
-        metrics = roteirista_logger.start_operation(
-            operation="gerar_roteiro",
-            ideia_id=ideia_id
-        )
+        metrics = roteirista_logger.start_operation(operation="gerar_roteiro", ideia_id=ideia_id)
 
         try:
-            # 1. Grounding via Tavily
-            query_tavily = ideia_titulo
-            if ideia_descricao:
-                query_tavily += f" {ideia_descricao}"
+            profile: ProductionProfile = get_profile(perfil_id)
+            workflow = get_workflow(workflow_id or profile.workflow_roteiro)
 
-            contexto_grounding = await self._search_tavily(query_tavily)
+            contexto_grounding = ""
+            if profile.permite_grounding_automatico:
+                query_tavily = ideia_titulo
+                if ideia_descricao:
+                    query_tavily += f" {ideia_descricao}"
+                contexto_grounding = await self._search_tavily(query_tavily)
 
-            # 2. Monta prompt do sistema
-            sistema_prompt = """Você é um roteirista profissional de vídeos faceless para YouTube. Sua função é criar roteiros estruturados, envolventes e com duração adequada para monetização (mínimo 10 minutos).
-
-REGRAS OBRIGATÓRIAS DE DURAÇÃO:
-- Duração total MÍNIMA: 600 segundos (10 minutos)
-- Duração total ALVO: 600-720 segundos (10-12 minutos)
-- Isso é CRÍTICO para monetização - respeite rigorosamente
-
-ESTRUTURA NARRATIVA OBRIGATÓRIA:
-1. GANCHO INICIAL (30-45s)
-   - Promessa clara do que o espectador vai aprender/ganhar
-   - Provocação ou pergunta que gere curiosidade
-   - Preview dos principais pontos (em até 3 bullet points visuais)
-
-2. INTRODUÇÃO CONTEXTUAL (60-90s)
-   - Apresentação do tema com dados ou estatísticas relevantes
-   - Por que isso importa AGORA (urgência/relevância)
-   - O que será coberto no vídeo (roadmap)
-
-3. DESENVOLVIMENTO PRINCIPAL (360-480s)
-   - Divida em 4-6 BLOCOS DISTINCTOS, cada um focando em um aspecto específico
-   - Cada bloco deve ter: explicação, exemplos práticos, dicas aplicáveis
-   - Use transições claras entre blocos ("Agora que cobrimos X, vamos para Y...")
-   - Inclua mini-ganchos internos para manter engajamento
-   - Varie a profundidade: alguns pontos mais detalhados, outros mais práticos
-
-4. APLICAÇÃO PRÁTICA/EXEMPLOS (60-120s)
-   - Demonstre como aplicar o conhecimento em um cenário real
-   - Case study ou passo-a-passo prático
-   - Mostre resultados esperados ou benefícios
-
-5. CONCLUSÃO E CALL-TO-ACTION (45-60s)
-   - Recapitulação dos pontos principais (3-5 insights)
-   - Pergunta para engajamento nos comentários
-   - CTA para inscrição e próximo vídeo
-
-TÉCNICAS DE ENGAGEMENT:
-- Use perguntas retóricas ao longo do roteiro
-- Inclua "pause aqui" para ações práticas do espectador
-- Adicione elementos de surpresa ou revelação
-- Mantenha linguagem conversacional e acessível
-- Evite jargão excessivo - explique termos técnicos
-
-DIRETRIZES DE CONTEÚDO:
-- Cada bloco de desenvolvimento deve ter conteúdo substancial (mínimo 80 segundos)
-- Evite repetições - cada ponto deve adicionar valor único
-- Use dados, estatísticas ou citações para dar credibilidade
-- Inclua contrapontos ou avisos quando relevante
-- Termine seções com pontes para a próxima
-
-Para continuações (parte 2+):
-- Inicie com recapitulação de 30-45s da parte anterior
-- Mencione pontos-chave já abordados
-- Mantenha consistência de tom e terminologia
-
-Responda APENAS no formato JSON:
-{
-  "titulo": "Título otimizado para SEO e CTR (máximo 80 caracteres)",
-  "duracao_total_segundos": 600,
-  "blocos": [
-    {
-      "tipo": "gancho",
-      "duracao_segundos": 40,
-      "conteudo": "Texto narrado completo - seja detalhado e específico",
-      "dicas_visual": "Sugestões específicas de imagens, vídeos, gráficos, animações",
-      "dicas_audio": "Sugestões de música, efeitos sonoros, ritmo de narração"
-    }
-  ],
-  "tags": ["tag1", "tag2", "tag3"],
-  "referencias": ["fonte1", "fonte2"],
-  "justificativa": "Explicação das escolhas criativas e estrutura narrativa"
-}"""
-
-            # 3. Monta contexto do usuário
             usuario_parts = [f"Ideia do vídeo:\nTítulo: {ideia_titulo}"]
             if ideia_descricao:
                 usuario_parts.append(f"Descrição: {ideia_descricao}")
 
-            usuario_parts.append(f"\nPrompt do nicho: {prompt_roteiro}")
-
-            if contexto_grounding:
-                usuario_parts.append(f"\nContexto de pesquisa:\n{contexto_grounding}")
-
             if roteiro_anterior and numero_parte:
                 usuario_parts.append(f"\n=== ESTA É A PARTE {numero_parte} ===")
-                usuario_parts.append(f"\nRoteiro da parte {numero_parte - 1}:")
-                # Extrai estrutura do roteiro anterior
                 estrutura_ant = roteiro_anterior.get("estrutura", {})
                 blocos_ant = estrutura_ant.get("blocos", [])
                 if blocos_ant:
                     usuario_parts.append(f"Título anterior: {estrutura_ant.get('titulo', 'N/A')}")
                     usuario_parts.append(f"Duração anterior: {estrutura_ant.get('duracao_total_segundos', 'N/A')}s")
                     usuario_parts.append(f"Número de blocos anteriores: {len(blocos_ant)}")
-                    # Resumo dos últimos blocos
-                    if len(blocos_ant) > 0:
-                        ultimo_bloco = blocos_ant[-1]
-                        usuario_parts.append(f"Último bloco anterior: {ultimo_bloco.get('conteudo', '')[:150]}...")
+                    ultimo_bloco = blocos_ant[-1]
+                    usuario_parts.append(f"Último bloco anterior: {ultimo_bloco.get('conteudo', '')[:150]}...")
 
             usuario_message = "\n".join(usuario_parts)
 
-            # 4. Chama LLM para gerar roteiro
+            composed = (
+                PromptBuilder(workflow=workflow, profile=profile)
+                .with_niche(prompt_roteiro)
+                .with_grounding(contexto_grounding)
+                .build(task_context=usuario_message)
+            )
+
             try:
                 resposta_llm = await self._call_llm(
                     messages=[
-                        {"role": "system", "content": sistema_prompt},
-                        {"role": "user", "content": usuario_message},
+                        {"role": "system", "content": composed.system},
+                        {"role": "user", "content": composed.user},
                     ],
-                    temperature=0.8,  # Mais criatividade para roteiros
+                    temperature=0.8,
                 )
 
-                # Parse da resposta JSON
                 import json
-                # Extrai JSON da resposta (pode vir com markdown)
                 if "```json" in resposta_llm:
                     resposta_llm = resposta_llm.split("```json")[1].split("```")[0]
                 elif "```" in resposta_llm:
@@ -313,7 +243,6 @@ Responda APENAS no formato JSON:
 
                 dados = json.loads(resposta_llm.strip())
 
-                # Converte para estrutura de dados
                 blocos = []
                 duracao_total_calculada = 0
                 for b in dados.get("blocos", []):
@@ -327,11 +256,12 @@ Responda APENAS no formato JSON:
                     ))
                     duracao_total_calculada += duracao_bloco
 
-                # Usa duração calculada ou do JSON, garantindo mínimo de 600s
+                # Duração final: o que o modelo produziu de fato, respeitando só um piso
+                # técnico de segurança — NUNCA um mínimo editorial artificial por perfil.
                 duracao_final = max(
                     dados.get("duracao_total_segundos", duracao_total_calculada),
                     duracao_total_calculada,
-                    600  # Mínimo 10 minutos para monetização
+                    self._PISO_TECNICO_SEGUNDOS,
                 )
 
                 resultado = RoteiroEstruturado(
@@ -341,120 +271,61 @@ Responda APENAS no formato JSON:
                     tags=dados.get("tags", []),
                     referencias=dados.get("referencias"),
                     justificativa_llm=dados.get("justificativa"),
+                    prompt_trace=composed.trace,
                 )
 
-                # Finaliza métricas
                 roteirista_logger.end_operation(
-                    metrics=metrics,
-                    success=True,
-                    num_blocos=len(blocos),
-                    duracao_total_segundos=resultado.duracao_total_segundos
+                    metrics=metrics, success=True, num_blocos=len(blocos),
+                    duracao_total_segundos=resultado.duracao_total_segundos,
                 )
 
                 return resultado
 
             except Exception as e:
                 import traceback
-                erro_detalhado = traceback.format_exc()
                 print(f"Erro na geração do roteiro: {e}")
-                print(f"Traceback completo:\n{erro_detalhado}")
+                print(traceback.format_exc())
 
-                # Log estruturado do erro para debug
                 roteirista_logger.log_llm_call(
-                    model=self.llm_model,
-                    tokens_used=None,
-                    duration=0,
-                    success=False,
-                    error=f"Fallback acionado: {str(e)}"
+                    model=self.llm_model, tokens_used=None, duration=0, success=False,
+                    error=f"Fallback acionado: {str(e)}",
                 )
 
-                # Fallback: cria roteiro básico de 10 minutos
+                # Fallback minimalista e claramente sinalizado como tal (não é um roteiro
+                # "de verdade" — é só para o pipeline não travar). Não tenta simular a
+                # estrutura ideal, porque isso reforçaria a mesma fórmula genérica que
+                # queremos evitar quando o LLM de fato responde.
                 resultado = RoteiroEstruturado(
                     titulo=ideia_titulo[:80],
-                    duracao_total_segundos=600,  # 10 minutos
+                    duracao_total_segundos=self._PISO_TECNICO_SEGUNDOS,
                     blocos=[
                         BlocoNarrativo(
-                            tipo="gancho",
-                            duracao_segundos=40,
-                            conteudo=f"Você já se perguntou como {ideia_titulo.lower()}? Neste vídeo, vou te mostrar tudo o que você precisa saber sobre isso. Vamos lá!",
-                            dicas_visual="Texto animado na tela com os pontos principais",
-                            dicas_audio="Música de fundo energética",
-                        ),
-                        BlocoNarrativo(
-                            tipo="introducao",
-                            duracao_segundos=90,
-                            conteudo=f"Olá! Seja bem-vindo. Hoje vamos mergulhar fundo no tema: {ideia_titulo}. "
-                                    f"{' ' + ideia_descricao if ideia_descricao else ''} "
-                                    f"Vou cobrir todos os aspectos importantes, trazer exemplos práticos e mostrar como você pode aplicar isso. "
-                                    f"Fique até o final que vou deixar uma dica especial.",
-                            dicas_visual="B-roll do apresentador e gráficos de introdução",
-                            dicas_audio="Música de abertura padrão",
-                        ),
-                        BlocoNarrativo(
-                            tipo="desenvolvimento",
-                            duracao_segundos=120,
-                            conteudo=f"Vamos começar entendendo o contexto. {ideia_titulo} é um tema que tem ganhado cada vez mais relevância. "
-                                    f"Nesta primeira parte, vou explicar os fundamentos e por que isso é importante para você. "
-                                    f"Preste atenção nos detalhes que vou compartilhar.",
-                            dicas_visual="Slides explicativos e animações",
-                            dicas_audio="Música de fundo suave",
-                        ),
-                        BlocoNarrativo(
-                            tipo="desenvolvimento",
-                            duracao_segundos=120,
-                            conteudo=f"Agora que você já entendeu o contexto, vamos para a parte prática. "
-                                    f"Vou te mostrar passo a passo como isso funciona na prática e quais são os pontos que você precisa prestar atenção.",
-                            dicas_visual="Demonstração prática em tela",
-                            dicas_audio="SFX de transição",
-                        ),
-                        BlocoNarrativo(
-                            tipo="desenvolvimento",
-                            duracao_segundos=120,
-                            conteudo=f"Continuando nossa jornada, existem alguns pontos avançados que você precisa conhecer. "
-                                    f"Essas informações vão fazer diferença no seu resultado final.",
-                            dicas_visual="Gráficos comparativos e diagramas",
-                            dicas_audio="Música de fundo",
-                        ),
-                        BlocoNarrativo(
-                            tipo="desenvolvimento",
-                            duracao_segundos=90,
-                            conteudo=f"Vou compartilhar agora alguns erros comuns que as pessoas cometem e como você pode evitá-los. "
-                                    f"Essa informação é valiosa e vai te poupar muito tempo.",
-                            dicas_visual="Lista visual dos erros comuns",
-                            dicas_audio="SFX de alerta",
-                        ),
-                        BlocoNarrativo(
-                            tipo="conclusao",
-                            duracao_segundos=20,
-                            conteudo=f"Para finalizar, vou recapitular os principais pontos que cobrimos hoje sobre {ideia_titulo}. "
-                                    f"Espero que essas informações sejam úteis para você!",
-                            dicas_visual="Resumo visual em bullet points",
-                            dicas_audio="Música de encerramento suave",
+                            tipo="fallback_erro",
+                            duracao_segundos=self._PISO_TECNICO_SEGUNDOS,
+                            conteudo=(
+                                f"[FALLBACK] Geração automática falhou para a ideia '{ideia_titulo}'. "
+                                f"Regenere manualmente. Erro original: {str(e)}"
+                            ),
+                            dicas_visual=None,
+                            dicas_audio=None,
                         ),
                     ],
                     tags=[],
                     referencias=None,
-                    justificativa_llm=f"Roteiro gerado automaticamente (fallback). Erro original: {str(e)}",
+                    justificativa_llm=f"Roteiro de fallback — geração via LLM falhou: {str(e)}",
+                    prompt_trace=composed.trace,
                 )
 
-                # Finaliza métricas (fallback ainda é sucesso)
                 roteirista_logger.end_operation(
-                    metrics=metrics,
-                    success=True,
-                    num_blocos=3,
-                    duracao_total_segundos=120,
-                    error=f"Usou fallback: {str(e)}"
+                    metrics=metrics, success=True, num_blocos=1,
+                    duracao_total_segundos=resultado.duracao_total_segundos,
+                    error=f"Usou fallback: {str(e)}",
                 )
 
                 return resultado
 
         except Exception as e:
-            # Finaliza métricas com erro
-            roteirista_logger.end_operation(
-                metrics=metrics,
-                success=False,
-                error=str(e)
-            )
+            roteirista_logger.end_operation(metrics=metrics, success=False, error=str(e))
             raise
 
     def to_dict(self, roteiro: RoteiroEstruturado) -> dict:
@@ -475,8 +346,8 @@ Responda APENAS no formato JSON:
             "tags": roteiro.tags,
             "referencias": roteiro.referencias,
             "justificativa_llm": roteiro.justificativa_llm,
+            "prompt_trace": roteiro.prompt_trace,
         }
 
 
-# Instância global do serviço
 roteirista_service = RoteiristaService()
