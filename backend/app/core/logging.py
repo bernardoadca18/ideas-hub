@@ -194,6 +194,27 @@ class AgentLogger:
             similar_ideia_id=similar_ideia_id
         )
 
+    def log_duration_check(
+        self,
+        duracao_gerada: int,
+        target_min: int | None,
+        target_max: int | None,
+        profile_id: str,
+        dentro_do_esperado: bool,
+        warning: str | None = None
+    ):
+        """Registra verificação de duração do roteiro."""
+        self.logger.info(
+            "duration_check",
+            agent_type=self.agent_type.value,
+            duracao_gerada_segundos=duracao_gerada,
+            target_min_segundos=target_min,
+            target_max_segundos=target_max,
+            profile_id=profile_id,
+            dentro_do_esperado=dentro_do_esperado,
+            warning=warning
+        )
+
 
 # Instâncias globais dos loggers
 curador_logger = AgentLogger(AgentType.CURADOR)

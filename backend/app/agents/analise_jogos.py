@@ -162,15 +162,29 @@ class AnaliseJogosService:
             ))
             duracao_total += duracao_bloco
 
-        return RoteiroEstruturado(
+        duracao_final = max(dados.get("duracao_total_segundos", duracao_total), duracao_total, 60)
+
+        resultado = RoteiroEstruturado(
             titulo=dados.get("titulo", titulo_provisorio)[:80],
-            duracao_total_segundos=max(dados.get("duracao_total_segundos", duracao_total), duracao_total, 60),
+            duracao_total_segundos=duracao_final,
             blocos=blocos,
             tags=dados.get("tags", []),
             referencias=dados.get("referencias"),
             justificativa_llm=dados.get("justificativa"),
             prompt_trace=composed.trace,
         )
+
+        # Log de duração para análise de jogos (não há target fixo, mas é útil rastrear)
+        roteirista_logger.log_duration_check(
+            duracao_gerada=duracao_final,
+            target_min=None,
+            target_max=None,
+            profile_id=profile.id,
+            dentro_do_esperado=True,  # Sempre True pois não há target para game_analysis
+            warning=f"Duração gerada: {duracao_final}s ({duracao_final//60}min {duracao_final%60}s) - derivada das anotações fornecidas"
+        )
+
+        return resultado
 
 
 analise_jogos_service = AnaliseJogosService()

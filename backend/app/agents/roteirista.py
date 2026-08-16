@@ -274,6 +274,36 @@ class RoteiristaService:
                     prompt_trace=composed.trace,
                 )
 
+                # Validar duração contra política do perfil
+                duracao_policy = profile.duracao
+                target_min = duracao_policy.target_min_seconds
+                target_max = duracao_policy.target_max_seconds
+
+                dentro_do_esperado = True
+                warning_msg = None
+                if target_min is not None and duracao_final < target_min:
+                    dentro_do_esperado = False
+                    warning_msg = (
+                        f"Roteiro gerado com {duracao_final}s, abaixo do mínimo esperado ({target_min}s) "
+                        f"para o perfil '{profile.id}'. Verifique se o conteúdo de entrada é suficiente."
+                    )
+                    print(f"[WARNING] {warning_msg}")
+                elif target_max is not None and duracao_final > target_max and not duracao_policy.allow_extended:
+                    dentro_do_esperado = False
+                    warning_msg = (
+                        f"Roteiro gerado com {duracao_final}s, acima do máximo ({target_max}s) "
+                        f"para o perfil '{profile.id}'."
+                    )
+
+                roteirista_logger.log_duration_check(
+                    duracao_gerada=duracao_final,
+                    target_min=target_min,
+                    target_max=target_max,
+                    profile_id=profile.id,
+                    dentro_do_esperado=dentro_do_esperado,
+                    warning=warning_msg
+                )
+
                 roteirista_logger.end_operation(
                     metrics=metrics, success=True, num_blocos=len(blocos),
                     duracao_total_segundos=resultado.duracao_total_segundos,

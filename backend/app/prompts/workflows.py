@@ -64,22 +64,25 @@ narrativos coerentes.
 - Adapte a estrutura ao tipo de conteúdo (lista, narrativa linear, comparação, timeline)
   em vez de forçar todo assunto no mesmo molde.
 - Se esta for uma continuação (parte 2+), abra com uma recapitulação curta e natural dos
-  pontos essenciais da parte anterior — sem repetir a parte anterior inteiramente.""",
+  pontos essenciais da parte anterior — sem repetir a parte anterior inteiramente.
+- IMPORTANTE: A política de duração no perfil de produção indica a duração esperada.
+  Respeite essa faixa: não produza um roteiro muito mais curto que o mínimo esperado
+  sem justificativa clara (assunto insuficiente). Se o assunto for rico, expanda.""",
     formato_saida="""{
   "titulo": "Título otimizado para clareza e interesse (máximo 80 caracteres)",
-  "duracao_total_segundos": 720,
+  "duracao_total_segundos": "IMPORTANTE: deve respeitar a política de duração do perfil ativo (ex: 600-900s para faceless)",
   "blocos": [
     {
       "tipo": "abertura | desenvolvimento | encerramento (ou outro rótulo descritivo do papel do bloco)",
-      "duracao_segundos": 45,
-      "conteudo": "Texto de narração completo do bloco",
+      "duracao_segundos": "Cada bloco tipicamente 60-180s, ajustado ao conteúdo",
+      "conteudo": "Texto de narração COMPLETO do bloco - nunca resumo ou tópicos",
       "dicas_visual": "Sugestões concretas de imagens, vídeos, gráficos ou animações",
       "dicas_audio": "Sugestões de música, efeitos sonoros ou ritmo de narração"
     }
   ],
   "tags": ["tag1", "tag2", "tag3"],
   "referencias": ["fonte1", "fonte2"],
-  "justificativa": "Explicação objetiva das escolhas estruturais e de ritmo"
+  "justificativa": "Explicação objetiva das escolhas estruturais e de ritmo, incluindo por que a duração final é adequada"
 }""",
 )
 
@@ -115,16 +118,19 @@ Sua tarefa:
 - Distinga conteúdo importante de observações redundantes ou complementares: nem todo
   volume de anotações precisa virar roteiro — remova o que não sustenta a análise, mas
   preserve tudo que for argumento relevante mesmo que fragmentado no original.
-- A duração final é inteiramente determinada pela profundidade real do material —
-  não existe meta de minutos para este formato.""",
+- A duração final é determinada pela profundidade do material. IMPORTANTE: uma análise
+  de jogo bem feita tipicamente tem 10-60 minutos. Se as anotações forem extensas e
+  detalhadas, NÃO comprima em poucos minutos — desenvolva cada tema adequadamente.
+  Vídeos de análise longos (30min, 1h, 2h+) são normais e esperados quando o material
+  justifica.""",
     formato_saida="""{
   "titulo": "Título da análise (máximo 80 caracteres)",
-  "duracao_total_segundos": 900,
+  "duracao_total_segundos": "Duração derivada do material - vídeos de análise tipicamente 600-3600s+ (10min-1h+)",
   "blocos": [
     {
       "tipo": "rótulo descritivo do tema/seção (ex.: 'gancho', 'level_design', 'narrativa', 'veredito')",
-      "duracao_segundos": 90,
-      "conteudo": "Texto de narração completo do bloco, preservando a voz e as opiniões do autor",
+      "duracao_segundos": "Cada bloco de tema tipicamente 120-600s dependendo da profundidade",
+      "conteudo": "Texto de narração COMPLETO do bloco - desenvolva o tema em detalhe",
       "dicas_visual": "Sugestões de que footage de gameplay gravado usar neste trecho",
       "dicas_audio": "Sugestões de música/ritmo de narração"
     }
