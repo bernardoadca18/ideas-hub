@@ -26,6 +26,7 @@ class MediaIndexerAlignment:
     start_seconds: float
     end_seconds: float
     confidence: float
+    anchors: list[dict] = field(default_factory=list)
     reasoning_summary: str | None = None
     timestamp_resolution_seconds: float | None = None
 

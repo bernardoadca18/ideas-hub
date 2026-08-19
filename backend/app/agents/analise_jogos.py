@@ -28,6 +28,11 @@ def format_media_context_for_prompt(media_context: GameAnalysisMediaContext) -> 
 
     This function transforms the structured media context into a human-readable
     format that the LLM can use as supplementary evidence.
+
+    Each note includes:
+    - The raw note content (primary value)
+    - Alignment status and timestamp if matched
+    - Confidence score
     """
     if not media_context.available:
         return ""
@@ -39,14 +44,15 @@ def format_media_context_for_prompt(media_context: GameAnalysisMediaContext) -> 
 
         for note in session.notes:
             status = note.note.alignment_status
-            note_text = f"  Note {note.note.order}: [{status}]"
+            # Include the raw note content - this is the primary value
+            note_text = f"  Note {note.note.order}: [{status}] {note.note.raw}"
 
             if note.alignment:
                 start_min = int(note.alignment.start_seconds // 60)
                 start_sec = int(note.alignment.start_seconds % 60)
                 end_min = int(note.alignment.end_seconds // 60)
                 end_sec = int(note.alignment.end_seconds % 60)
-                note_text += f" {start_min:02d}:{start_sec:02d}-{end_min:02d}:{end_sec:02d}"
+                note_text += f" @ {start_min:02d}:{start_sec:02d}-{end_min:02d}:{end_sec:02d}"
                 note_text += f" (confidence: {note.alignment.confidence:.2f})"
 
             parts.append(note_text)

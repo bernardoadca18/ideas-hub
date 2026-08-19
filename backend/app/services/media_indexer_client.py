@@ -161,6 +161,24 @@ class MediaIndexerClient:
         """List temporal indexes for a session."""
         return await self._request("GET", f"/sessions/{session_id}/temporal-indexes")
 
+    async def list_alignment_runs(
+        self,
+        session_id: UUID,
+        status: str | None = None,
+    ) -> list[dict]:
+        """List alignment runs for a session, optionally filtered by status.
+
+        Returns runs ordered by created_at descending (most recent first).
+        """
+        params = {}
+        if status:
+            params["status"] = status
+        return await self._request(
+            "GET",
+            f"/sessions/{session_id}/alignment-runs",
+            params=params if params else None,
+        )
+
     # =========================================================================
     # Semantic Timeline endpoint
     # =========================================================================
@@ -197,8 +215,9 @@ class MediaIndexerClient:
             params=params,
         )
 
-        # Extract session label from provenance
-        session_label = data.get("provenance", {}).get("session_id", str(session_id))
+        # Extract session label from provenance (it's just the session_id UUID as string)
+        # We'll override this with the actual session label if available from the caller
+        session_label = str(session_id)
 
         # Transform notes
         notes = []
@@ -224,6 +243,7 @@ class MediaIndexerClient:
                     start_seconds=align_data["start_seconds"],
                     end_seconds=align_data["end_seconds"],
                     confidence=align_data["confidence"],
+                    anchors=align_data.get("anchors", []),
                     reasoning_summary=align_data.get("reasoning_summary"),
                     timestamp_resolution_seconds=align_data.get("timestamp_resolution_seconds"),
                 )

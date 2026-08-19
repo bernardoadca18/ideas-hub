@@ -144,6 +144,44 @@ class TestMediaIndexerClientListTemporalIndexes:
             assert result[0]["status"] == "completed"
 
 
+class TestMediaIndexerClientListAlignmentRuns:
+    """Tests for list_alignment_runs method."""
+
+    @pytest.mark.asyncio
+    async def test_list_alignment_runs_success(self, client, session_id):
+        """Test successful alignment run listing."""
+        alignment_run_id = uuid4()
+        with patch.object(client, "_request") as mock_request:
+            mock_request.return_value = [
+                {
+                    "id": str(alignment_run_id),
+                    "session_id": str(session_id),
+                    "status": "completed",
+                    "provider": "litellm",
+                    "model": "gemini-2.0-flash",
+                    "created_at": "2024-01-15T12:00:00Z",
+                }
+            ]
+
+            result = await client.list_alignment_runs(session_id)
+
+            assert len(result) == 1
+            assert result[0]["status"] == "completed"
+            assert result[0]["provider"] == "litellm"
+
+    @pytest.mark.asyncio
+    async def test_list_alignment_runs_with_status_filter(self, client, session_id):
+        """Test alignment run listing with status filter."""
+        with patch.object(client, "_request") as mock_request:
+            mock_request.return_value = []
+
+            await client.list_alignment_runs(session_id, status="completed")
+
+            # Verify status was passed as query param
+            call_args = mock_request.call_args
+            assert call_args.kwargs.get("params") == {"status": "completed"}
+
+
 class TestMediaIndexerClientGetSemanticTimeline:
     """Tests for get_semantic_timeline method."""
 
@@ -171,6 +209,9 @@ class TestMediaIndexerClientGetSemanticTimeline:
                             "start_seconds": 120.0,
                             "end_seconds": 145.0,
                             "confidence": 0.89,
+                            "anchors": [
+                                {"type": "transcript", "text": "matching text"}
+                            ],
                         },
                     },
                     {
@@ -192,6 +233,9 @@ class TestMediaIndexerClientGetSemanticTimeline:
             assert result.notes[0].note.raw == "The combat feels smooth"
             assert result.notes[0].alignment is not None
             assert result.notes[0].alignment.start_seconds == 120.0
+            assert result.notes[0].alignment.anchors == [
+                {"type": "transcript", "text": "matching text"}
+            ]
             assert result.notes[1].alignment is None  # unmatched
 
 
