@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     litellm_base_url: str = "http://172.20.0.1:4000"  # Endpoint do proxy local (gateway Docker)
     litellm_master_key: str = ""  # Chave mestra do proxy
 
+    # Media Indexer (audiovisual memory service)
+    media_indexer_base_url: str = "http://localhost:8012"
+    media_indexer_timeout_seconds: int = 30
+    media_indexer_api_key: str = ""  # Optional, if Media Indexer requires authentication
+
+    # Game Analysis media context budget
+    game_analysis_media_context_max_chars: int = 50000
+
     # Parâmetros ajustáveis
     ideia_similarity_threshold: float = 0.85
     ideias_por_trend: int = 3

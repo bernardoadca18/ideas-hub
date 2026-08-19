@@ -122,7 +122,40 @@ Sua tarefa:
   de jogo bem feita tipicamente tem 10-60 minutos. Se as anotações forem extensas e
   detalhadas, NÃO comprima em poucos minutos — desenvolva cada tema adequadamente.
   Vídeos de análise longos (30min, 1h, 2h+) são normais e esperados quando o material
-  justifica.""",
+  justifica.
+
+CONTEXTO AUDIOVISUAL (se disponível):
+- Se houver contexto audiovisual, ele serve como EVIDÊNCIA de momentos do gameplay,
+  com timestamps e status de alinhamento.
+- Uma anotação "matched" com timestamp significa que o sistema localizou aquela
+  observação no vídeo — NÃO significa que toda interpretação subjetiva da anotação
+  foi "provada" pelo vídeo.
+- Uma anotação "unmatched" ou "no_candidates" NÃO invalida a anotação. Significa
+  apenas que o sistema não localizou visualmente aquela observação — a anotação
+  continua válida como experiência pessoal do autor.
+- Timestamps são evidência de QUANDO algo aconteceu, não de QUAL a opinião do autor
+  sobre isso. A opinião está nas anotações.
+- Use timestamps para sugerir onde determinado footage pode ser usado, mas nunca
+  transforme evidência temporal em opinião pessoal.
+
+INCERTEZA:
+- Se o autor expressou incerteza nas anotações ("parece que...", "talvez...", "não
+  tenho certeza se..."), PRESERVE essa incerteza no roteiro.
+- Não remova linguagem de dúvida mesmo que o contexto audiovisual tenha localizado
+  o momento — localização temporal NÃO é confirmação de interpretação.
+- Contexto de pesquisa (grounding) pode verificar fatos, mas NÃO confirma opiniões
+  pessoais ou interpretações subjetivas do autor.
+
+HIERARQUIA DE FONTES:
+1. ANOTAÇÕES DO AUTOR — autoridade máxima sobre experiência pessoal e opiniões
+2. CONTEXTO AUDIOVISUAL — evidência temporal e visual, complementa mas não substitui
+3. GROUNDING/PRODUÇÃO — fatos verificáveis, nunca opiniões pessoais
+
+NUNCA:
+- Transforme informação externa em experiência pessoal do autor
+- Afirme como fato algo que o autor expressou como incerteza
+- Substitua anotações por resumos do contexto audiovisual
+- Invente reações, opiniões ou experiências não documentadas""",
     formato_saida="""{
   "titulo": "Título da análise (máximo 80 caracteres)",
   "duracao_total_segundos": "Duração derivada do material - vídeos de análise tipicamente 600-3600s+ (10min-1h+)",

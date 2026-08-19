@@ -28,6 +28,13 @@ def niche_context(prompt_nicho: str | None, rotulo: str = "Diretrizes específic
     return f"{rotulo} (definidas pelo operador do canal, seguir com prioridade alta):\n{prompt_nicho}"
 
 
+def media_context_context(media_context_text: str | None) -> str:
+    """Format media context for inclusion in prompt."""
+    if not media_context_text:
+        return ""
+    return f"Contexto audiovisual (evidência do gameplay, complementa as anotações):\n{media_context_text}"
+
+
 def grounding_context(texto_grounding: str | None) -> str:
     if not texto_grounding:
         return ""

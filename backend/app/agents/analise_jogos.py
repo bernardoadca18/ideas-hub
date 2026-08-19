@@ -7,6 +7,7 @@ automática. Reaproveita as mesmas dataclasses de roteiro (RoteiroEstruturado,
 BlocoNarrativo) para não exigir nenhuma mudança de schema de Roteiro.
 """
 import time
+from uuid import UUID
 
 import httpx
 
@@ -17,16 +18,72 @@ from app.production_profiles import get_profile, GAME_ANALYSIS
 from app.prompts.builder import PromptBuilder
 from app.prompts.workflows import get_workflow
 from app.agents.roteirista import RoteiroEstruturado, BlocoNarrativo
+from app.schemas.media_indexer import GameAnalysisMediaContext
+from app.services.media_context_provider import MediaContextProvider
+from app.services.media_indexer_context_provider import MediaIndexerContextProvider
+
+
+def format_media_context_for_prompt(media_context: GameAnalysisMediaContext) -> str:
+    """Format media context into a compact text suitable for the LLM prompt.
+
+    This function transforms the structured media context into a human-readable
+    format that the LLM can use as supplementary evidence.
+    """
+    if not media_context.available:
+        return ""
+
+    parts = []
+
+    for session in media_context.sessions:
+        parts.append(f"Session: {session.session_label}")
+
+        for note in session.notes:
+            status = note.note.alignment_status
+            note_text = f"  Note {note.note.order}: [{status}]"
+
+            if note.alignment:
+                start_min = int(note.alignment.start_seconds // 60)
+                start_sec = int(note.alignment.start_seconds % 60)
+                end_min = int(note.alignment.end_seconds // 60)
+                end_sec = int(note.alignment.end_seconds % 60)
+                note_text += f" {start_min:02d}:{start_sec:02d}-{end_min:02d}:{end_sec:02d}"
+                note_text += f" (confidence: {note.alignment.confidence:.2f})"
+
+            parts.append(note_text)
+
+        parts.append("")  # Empty line between sessions
+
+    # Add warnings if any
+    if media_context.warnings:
+        parts.append("Warnings:")
+        for warning in media_context.warnings:
+            parts.append(f"  - {warning}")
+
+    return "\n".join(parts)
 
 
 class AnaliseJogosService:
     """Serviço de geração de roteiros de análise de jogos a partir de anotações."""
 
-    def __init__(self):
+    def __init__(self, media_context_provider: MediaContextProvider | None = None):
         self.litellm_base_url = settings.litellm_base_url
         self.litellm_api_key = settings.litellm_master_key or "dummy-key"
         self.tavily_api_key = settings.tavily_api_key
         self.llm_model = settings.llm_model
+        self._media_context_provider = media_context_provider
+
+    @property
+    def media_context_provider(self) -> MediaContextProvider:
+        """Lazy initialization of media context provider."""
+        if self._media_context_provider is None:
+            # Only create real provider if Media Indexer is configured
+            if settings.media_indexer_base_url:
+                self._media_context_provider = MediaIndexerContextProvider()
+            else:
+                # Use fake provider that returns empty context
+                from app.services.media_context_provider import FakeMediaContextProvider
+                self._media_context_provider = FakeMediaContextProvider()
+        return self._media_context_provider
 
     @retry_llm()
     async def _call_llm(self, messages: list[dict], temperature: float = 0.7, max_tokens: int = 16000) -> str:
@@ -100,6 +157,8 @@ class AnaliseJogosService:
         nome_jogo: str | None = None,
         prompt_nicho: str | None = None,
         usar_grounding: bool = False,
+        media_project_id: UUID | None = None,
+        media_session_ids: list[UUID] | None = None,
     ) -> RoteiroEstruturado:
         """
         Transforma anotações brutas de gameplay em um roteiro de análise estruturado.
@@ -110,14 +169,51 @@ class AnaliseJogosService:
             nome_jogo: nome do jogo, se não estiver claro no título
             prompt_nicho: prompt_roteiro do nicho, se este canal tiver um configurado
             usar_grounding: liga grounding factual pontual (desligado por padrão neste perfil)
+            media_project_id: ID do projeto no Media Indexer para contexto audiovisual
+            media_session_ids: filtro opcional para sessões específicas do Media Indexer
         """
         profile = get_profile(GAME_ANALYSIS.id)
         workflow = get_workflow(profile.workflow_roteiro)
 
+        # Retrieve grounding context (optional)
         contexto_grounding = ""
         if usar_grounding and nome_jogo:
             contexto_grounding = await self._search_tavily(f"{nome_jogo} data de lançamento estúdio desenvolvedor")
 
+        # Retrieve media context (optional, fail-open)
+        media_context = None
+        media_context_text = ""
+        if media_project_id:
+            try:
+                media_context = await self.media_context_provider.get_context(
+                    media_project_id=media_project_id,
+                    media_session_ids=media_session_ids,
+                    max_chars=settings.game_analysis_media_context_max_chars,
+                )
+                media_context_text = format_media_context_for_prompt(media_context)
+
+                roteirista_logger.logger.info(
+                    "media_context_retrieved_for_game_analysis",
+                    extra={
+                        "project_id": str(media_project_id),
+                        "available": media_context.available,
+                        "total_notes": media_context.total_notes,
+                        "matched_notes": media_context.matched_notes,
+                        "unmatched_notes": media_context.unmatched_notes,
+                        "total_chars": media_context.total_chars,
+                    },
+                )
+            except Exception as e:
+                roteirista_logger.logger.warning(
+                    "media_context_retrieval_failed",
+                    extra={
+                        "project_id": str(media_project_id),
+                        "error": str(e),
+                    },
+                )
+                # Fail-open: continue without media context
+
+        # Build the user message with raw notes as primary source
         usuario_parts = [f"Título provisório do vídeo: {titulo_provisorio}"]
         if nome_jogo:
             usuario_parts.append(f"Jogo analisado: {nome_jogo}")
@@ -128,6 +224,7 @@ class AnaliseJogosService:
         composed = (
             PromptBuilder(workflow=workflow, profile=profile)
             .with_niche(prompt_nicho)
+            .with_media_context(media_context_text)
             .with_grounding(contexto_grounding)
             .build(task_context=usuario_message)
         )

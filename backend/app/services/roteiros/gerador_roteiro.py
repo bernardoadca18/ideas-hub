@@ -108,6 +108,8 @@ class RoteiroGenerator:
             nome_jogo=request.nome_jogo,
             prompt_nicho=prompt_nicho,
             usar_grounding=request.usar_grounding,
+            media_project_id=request.media_project_id,
+            media_session_ids=request.media_session_ids,
         )
 
         nova_ideia_data = IdeiaCreate(

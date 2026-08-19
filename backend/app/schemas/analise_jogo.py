@@ -11,6 +11,16 @@ class AnaliseJogoRequest(BaseModel):
     nicho_id: UUID | None = None
     usar_grounding: bool = False
 
+    # Media Indexer integration (optional)
+    media_project_id: UUID | None = Field(
+        None,
+        description="Media Indexer project ID for audiovisual context"
+    )
+    media_session_ids: list[UUID] | None = Field(
+        None,
+        description="Optional filter to specific Media Indexer sessions"
+    )
+
 
 class AnaliseJogoResponse(BaseModel):
     ideia_id: UUID
