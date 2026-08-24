@@ -118,7 +118,9 @@ class TestFormatMediaContextForPrompt:
         result = format_media_context_for_prompt(context)
 
         assert "Session: Main Gameplay Session" in result
-        assert "Note 0: [matched]" in result
+        # Note format now includes [id={uuid}] for visual_query reference
+        assert "[matched]" in result
+        assert "Note 0" in result
         # First matched note has start_seconds=0, end_seconds=45
         assert "00:00-00:45" in result
         assert "confidence: 0.89" in result
@@ -150,10 +152,12 @@ class TestFormatMediaContextForPrompt:
 
         result = format_media_context_for_prompt(context)
 
-        assert "Note 1: [unmatched]" in result
+        # Note format now includes [id={uuid}] for visual_query reference
+        assert "[unmatched]" in result
+        assert "Note 1" in result
         # Unmatched notes don't have timestamp info
         lines = result.split("\n")
-        note_line = [l for l in lines if "Note 1:" in l][0]
+        note_line = [l for l in lines if "Note 1" in l][0]
         assert "confidence" not in note_line
 
     def test_includes_warnings(self):

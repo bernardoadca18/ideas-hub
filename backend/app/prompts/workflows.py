@@ -14,6 +14,7 @@ class WorkflowSpec:
     papel_agente: str
     instrucoes: str
     formato_saida: str
+    structured_visual_queries: bool = False
 
 
 IDEACAO_BRUTA = WorkflowSpec(
@@ -155,7 +156,33 @@ NUNCA:
 - Transforme informação externa em experiência pessoal do autor
 - Afirme como fato algo que o autor expressou como incerteza
 - Substitua anotações por resumos do contexto audiovisual
-- Invente reações, opiniões ou experiências não documentadas""",
+- Invente reações, opiniões ou experiências não documentadas
+
+CONSULTAS VISUAIS ESTRUTURADAS (visual_queries):
+- Para cada bloco, inclua visual_queries: uma lista de consultas estruturadas que
+  expressam QUE tipo de evidência visual este segmento precisa — NÃO qual arquivo ou
+  clip exato usar.
+- Cada visual_query DEVE incluir:
+  * intent: um destes valores exatos: "illustration", "evidence", "transition",
+    "atmosphere", "comparison"
+  * query: descrição em linguagem natural do footage necessário (ex.: "gameplay
+    mostrando o sistema de combate em ação contra um chefe")
+  * narration_excerpt: trecho curto da narração ao qual esta consulta se refere
+  * importance: um destes: "required", "preferred", "optional"
+  * source_note_id: ID da anotação do contexto audiovisual que originou esta consulta,
+    SE a consulta foi inspirada por uma anotação específica. Use o ID exatamente como
+    aparece no contexto (formato UUID). NÃO invente UUIDs.
+  * desired_duration_seconds: duração alvo aproximada para o footage (opcional)
+  * notes: restrições adicionais ou contexto (opcional)
+- NÃO inclua preferred_session_id, preferred_start_seconds ou preferred_end_seconds
+  nestes campos — o backend preencherá a partir do source_note_id usando o contexto
+  audiovisual confiável.
+- Se o bloco não tiver necessidade visual clara, inclua uma visual_query com
+  intent="illustration" e importance="optional" descrevendo o tipo genérico de footage.
+- Limite: máximo 5 visual_queries por bloco. Priorize qualidade sobre quantidade.
+- source_note_id é a ÚNICA forma de referenciar o contexto audiovisual. NUNCA invente
+  timestamps, UUIDs de sessão ou outras referências — apenas use source_note_id que
+  exista no contexto audiovisual fornecido.""",
     formato_saida="""{
   "titulo": "Título da análise (máximo 80 caracteres)",
   "duracao_total_segundos": "Duração derivada do material - vídeos de análise tipicamente 600-3600s+ (10min-1h+)",
@@ -164,14 +191,26 @@ NUNCA:
       "tipo": "rótulo descritivo do tema/seção (ex.: 'gancho', 'level_design', 'narrativa', 'veredito')",
       "duracao_segundos": "Cada bloco de tema tipicamente 120-600s dependendo da profundidade",
       "conteudo": "Texto de narração COMPLETO do bloco - desenvolva o tema em detalhe",
-      "dicas_visual": "Sugestões de que footage de gameplay gravado usar neste trecho",
-      "dicas_audio": "Sugestões de música/ritmo de narração"
+      "dicas_visual": "Sugestões gerais de footage de gameplay para este trecho",
+      "dicas_audio": "Sugestões de música/ritmo de narração",
+      "visual_queries": [
+        {
+          "intent": "illustration | evidence | transition | atmosphere | comparison",
+          "query": "Descrição em linguagem natural do footage necessário",
+          "narration_excerpt": "Trecho curto da narração relacionado",
+          "importance": "required | preferred | optional",
+          "source_note_id": "UUID da anotação de origem (do contexto audiovisual) ou null",
+          "desired_duration_seconds": 15.0,
+          "notes": "Restrições ou contexto adicional (opcional)"
+        }
+      ]
     }
   ],
   "tags": ["tag1", "tag2"],
   "referencias": ["fonte1 (se houver grounding usado)"],
   "justificativa": "Explicação objetiva de como os temas foram identificados e organizados a partir das anotações"
 }""",
+    structured_visual_queries=True,
 )
 
 _WORKFLOWS: dict[str, WorkflowSpec] = {

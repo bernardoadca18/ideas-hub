@@ -9,9 +9,10 @@ Fluxo:
 5. Gera estrutura em blocos narrativos
 6. Retorna roteiro estruturado para revisão
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 import time
+from uuid import UUID
 
 import httpx
 
@@ -21,6 +22,7 @@ from app.core.retry import retry_llm, retry_tavily
 from app.production_profiles import ProductionProfile, get_profile
 from app.prompts.builder import PromptBuilder
 from app.prompts.workflows import get_workflow, ROTEIRO_PADRAO
+from app.schemas.visual_query import VisualQuery
 
 
 @dataclass
@@ -31,6 +33,7 @@ class BlocoNarrativo:
     conteudo: str
     dicas_visual: str | None = None
     dicas_audio: str | None = None
+    visual_queries: list[VisualQuery] = field(default_factory=list)
 
 
 @dataclass
@@ -361,6 +364,7 @@ class RoteiristaService:
     def to_dict(self, roteiro: RoteiroEstruturado) -> dict:
         """Converte RoteiroEstruturado para dicionário (JSON)."""
         return {
+            "production_script_schema_version": "2.0",
             "titulo": roteiro.titulo,
             "duracao_total_segundos": roteiro.duracao_total_segundos,
             "blocos": [
@@ -370,6 +374,7 @@ class RoteiristaService:
                     "conteudo": b.conteudo,
                     "dicas_visual": b.dicas_visual,
                     "dicas_audio": b.dicas_audio,
+                    "visual_queries": [vq.to_dict() for vq in b.visual_queries],
                 }
                 for b in roteiro.blocos
             ],

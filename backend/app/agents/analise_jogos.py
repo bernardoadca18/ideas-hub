@@ -19,6 +19,7 @@ from app.prompts.builder import PromptBuilder
 from app.prompts.workflows import get_workflow
 from app.agents.roteirista import RoteiroEstruturado, BlocoNarrativo
 from app.schemas.media_indexer import GameAnalysisMediaContext
+from app.schemas.visual_query import VisualQuery
 from app.services.media_context_provider import MediaContextProvider
 from app.services.media_indexer_context_provider import MediaIndexerContextProvider
 
@@ -30,6 +31,7 @@ def format_media_context_for_prompt(media_context: GameAnalysisMediaContext) -> 
     format that the LLM can use as supplementary evidence.
 
     Each note includes:
+    - Note ID (for source_note_id reference in visual_queries)
     - The raw note content (primary value)
     - Alignment status and timestamp if matched
     - Confidence score
@@ -44,8 +46,9 @@ def format_media_context_for_prompt(media_context: GameAnalysisMediaContext) -> 
 
         for note in session.notes:
             status = note.note.alignment_status
-            # Include the raw note content - this is the primary value
-            note_text = f"  Note {note.note.order}: [{status}] {note.note.raw}"
+            # Include note ID for visual_query source_note_id reference
+            # Format: "  Note {order} [id={uuid}]: [{status}] {raw}"
+            note_text = f"  Note {note.note.order} [id={note.note.id}]: [{status}] {note.note.raw}"
 
             if note.alignment:
                 start_min = int(note.alignment.start_seconds // 60)
@@ -90,6 +93,101 @@ class AnaliseJogosService:
                 from app.services.media_context_provider import FakeMediaContextProvider
                 self._media_context_provider = FakeMediaContextProvider()
         return self._media_context_provider
+
+    def _build_note_provenance_lookup(
+        self, media_context: GameAnalysisMediaContext | None
+    ) -> dict[UUID, tuple[UUID, float | None, float | None]]:
+        """Build lookup from note ID to (session_id, start_seconds, end_seconds).
+
+        This enables provenance canonicalization: given a source_note_id from the LLM,
+        we can fill in the preferred_session_id and timestamps from the trusted
+        GameAnalysisMediaContext.
+
+        Returns:
+            Dict mapping note_id -> (session_id, start_seconds, end_seconds)
+        """
+        lookup: dict[UUID, tuple[UUID, float | None, float | None]] = {}
+        if not media_context or not media_context.available:
+            return lookup
+
+        for session in media_context.sessions:
+            for note in session.notes:
+                note_id = note.note.id
+                session_id = session.session_id
+                start_seconds = note.alignment.start_seconds if note.alignment else None
+                end_seconds = note.alignment.end_seconds if note.alignment else None
+                lookup[note_id] = (session_id, start_seconds, end_seconds)
+
+        return lookup
+
+    def _parse_visual_queries(
+        self,
+        visual_queries_data: list[dict] | None,
+        note_lookup: dict[UUID, tuple[UUID, float | None, float | None]],
+    ) -> list[VisualQuery]:
+        """Parse visual_queries from LLM output with provenance canonicalization.
+
+        This method:
+        1. Parses the LLM-provided visual_query objects
+        2. Validates source_note_id against the trusted note_lookup
+        3. Fills preferred_session_id/timestamps from the lookup
+        4. Returns a list of canonicalized VisualQuery objects
+
+        The LLM provides source_note_id; the backend fills the rest.
+        """
+        if not visual_queries_data:
+            return []
+
+        queries = []
+        for i, vq_data in enumerate(visual_queries_data[:5]):  # Max 5 per block
+            source_note_id = None
+            preferred_session_id = None
+            preferred_start_seconds = None
+            preferred_end_seconds = None
+
+            # Validate and resolve source_note_id
+            if vq_data.get("source_note_id"):
+                try:
+                    source_note_id = UUID(vq_data["source_note_id"])
+                    if source_note_id in note_lookup:
+                        session_id, start, end = note_lookup[source_note_id]
+                        preferred_session_id = session_id
+                        preferred_start_seconds = start
+                        preferred_end_seconds = end
+                    else:
+                        roteirista_logger.logger.warning(
+                            "visual_query_invalid_source_note",
+                            extra={
+                                "source_note_id": str(source_note_id),
+                                "order": i,
+                            },
+                        )
+                        # Keep source_note_id but don't fill provenance
+                except (ValueError, TypeError) as e:
+                    roteirista_logger.logger.warning(
+                        "visual_query_invalid_uuid",
+                        extra={
+                            "source_note_id": vq_data.get("source_note_id"),
+                            "error": str(e),
+                        },
+                    )
+
+            query = VisualQuery(
+                order=i,
+                intent=vq_data.get("intent", "illustration"),
+                query=vq_data.get("query", ""),
+                narration_excerpt=vq_data.get("narration_excerpt"),
+                importance=vq_data.get("importance", "preferred"),
+                source_note_id=source_note_id,
+                preferred_session_id=preferred_session_id,
+                preferred_start_seconds=preferred_start_seconds,
+                preferred_end_seconds=preferred_end_seconds,
+                desired_duration_seconds=vq_data.get("desired_duration_seconds"),
+                notes=vq_data.get("notes"),
+            )
+            queries.append(query)
+
+        return queries
 
     @retry_llm()
     async def _call_llm(self, messages: list[dict], temperature: float = 0.7, max_tokens: int = 16000) -> str:
@@ -252,16 +350,26 @@ class AnaliseJogosService:
 
         dados = json.loads(texto.strip())
 
+        # Build provenance lookup for visual queries
+        note_lookup = self._build_note_provenance_lookup(media_context)
+
         blocos = []
         duracao_total = 0
         for b in dados.get("blocos", []):
             duracao_bloco = b.get("duracao_segundos", 60)
+
+            # Parse visual queries with provenance canonicalization
+            visual_queries = self._parse_visual_queries(
+                b.get("visual_queries"), note_lookup
+            )
+
             blocos.append(BlocoNarrativo(
                 tipo=b.get("tipo", "desenvolvimento"),
                 duracao_segundos=duracao_bloco,
                 conteudo=b.get("conteudo", ""),
                 dicas_visual=b.get("dicas_visual"),
                 dicas_audio=b.get("dicas_audio"),
+                visual_queries=visual_queries,
             ))
             duracao_total += duracao_bloco
 

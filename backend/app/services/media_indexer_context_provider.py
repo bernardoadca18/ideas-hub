@@ -398,14 +398,14 @@ class MediaIndexerContextProvider:
 
         This estimation aligns with format_media_context_for_prompt output:
         - Session header line (no trailing newline; join adds the separator)
-        - Per-note lines with raw content + alignment metadata
+        - Per-note lines with note ID, raw content + alignment metadata
         - Empty line after session (trailing newline from join with empty string)
         """
         # Start with session header length (no trailing newline - join adds separators)
         total = len(f"Session: {timeline.session_label}")
         for note in timeline.notes:
-            # Base line: "  Note {order}: [{status}] {raw}"
-            note_line = f"  Note {note.note.order}: [{note.note.alignment_status}] {note.note.raw}"
+            # Base line: "  Note {order} [id={uuid}]: [{status}] {raw}"
+            note_line = f"  Note {note.note.order} [id={note.note.id}]: [{note.note.alignment_status}] {note.note.raw}"
             if note.alignment:
                 # Timestamp and confidence: " @ MM:SS-MM:SS (confidence: 0.XX)"
                 start_min = int(note.alignment.start_seconds // 60)
@@ -435,7 +435,7 @@ class MediaIndexerContextProvider:
 
         for note in timeline.notes:
             # Calculate actual line length as it will be formatted
-            note_line = f"  Note {note.note.order}: [{note.note.alignment_status}] {note.note.raw}"
+            note_line = f"  Note {note.note.order} [id={note.note.id}]: [{note.note.alignment_status}] {note.note.raw}"
             if note.alignment:
                 start_min = int(note.alignment.start_seconds // 60)
                 start_sec = int(note.alignment.start_seconds % 60)
