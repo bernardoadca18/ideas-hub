@@ -383,6 +383,16 @@ class AnaliseJogosService:
             referencias=dados.get("referencias"),
             justificativa_llm=dados.get("justificativa"),
             prompt_trace=composed.trace,
+            media_context=(
+                {
+                    "media_project_id": str(media_project_id) if media_project_id else None,
+                    "media_session_ids": [str(item) for item in media_session_ids]
+                    if media_session_ids
+                    else None,
+                }
+                if media_project_id or media_session_ids
+                else None
+            ),
         )
 
         # Log de duração para análise de jogos (não há target fixo, mas é útil rastrear)

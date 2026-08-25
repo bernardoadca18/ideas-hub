@@ -46,6 +46,7 @@ class RoteiroEstruturado:
     referencias: list[str] | None = None
     justificativa_llm: str | None = None
     prompt_trace: dict | None = None  # observabilidade: perfil/workflow/componentes usados
+    media_context: dict[str, Any] | None = None
 
 
 class RoteiristaService:
@@ -382,6 +383,7 @@ class RoteiristaService:
             "referencias": roteiro.referencias,
             "justificativa_llm": roteiro.justificativa_llm,
             "prompt_trace": roteiro.prompt_trace,
+            "media_context": roteiro.media_context,
         }
 
 

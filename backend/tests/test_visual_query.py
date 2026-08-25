@@ -276,6 +276,7 @@ class TestRoteiristaServiceSerialization:
 
         assert "production_script_schema_version" in result
         assert result["production_script_schema_version"] == "2.0"
+        assert result["media_context"] is None
         assert len(result["blocos"]) == 1
         assert "visual_queries" in result["blocos"][0]
         assert len(result["blocos"][0]["visual_queries"]) == 1

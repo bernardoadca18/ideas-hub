@@ -379,7 +379,7 @@ class TestAnaliseJogosServiceMediaContext:
             response.raise_for_status = MagicMock()
             client_instance.post.return_value = response
 
-            await analise_service.gerar_roteiro_de_notas(
+            result = await analise_service.gerar_roteiro_de_notas(
                 titulo_provisorio="Filtered Analysis",
                 anotacoes="Notes from specific session.",
                 nome_jogo="Test Game",
@@ -392,6 +392,10 @@ class TestAnaliseJogosServiceMediaContext:
             # Verify session filter was passed
             call_args = mock_provider.get_context.call_args
             assert call_args.kwargs["media_session_ids"] == [session_id]
+            assert result.media_context == {
+                "media_project_id": str(project_id),
+                "media_session_ids": [str(session_id)],
+            }
 
     @pytest.mark.asyncio
     async def test_gerar_roteiro_with_grounding_and_media_context(
