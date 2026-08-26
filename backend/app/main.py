@@ -1,10 +1,14 @@
-"""
-Entry point da API ideas-hub.
-"""
-from fastapi import FastAPI
+"""Entry point da API ideas-hub."""
+
+from typing import Annotated
+
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.database import get_db
 from app.core.logging import setup_logging
 
 # Configura logging estruturado
@@ -21,9 +25,30 @@ app.add_middleware(
 )
 
 
-@app.get("/health")
-async def health():
+async def _check_readiness(db: AsyncSession) -> dict[str, str]:
+    await db.execute(text("SELECT 1"))
     return {"status": "ok"}
+
+
+@app.get("/health/live")
+async def health_live() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def health_ready(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str]:
+    return await _check_readiness(db)
+
+
+@app.get("/health")
+async def health(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str]:
+    """Compatibility alias with readiness semantics."""
+
+    return await _check_readiness(db)
 
 
 # Routers

@@ -1,8 +1,15 @@
+x-neovids-logging: &neovids-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: pgvector/pgvector:pg16
     container_name: ideas-hub-db
-    restart: unless-stopped
+    restart: "no"
+    logging: *neovids-logging
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -22,7 +29,10 @@ services:
   backend:
     build: ./backend
     container_name: ideas-hub-backend
-    restart: unless-stopped
+    restart: "no"
+    init: true
+    stop_grace_period: 1m
+    logging: *neovids-logging
     env_file: .env
     ports:
       - "${API_PORT:-8000}:8000"
@@ -31,11 +41,20 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   frontend:
     build: ./frontend
     container_name: ideas-hub-frontend
-    restart: unless-stopped
+    restart: "no"
+    init: true
+    stop_grace_period: 30s
+    logging: *neovids-logging
     env_file: .env
     ports:
       - "5173:5173"
@@ -43,6 +62,18 @@ services:
       - ./frontend/src:/app/src
     depends_on:
       - backend
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5173').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
 
 volumes:
   ideas-hub-db-data:

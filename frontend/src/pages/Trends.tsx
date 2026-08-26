@@ -262,7 +262,7 @@ export default function Trends() {
                     </div>
                     <div className="card-meta">
                       <span>Fonte: {trend.fonte}</span>
-                      {trend.payload_raw?.title && (
+                      {trend.payload_raw?.title != null && (
                         <span>Título: {String(trend.payload_raw.title)}</span>
                       )}
                       <span>Criado: {new Date(trend.criado_em).toLocaleDateString()}</span>
