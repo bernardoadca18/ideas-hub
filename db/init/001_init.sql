@@ -4,7 +4,7 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto; -- gen_random_uuid()
 
-CREATE TYPE origem_ideia AS ENUM ('manual', 'trend', 'llm', 'notas_gameplay');
+CREATE TYPE origem_ideia AS ENUM ('manual', 'trend', 'llm');
 CREATE TYPE status_ideia AS ENUM ('rascunho', 'aprovada', 'rejeitada', 'em_roteiro', 'roteirizada', 'produzida');
 CREATE TYPE fonte_trend AS ENUM ('google_trends', 'reddit_publico', 'youtube', 'rss');
 CREATE TYPE status_trend AS ENUM ('pendente', 'aprovada', 'rejeitada');
@@ -20,7 +20,6 @@ CREATE TABLE nichos (
     prompt_ideacao TEXT NOT NULL,
     prompt_roteiro TEXT NOT NULL,
     categoria_google_trends VARCHAR(80),
-    perfil_producao VARCHAR(50) NOT NULL DEFAULT 'faceless_general',
     ativo BOOLEAN NOT NULL DEFAULT TRUE,
     criado_em TIMESTAMPTZ NOT NULL DEFAULT now(),
     atualizado_em TIMESTAMPTZ NOT NULL DEFAULT now()
