@@ -3,14 +3,23 @@ Repositório assíncrono para a entidade Ideia.
 """
 from __future__ import annotations
 
-from typing import Sequence
+import builtins
+from collections.abc import Sequence
+from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import select, and_
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.ideia import Ideia
 from app.schemas.ideia import IdeiaCreate, IdeiaUpdate
+
+
+@dataclass(frozen=True)
+class SimilarIdeaMatch:
+    idea: Ideia
+    similarity: float
 
 
 class IdeiaRepository:
@@ -20,13 +29,14 @@ class IdeiaRepository:
     async def create(self, ideia_data: IdeiaCreate) -> Ideia:
         ideia = Ideia(**ideia_data.model_dump())
         self.session.add(ideia)
-        await self.session.commit()
-        await self.session.refresh(ideia)
-        return ideia
+        await self.session.flush()
+        created = await self.get_by_id(ideia.id)
+        assert created is not None
+        return created
 
     async def get_by_id(self, ideia_id: UUID) -> Ideia | None:
         result = await self.session.execute(
-            select(Ideia).where(Ideia.id == ideia_id)
+            select(Ideia).options(selectinload(Ideia.nicho)).where(Ideia.id == ideia_id)
         )
         return result.scalar_one_or_none()
 
@@ -38,7 +48,7 @@ class IdeiaRepository:
         status: str | None = None,
         origem: str | None = None,
     ) -> Sequence[Ideia]:
-        query = select(Ideia)
+        query = select(Ideia).options(selectinload(Ideia.nicho))
 
         filters = []
         if nicho_id:
@@ -64,9 +74,10 @@ class IdeiaRepository:
         for field, value in update_data.items():
             setattr(ideia, field, value)
 
-        await self.session.commit()
-        await self.session.refresh(ideia)
-        return ideia
+        await self.session.flush()
+        updated = await self.get_by_id(ideia.id)
+        assert updated is not None
+        return updated
 
     async def delete(self, ideia_id: UUID) -> bool:
         ideia = await self.get_by_id(ideia_id)
@@ -74,25 +85,25 @@ class IdeiaRepository:
             return False
 
         await self.session.delete(ideia)
-        await self.session.commit()
+        await self.session.flush()
         return True
 
-    async def update_embedding(self, ideia_id: UUID, embedding: list[float]) -> bool:
+    async def update_embedding(self, ideia_id: UUID, embedding: builtins.list[float]) -> bool:
         ideia = await self.get_by_id(ideia_id)
         if not ideia:
             return False
 
         ideia.embedding = embedding
-        await self.session.commit()
+        await self.session.flush()
         return True
 
     async def find_similar(
         self,
-        embedding: list[float],
+        embedding: builtins.list[float],
         threshold: float,
         exclude_id: UUID | None = None,
         limit: int = 5,
-    ) -> Sequence[Ideia]:
+    ) -> Sequence[SimilarIdeaMatch]:
         """
         Busca ideias similares usando cosine distance.
 
@@ -103,59 +114,23 @@ class IdeiaRepository:
             limit: Número máximo de resultados
 
         Returns:
-            Lista de ideias similares ordenadas por similaridade
+            Matches tipados, ordenados por similaridade real decrescente.
         """
-        from sqlalchemy import text
+        if not 0 <= threshold <= 1:
+            raise ValueError("threshold must be between 0 and 1")
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
 
-        # Usa cosine distance do pgvector
-        # cosine distance = 1 - cosine similarity
-        # Então threshold de 0.85 similarity = distance <= 0.15
-        distance_threshold = 1 - threshold
-
-        # Converte lista Python para formato de vetor PostgreSQL
-        # Formato: [0.1,0.2,0.3,...] (sem espaços após vírgulas)
-        embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
-
-        # Constrói a condição de exclusão
-        exclude_condition = ""
+        distance = Ideia.embedding.cosine_distance(embedding)
+        similarity = (1 - distance).label("similarity")
+        query = select(Ideia, similarity).options(selectinload(Ideia.nicho)).where(
+            Ideia.embedding.isnot(None),
+            distance <= 1 - threshold,
+        )
         if exclude_id is not None:
-            exclude_condition = f"AND id != '{exclude_id}'::uuid"
-
-        # Usa f-string para embutir o vetor diretamente na query
-        # Isso evita problemas com parâmetros repetidos no asyncpg
-        query = text(f"""
-            SELECT id, nicho_id, origem, titulo, descricao_breve, status,
-                   eh_continuacao_de, numero_parte, fonte_trend_id,
-                   justificativa_llm, criado_em, atualizado_em, embedding,
-                   1 - (embedding <=> '{embedding_str}'::vector) as similarity
-            FROM ideias
-            WHERE embedding IS NOT NULL
-              AND (embedding <=> '{embedding_str}'::vector) <= {distance_threshold}
-              {exclude_condition}
-            ORDER BY embedding <=> '{embedding_str}'::vector
-            LIMIT {limit}
-        """)
-
-        result = await self.session.execute(query)
-
-        # Mapeia resultados para objetos Ideia
-        ideias = []
-        for row in result:
-            ideia = Ideia(
-                id=row.id,
-                nicho_id=row.nicho_id,
-                origem=row.origem,
-                titulo=row.titulo,
-                descricao_breve=row.descricao_breve,
-                status=row.status,
-                eh_continuacao_de=row.eh_continuacao_de,
-                numero_parte=row.numero_parte,
-                fonte_trend_id=row.fonte_trend_id,
-                justificativa_llm=row.justificativa_llm,
-                criado_em=row.criado_em,
-                atualizado_em=row.atualizado_em,
-                embedding=row.embedding,
-            )
-            ideias.append(ideia)
-
-        return ideias
+            query = query.where(Ideia.id != exclude_id)
+        rows = await self.session.execute(query.order_by(distance).limit(limit))
+        return [
+            SimilarIdeaMatch(idea=idea, similarity=float(score))
+            for idea, score in rows.all()
+        ]

@@ -11,7 +11,10 @@ export default function Ideias() {
   const [showForm, setShowForm] = useState(false);
   const [titulo, setTitulo] = useState('');
   const [descricao, setDescricao] = useState('');
+  const [authorBriefing, setAuthorBriefing] = useState('');
   const [nichoId, setNichoId] = useState('');
+  const [editingBriefing, setEditingBriefing] = useState<Ideia | null>(null);
+  const [briefingDraft, setBriefingDraft] = useState('');
 
   // Filter state
   const [statusFilter, setStatusFilter] = useState<string>('');
@@ -49,15 +52,32 @@ export default function Ideias() {
       await api.createIdeia({
         titulo,
         descricao: descricao || undefined,
+        author_briefing: authorBriefing || undefined,
         nicho_id: nichoId || undefined,
       });
       setTitulo('');
       setDescricao('');
+      setAuthorBriefing('');
       setNichoId('');
       setShowForm(false);
       loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao criar ideia');
+    }
+  }
+
+  async function handleSaveBriefing(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingBriefing) return;
+    try {
+      await api.updateIdeia(editingBriefing.id, {
+        author_briefing: briefingDraft === '' ? null : briefingDraft,
+      });
+      setEditingBriefing(null);
+      setBriefingDraft('');
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao salvar contexto do autor');
     }
   }
 
@@ -169,13 +189,26 @@ export default function Ideias() {
                 />
               </div>
               <div className="form-group">
-                <label>Descrição</label>
+                <label>Descrição da ideia</label>
                 <textarea
                   value={descricao}
                   onChange={(e) => setDescricao(e.target.value)}
                   rows={3}
                 />
               </div>
+              <details className="advanced-field">
+                <summary>Adicionar contexto do autor (opcional)</summary>
+                <div className="form-group">
+                  <label>Contexto do autor</label>
+                  <textarea
+                    value={authorBriefing}
+                    onChange={(e) => setAuthorBriefing(e.target.value)}
+                    rows={6}
+                    placeholder="Sua tese, opinião, restrições editoriais e pontos que o roteirista não deve esquecer."
+                  />
+                  <small>Este texto não é a descrição e não será reescrito pelo Curador.</small>
+                </div>
+              </details>
               <div className="form-group">
                 <label>Nicho</label>
                 <select value={nichoId} onChange={(e) => setNichoId(e.target.value)}>
@@ -194,6 +227,32 @@ export default function Ideias() {
                 <button type="submit" className="btn btn-primary">
                   Criar
                 </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {editingBriefing && (
+        <div className="modal-overlay" onClick={() => setEditingBriefing(null)}>
+          <div className="modal modal-large" onClick={(e) => e.stopPropagation()}>
+            <h2>Editar contexto do autor</h2>
+            <p className="form-help">
+              Intenção e posição editorial para o roteirista. Não use este campo como descrição
+              factual; roteiros já gerados mantêm o snapshot anterior.
+            </p>
+            <form onSubmit={handleSaveBriefing}>
+              <div className="form-group">
+                <label>Contexto do autor para “{editingBriefing.titulo}”</label>
+                <textarea
+                  value={briefingDraft}
+                  onChange={(e) => setBriefingDraft(e.target.value)}
+                  rows={10}
+                />
+              </div>
+              <div className="form-actions">
+                <button type="button" className="btn btn-secondary" onClick={() => setEditingBriefing(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary">Salvar contexto</button>
               </div>
             </form>
           </div>
@@ -258,13 +317,25 @@ export default function Ideias() {
                 </span>
               </div>
               {ideia.descricao_breve && (
-                <p className="card-description">{ideia.descricao_breve}</p>
+                <div className="idea-description"><strong>Descrição</strong><p className="card-description">{ideia.descricao_breve}</p></div>
+              )}
+              {ideia.author_briefing && (
+                <div className="author-briefing-panel">
+                  <strong>Contexto do autor</strong>
+                  <p>{ideia.author_briefing}</p>
+                </div>
               )}
               <div className="card-meta">
                 <span>Origem: {ideia.origem}</span>
                 <span>Criado: {new Date(ideia.criado_em).toLocaleDateString()}</span>
               </div>
               <div className="card-actions">
+                <button
+                  onClick={() => { setEditingBriefing(ideia); setBriefingDraft(ideia.author_briefing || ''); }}
+                  className="btn btn-sm btn-secondary"
+                >
+                  Editar contexto do autor
+                </button>
                 {ideia.status === 'rascunho' && (
                   <>
                     <button onClick={() => handleAprovar(ideia.id)} className="btn btn-sm btn-success">

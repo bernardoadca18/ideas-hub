@@ -8,9 +8,9 @@ Fluxo:
 4. Refina título/descrição usando o prompt composto (base + qualidade + perfil + nicho)
 5. Retorna ideia estruturada com sinalização de duplicidade/continuação
 """
+import time
 from dataclasses import dataclass
 from typing import Any
-import time
 
 import httpx
 
@@ -19,7 +19,12 @@ from app.core.logging import curador_logger
 from app.core.retry import retry_llm, retry_tavily
 from app.production_profiles import get_profile
 from app.prompts.builder import PromptBuilder
-from app.prompts.workflows import REFINAMENTO_IDEIA, IDEACAO_BRUTA
+from app.prompts.workflows import IDEACAO_BRUTA, REFINAMENTO_IDEIA
+from app.schemas.llm_outputs import (
+    IdeaRefinementOutput,
+    RawIdeaOutput,
+    validate_model_output,
+)
 
 
 @dataclass
@@ -141,7 +146,7 @@ class CuradorService:
 
                 return "\n".join(parts) if parts else ""
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - optional external-grounding boundary
             duration = time.time() - start_time
             curador_logger.log_tavily_call(
                 query=query, results_count=None,
@@ -221,28 +226,15 @@ class CuradorService:
                 .build(task_context=usuario_message)
             )
 
-            try:
-                resposta_llm = await self._call_llm([
-                    {"role": "system", "content": composed.system},
-                    {"role": "user", "content": composed.user},
-                ])
-
-                import json
-                if "```json" in resposta_llm:
-                    resposta_llm = resposta_llm.split("```json")[1].split("```")[0]
-                elif "```" in resposta_llm:
-                    resposta_llm = resposta_llm.split("```")[1].split("```")[0]
-
-                dados_refinados = json.loads(resposta_llm.strip())
-                titulo_refinado = dados_refinados.get("titulo", ideia_bruta.titulo)
-                descricao_refinada = dados_refinados.get("descricao_breve", ideia_bruta.descricao or "")
-                justificativa = dados_refinados.get("justificativa", "")
-
-            except Exception as e:
-                print(f"Erro no refinamento LLM: {e}")
-                titulo_refinado = ideia_bruta.titulo
-                descricao_refinada = ideia_bruta.descricao or ""
-                justificativa = "Refinamento automático não disponível"
+            resposta_llm = await self._call_llm([
+                {"role": "system", "content": composed.system},
+                {"role": "user", "content": composed.user},
+            ])
+            parsed = validate_model_output(IdeaRefinementOutput, resposta_llm)
+            assert isinstance(parsed, IdeaRefinementOutput)
+            titulo_refinado = parsed.titulo
+            descricao_refinada = parsed.descricao_breve
+            justificativa = parsed.justificativa
 
             resultado = IdeiaRefinada(
                 titulo=titulo_refinado[:300],
@@ -301,29 +293,17 @@ class CuradorService:
             .build(task_context=usuario_message)
         )
 
-        try:
-            resposta_llm = await self._call_llm(
-                messages=[
-                    {"role": "system", "content": composed.system},
-                    {"role": "user", "content": composed.user},
-                ],
-                temperature=0.8,
-            )
-
-            import json
-            if "```json" in resposta_llm:
-                resposta_llm = resposta_llm.split("```json")[1].split("```")[0]
-            elif "```" in resposta_llm:
-                resposta_llm = resposta_llm.split("```")[1].split("```")[0]
-
-            dados = json.loads(resposta_llm.strip())
-            titulo = dados.get("titulo", termo_trend)
-            descricao = dados.get("descricao", "")
-
-        except Exception as e:
-            print(f"Erro ao gerar ideia via LLM: {e}")
-            titulo = f"{termo_trend[:70]} - Ideia {indice}"
-            descricao = f"Ideia gerada a partir da trend: {termo_trend}"
+        resposta_llm = await self._call_llm(
+            messages=[
+                {"role": "system", "content": composed.system},
+                {"role": "user", "content": composed.user},
+            ],
+            temperature=0.8,
+        )
+        parsed = validate_model_output(RawIdeaOutput, resposta_llm)
+        assert isinstance(parsed, RawIdeaOutput)
+        titulo = parsed.titulo
+        descricao = parsed.descricao
 
         return IdeiaBruta(
             titulo=titulo[:300],

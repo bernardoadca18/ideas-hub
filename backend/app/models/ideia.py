@@ -4,10 +4,18 @@ Model SQLAlchemy para a tabela ideias.
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import String, Text, SmallInteger, ForeignKey, CheckConstraint, func, Enum
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from pgvector.sqlalchemy import Vector
+from sqlalchemy import (
+    CheckConstraint,
+    Enum,
+    ForeignKey,
+    SmallInteger,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
 
@@ -17,8 +25,8 @@ StatusIdeia = Enum("rascunho", "aprovada", "rejeitada", "em_roteiro", "roteiriza
 
 if TYPE_CHECKING:
     from app.models.nicho import Nicho
-    from app.models.trend_coletada import TrendColetada
     from app.models.roteiro import Roteiro
+    from app.models.trend_coletada import TrendColetada
 
 
 class Ideia(Base, TimestampMixin):
@@ -44,6 +52,7 @@ class Ideia(Base, TimestampMixin):
     origem: Mapped[str] = mapped_column(OrigemIdeia, nullable=False)
     titulo: Mapped[str] = mapped_column(String(300), nullable=False)
     descricao_breve: Mapped[str | None] = mapped_column(Text, nullable=True)
+    author_briefing: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(StatusIdeia, nullable=False, default="rascunho")
     eh_continuacao_de: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
@@ -72,3 +81,15 @@ class Ideia(Base, TimestampMixin):
         back_populates="ideia",
         cascade="all, delete-orphan"
     )
+
+    @property
+    def author_briefing_identity(self) -> str:
+        from app.services.author_briefing import author_briefing_identity
+
+        return author_briefing_identity(self.author_briefing)
+
+    @property
+    def perfil_producao(self) -> str | None:
+        """Read-only profile projection owned by the idea's niche."""
+
+        return self.nicho.perfil_producao if self.nicho is not None else None

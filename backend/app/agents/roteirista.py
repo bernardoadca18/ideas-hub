@@ -9,10 +9,9 @@ Fluxo:
 5. Gera estrutura em blocos narrativos
 6. Retorna roteiro estruturado para revisão
 """
+import time
 from dataclasses import dataclass, field
 from typing import Any
-import time
-from uuid import UUID
 
 import httpx
 
@@ -21,7 +20,8 @@ from app.core.logging import roteirista_logger
 from app.core.retry import retry_llm, retry_tavily
 from app.production_profiles import ProductionProfile, get_profile
 from app.prompts.builder import PromptBuilder
-from app.prompts.workflows import get_workflow, ROTEIRO_PADRAO
+from app.prompts.workflows import get_workflow
+from app.schemas.llm_outputs import ScriptLLMOutput, validate_model_output
 from app.schemas.visual_query import VisualQuery
 
 
@@ -155,7 +155,7 @@ class RoteiristaService:
 
                 return "\n".join(parts) if parts else ""
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - optional external-grounding boundary
             duration = time.time() - start_time
             roteirista_logger.log_tavily_call(
                 query=query,
@@ -176,6 +176,9 @@ class RoteiristaService:
         ideia_id: str | None = None,
         perfil_id: str | None = None,
         workflow_id: str | None = None,
+        author_briefing: str | None = None,
+        revision_source: dict[str, Any] | None = None,
+        revision_feedback: str | None = None,
     ) -> RoteiroEstruturado:
         """
         Gera um roteiro estruturado a partir de uma ideia.
@@ -189,6 +192,9 @@ class RoteiristaService:
             ideia_id: ID da ideia (para logging)
             perfil_id: id do ProductionProfile ativo (resolvido a partir do Nicho)
             workflow_id: override explícito do workflow (default: profile.workflow_roteiro)
+            author_briefing: intenção/opinião editorial fornecida pelo autor
+            revision_source: estrutura imutável da versão anterior, em regenerações
+            revision_feedback: feedback explícito do operador para a nova versão
 
         Returns:
             RoteiroEstruturado com blocos narrativos
@@ -221,142 +227,117 @@ class RoteiristaService:
                     ultimo_bloco = blocos_ant[-1]
                     usuario_parts.append(f"Último bloco anterior: {ultimo_bloco.get('conteudo', '')[:150]}...")
 
+            if revision_source is not None and revision_feedback is not None:
+                import json
+
+                usuario_parts.append("\n=== REGENERAÇÃO VERSIONADA ===")
+                usuario_parts.append(f"Feedback editorial do operador:\n{revision_feedback}")
+                usuario_parts.append(
+                    "Versão anterior a revisar (preserve os pontos que o feedback não pede para mudar):\n"
+                    + json.dumps(revision_source, ensure_ascii=False)
+                )
+
             usuario_message = "\n".join(usuario_parts)
 
             composed = (
                 PromptBuilder(workflow=workflow, profile=profile)
                 .with_niche(prompt_roteiro)
+                .with_author_briefing(author_briefing)
                 .with_grounding(contexto_grounding)
                 .build(task_context=usuario_message)
             )
 
-            try:
-                resposta_llm = await self._call_llm(
-                    messages=[
-                        {"role": "system", "content": composed.system},
-                        {"role": "user", "content": composed.user},
-                    ],
-                    temperature=0.8,
+            resposta_llm = await self._call_llm(
+                messages=[
+                    {"role": "system", "content": composed.system},
+                    {"role": "user", "content": composed.user},
+                ],
+                temperature=0.8,
+            )
+            dados = validate_model_output(ScriptLLMOutput, resposta_llm)
+            assert isinstance(dados, ScriptLLMOutput)
+
+            blocos = []
+            duracao_total_calculada = 0
+            for bloco in dados.blocos:
+                visual_queries = []
+                if workflow.structured_visual_queries:
+                    visual_queries = [
+                        VisualQuery(
+                            order=index,
+                            intent=query.intent.value,
+                            query=query.query,
+                            narration_excerpt=query.narration_excerpt,
+                            importance=query.importance.value,
+                            source_note_id=query.source_note_id,
+                            desired_duration_seconds=query.desired_duration_seconds,
+                            notes=query.notes,
+                        )
+                        for index, query in enumerate(bloco.visual_queries)
+                    ]
+                blocos.append(BlocoNarrativo(
+                    tipo=bloco.tipo,
+                    duracao_segundos=bloco.duracao_segundos,
+                    conteudo=bloco.conteudo,
+                    dicas_visual=bloco.dicas_visual,
+                    dicas_audio=bloco.dicas_audio,
+                    visual_queries=visual_queries,
+                ))
+                duracao_total_calculada += bloco.duracao_segundos
+
+            # Duração final: o que o modelo produziu de fato, respeitando só um piso
+            # técnico de segurança — NUNCA um mínimo editorial artificial por perfil.
+            duracao_final = max(
+                dados.duracao_total_segundos,
+                duracao_total_calculada,
+                self._PISO_TECNICO_SEGUNDOS,
+            )
+
+            resultado = RoteiroEstruturado(
+                titulo=dados.titulo[:80],
+                duracao_total_segundos=duracao_final,
+                blocos=blocos,
+                tags=dados.tags,
+                referencias=dados.referencias,
+                justificativa_llm=dados.justificativa,
+                prompt_trace=composed.trace,
+            )
+
+            # Validar duração contra política do perfil
+            duracao_policy = profile.duracao
+            target_min = duracao_policy.target_min_seconds
+            target_max = duracao_policy.target_max_seconds
+
+            dentro_do_esperado = True
+            warning_msg = None
+            if target_min is not None and duracao_final < target_min:
+                dentro_do_esperado = False
+                warning_msg = (
+                    f"Roteiro gerado com {duracao_final}s, abaixo do mínimo esperado ({target_min}s) "
+                    f"para o perfil '{profile.id}'. Verifique se o conteúdo de entrada é suficiente."
+                )
+            elif target_max is not None and duracao_final > target_max and not duracao_policy.allow_extended:
+                dentro_do_esperado = False
+                warning_msg = (
+                    f"Roteiro gerado com {duracao_final}s, acima do máximo ({target_max}s) "
+                    f"para o perfil '{profile.id}'."
                 )
 
-                import json
-                if "```json" in resposta_llm:
-                    resposta_llm = resposta_llm.split("```json")[1].split("```")[0]
-                elif "```" in resposta_llm:
-                    resposta_llm = resposta_llm.split("```")[1].split("```")[0]
+            roteirista_logger.log_duration_check(
+                duracao_gerada=duracao_final,
+                target_min=target_min,
+                target_max=target_max,
+                profile_id=profile.id,
+                dentro_do_esperado=dentro_do_esperado,
+                warning=warning_msg
+            )
 
-                dados = json.loads(resposta_llm.strip())
+            roteirista_logger.end_operation(
+                metrics=metrics, success=True, num_blocos=len(blocos),
+                duracao_total_segundos=resultado.duracao_total_segundos,
+            )
 
-                blocos = []
-                duracao_total_calculada = 0
-                for b in dados.get("blocos", []):
-                    duracao_bloco = b.get("duracao_segundos", 60)
-                    blocos.append(BlocoNarrativo(
-                        tipo=b.get("tipo", "desenvolvimento"),
-                        duracao_segundos=duracao_bloco,
-                        conteudo=b.get("conteudo", ""),
-                        dicas_visual=b.get("dicas_visual"),
-                        dicas_audio=b.get("dicas_audio"),
-                    ))
-                    duracao_total_calculada += duracao_bloco
-
-                # Duração final: o que o modelo produziu de fato, respeitando só um piso
-                # técnico de segurança — NUNCA um mínimo editorial artificial por perfil.
-                duracao_final = max(
-                    dados.get("duracao_total_segundos", duracao_total_calculada),
-                    duracao_total_calculada,
-                    self._PISO_TECNICO_SEGUNDOS,
-                )
-
-                resultado = RoteiroEstruturado(
-                    titulo=dados.get("titulo", ideia_titulo)[:80],
-                    duracao_total_segundos=duracao_final,
-                    blocos=blocos,
-                    tags=dados.get("tags", []),
-                    referencias=dados.get("referencias"),
-                    justificativa_llm=dados.get("justificativa"),
-                    prompt_trace=composed.trace,
-                )
-
-                # Validar duração contra política do perfil
-                duracao_policy = profile.duracao
-                target_min = duracao_policy.target_min_seconds
-                target_max = duracao_policy.target_max_seconds
-
-                dentro_do_esperado = True
-                warning_msg = None
-                if target_min is not None and duracao_final < target_min:
-                    dentro_do_esperado = False
-                    warning_msg = (
-                        f"Roteiro gerado com {duracao_final}s, abaixo do mínimo esperado ({target_min}s) "
-                        f"para o perfil '{profile.id}'. Verifique se o conteúdo de entrada é suficiente."
-                    )
-                    print(f"[WARNING] {warning_msg}")
-                elif target_max is not None and duracao_final > target_max and not duracao_policy.allow_extended:
-                    dentro_do_esperado = False
-                    warning_msg = (
-                        f"Roteiro gerado com {duracao_final}s, acima do máximo ({target_max}s) "
-                        f"para o perfil '{profile.id}'."
-                    )
-
-                roteirista_logger.log_duration_check(
-                    duracao_gerada=duracao_final,
-                    target_min=target_min,
-                    target_max=target_max,
-                    profile_id=profile.id,
-                    dentro_do_esperado=dentro_do_esperado,
-                    warning=warning_msg
-                )
-
-                roteirista_logger.end_operation(
-                    metrics=metrics, success=True, num_blocos=len(blocos),
-                    duracao_total_segundos=resultado.duracao_total_segundos,
-                )
-
-                return resultado
-
-            except Exception as e:
-                import traceback
-                print(f"Erro na geração do roteiro: {e}")
-                print(traceback.format_exc())
-
-                roteirista_logger.log_llm_call(
-                    model=self.llm_model, tokens_used=None, duration=0, success=False,
-                    error=f"Fallback acionado: {str(e)}",
-                )
-
-                # Fallback minimalista e claramente sinalizado como tal (não é um roteiro
-                # "de verdade" — é só para o pipeline não travar). Não tenta simular a
-                # estrutura ideal, porque isso reforçaria a mesma fórmula genérica que
-                # queremos evitar quando o LLM de fato responde.
-                resultado = RoteiroEstruturado(
-                    titulo=ideia_titulo[:80],
-                    duracao_total_segundos=self._PISO_TECNICO_SEGUNDOS,
-                    blocos=[
-                        BlocoNarrativo(
-                            tipo="fallback_erro",
-                            duracao_segundos=self._PISO_TECNICO_SEGUNDOS,
-                            conteudo=(
-                                f"[FALLBACK] Geração automática falhou para a ideia '{ideia_titulo}'. "
-                                f"Regenere manualmente. Erro original: {str(e)}"
-                            ),
-                            dicas_visual=None,
-                            dicas_audio=None,
-                        ),
-                    ],
-                    tags=[],
-                    referencias=None,
-                    justificativa_llm=f"Roteiro de fallback — geração via LLM falhou: {str(e)}",
-                    prompt_trace=composed.trace,
-                )
-
-                roteirista_logger.end_operation(
-                    metrics=metrics, success=True, num_blocos=1,
-                    duracao_total_segundos=resultado.duracao_total_segundos,
-                    error=f"Usou fallback: {str(e)}",
-                )
-
-                return resultado
+            return resultado
 
         except Exception as e:
             roteirista_logger.end_operation(metrics=metrics, success=False, error=str(e))

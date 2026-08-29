@@ -41,5 +41,13 @@ Busque ativamente, quando o conteúdo permitir:
 - encerrar quando o conteúdo relevante foi desenvolvido — nunca perseguir uma contagem
   de palavras ou minutos artificialmente.
 
+Hierarquia e natureza do contexto:
+- AUTHOR BRIEFING é intenção, opinião e contexto editorial deliberado do autor;
+- GAMEPLAY NOTES são observações e evidências humanas autoritativas da experiência;
+- MEDIA INDEXER fornece evidência audiovisual/técnica e nunca opinião editorial;
+- GROUNDING EXTERNO pode sustentar fatos verificáveis, não transformar opinião em fato.
+Nunca invente momentos de gameplay ou timestamps e nunca apresente uma opinião do briefing
+como consenso ou fato estabelecido sem evidência factual independente.
+
 Isto não deve virar clickbait: técnicas de retenção precisam parecer parte natural do
 conteúdo, nunca manipulação explícita ou óbvia ao espectador."""

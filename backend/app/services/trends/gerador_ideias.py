@@ -3,20 +3,20 @@ Serviço para gerar ideias a partir de trends aprovadas.
 
 Para cada trend aprovada, gera N ideias que passam pelo Agente Curador.
 """
-from uuid import UUID
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.curador import IdeiaBruta, curador_service
 from app.core.config import settings
 from app.core.logging import gerador_ideias_logger
 from app.models.trend_coletada import TrendColetada
-from app.repositories.trend_coletada_repository import TrendColetadaRepository
+from app.repositories.fonte_trend_nicho_repository import FonteTrendNichoRepository
 from app.repositories.ideia_repository import IdeiaRepository
 from app.repositories.nicho_repository import NichoRepository
-from app.repositories.fonte_trend_nicho_repository import FonteTrendNichoRepository
+from app.repositories.trend_coletada_repository import TrendColetadaRepository
 from app.schemas.ideia import IdeiaCreate
-from app.agents.curador import curador_service, IdeiaBruta
 from app.services.embeddings import embedding_service
 
 
@@ -70,8 +70,8 @@ class TrendIdeiasGenerator:
                         total=num_ideias,
                     )
                     ideias_geradas.append(ideia)
-                except Exception as e:
-                    erros.append(f"Ideia {i+1}: {str(e)}")
+                except Exception as e:  # noqa: BLE001 - isolate one failed trend candidate
+                    erros.append(f"Ideia {i+1}: {e!s}")
                     print(f"Erro ao gerar ideia {i+1}: {e}")
 
             resultado = {
@@ -113,10 +113,18 @@ class TrendIdeiasGenerator:
             embedding=embedding, threshold=settings.ideia_similarity_threshold, exclude_id=None, limit=3,
         )
 
-        ideias_similares = [
-            {"id": str(s.id), "titulo": s.titulo, "similaridade": 1 - 0.15}
-            for s in similares
-        ] if similares else None
+        ideias_similares = (
+            [
+                {
+                    "id": str(match.idea.id),
+                    "titulo": match.idea.titulo,
+                    "similaridade": match.similarity,
+                }
+                for match in similares
+            ]
+            if similares
+            else None
+        )
 
         ideia_refinada = await curador_service.processar(
             ideia_bruta=ideia_bruta,
@@ -139,9 +147,9 @@ class TrendIdeiasGenerator:
 
         ideia_criada = await self.ideia_repo.create(nova_ideia_data)
         await self.ideia_repo.update_embedding(ideia_criada.id, embedding)
-        ideia_criada = await self.ideia_repo.get_by_id(ideia_criada.id)
-
-        return ideia_criada
+        ideia_recarregada = await self.ideia_repo.get_by_id(ideia_criada.id)
+        assert ideia_recarregada is not None
+        return ideia_recarregada
 
     async def _generate_ideia_bruta(
         self,

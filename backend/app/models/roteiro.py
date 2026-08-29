@@ -4,9 +4,18 @@ Model SQLAlchemy para a tabela roteiros.
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import SmallInteger, ForeignKey, UniqueConstraint, String, func, Enum
+from sqlalchemy import (
+    Enum,
+    ForeignKey,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 
 from app.models.base import Base, TimestampMixin
 
@@ -32,6 +41,26 @@ class Roteiro(Base, TimestampMixin):
     versao: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     estrutura: Mapped[dict] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(StatusRoteiro, nullable=False, default="rascunho")
+    author_briefing_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    author_briefing_identity: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    parent_roteiro_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("roteiros.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    revision_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="llm_generation", server_default="legacy"
+    )
+    revision_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relacionamentos
     ideia: Mapped["Ideia"] = relationship("Ideia", back_populates="roteiros")
+    parent_roteiro: Mapped["Roteiro | None"] = relationship(
+        "Roteiro", remote_side=[id], foreign_keys=[parent_roteiro_id]
+    )
+
+    @property
+    def author_briefing_changed_since_creation(self) -> bool | None:
+        if self.author_briefing_identity is None:
+            return None
+        return self.author_briefing_identity != self.ideia.author_briefing_identity

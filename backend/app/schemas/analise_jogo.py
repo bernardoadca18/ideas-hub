@@ -10,6 +10,10 @@ class AnaliseJogoRequest(BaseModel):
     nome_jogo: str | None = Field(None, max_length=200)
     nicho_id: UUID | None = None
     usar_grounding: bool = False
+    author_briefing: str | None = Field(
+        None,
+        description="Contexto editorial opcional do autor; distinto das notas de gameplay",
+    )
 
     # Media Indexer integration (optional)
     media_project_id: UUID | None = Field(

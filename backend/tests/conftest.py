@@ -1,10 +1,10 @@
 """
 Fixtures para testes do ideas-hub.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -115,6 +115,8 @@ def sample_ideia():
     ideia.id = uuid4()
     ideia.titulo = "Como usar IA para criar vídeos"
     ideia.descricao_breve = "Tutorial prático para iniciantes"
+    ideia.author_briefing = None
+    ideia.author_briefing_identity = "author-briefing-v1:test"
     ideia.status = "aprovada"
     ideia.nicho_id = uuid4()
     ideia.numero_parte = None

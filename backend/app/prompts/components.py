@@ -39,3 +39,17 @@ def grounding_context(texto_grounding: str | None) -> str:
     if not texto_grounding:
         return ""
     return f"Contexto de pesquisa (grounding, use para checar fatos, não copie literalmente):\n{texto_grounding}"
+
+
+def author_briefing_context(author_briefing: str | None) -> str:
+    """Keep deliberate author context separate from every evidence source."""
+
+    if author_briefing is None:
+        return ""
+    return (
+        "AUTHOR BRIEFING (intenção, opinião e contexto editorial fornecidos pelo autor):\n"
+        f"{author_briefing}\n\n"
+        "Trate este conteúdo como direção editorial e posição do autor, não como prova factual. "
+        "Uma opinião aqui pode orientar a voz do roteiro, mas não deve ser convertida em fato "
+        "objetivo sem grounding independente. Preserve ressalvas, incertezas e restrições."
+    )

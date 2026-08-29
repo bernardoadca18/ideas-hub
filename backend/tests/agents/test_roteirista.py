@@ -3,11 +3,12 @@ Testes para o Agente Roteirista.
 
 Testa a geração de roteiros com mock de LLM e Tavily.
 """
-import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.agents.roteirista import RoteiristaService, RoteiroEstruturado, BlocoNarrativo
+import pytest
+
+from app.agents.roteirista import BlocoNarrativo, RoteiristaService, RoteiroEstruturado
 
 
 @pytest.fixture
@@ -187,8 +188,8 @@ class TestRoteiristaService:
         assert result.titulo == "Como usar IA para criar vídeos - Parte 2"
 
     @pytest.mark.asyncio
-    async def test_gerar_roteiro_fallback(self, roteirista_service, mock_httpx_client):
-        """Testa geração de roteiro fallback quando LLM falha."""
+    async def test_gerar_roteiro_provider_failure_is_explicit(self, roteirista_service, mock_httpx_client):
+        """Provider failures never produce a fake successful script."""
         tavily_response = MagicMock()
         tavily_response.status_code = 200
         tavily_response.json.return_value = {"answer": "", "results": []}
@@ -198,19 +199,12 @@ class TestRoteiristaService:
         mock_httpx_client.post.side_effect = [tavily_response, Exception("LLM error")]
         roteirista_service.tavily_api_key = "test-key"
 
-        result = await roteirista_service.gerar_roteiro(
-            ideia_titulo="Título de teste",
-            ideia_descricao="Descrição de teste",
-            prompt_roteiro="Crie roteiros"
-        )
-
-        # Fallback cria roteiro mínimo sinalizando erro (não um template genérico)
-        assert isinstance(result, RoteiroEstruturado)
-        assert result.titulo == "Título de teste"
-        assert len(result.blocos) == 1
-        assert result.blocos[0].tipo == "fallback_erro"
-        assert "FALLBACK" in result.blocos[0].conteudo
-        assert "fallback" in result.justificativa_llm.lower()
+        with pytest.raises(Exception, match="LLM error"):
+            await roteirista_service.gerar_roteiro(
+                ideia_titulo="Título de teste",
+                ideia_descricao="Descrição de teste",
+                prompt_roteiro="Crie roteiros",
+            )
 
     @pytest.mark.asyncio
     async def test_to_dict(self, roteirista_service):

@@ -7,13 +7,14 @@ from dataclasses import dataclass, field
 
 from app.production_profiles import ProductionProfile
 from app.prompts.base import base_agent_instructions
-from app.prompts.quality import editorial_quality_charter
 from app.prompts.components import (
-    production_profile_context,
-    niche_context,
+    author_briefing_context,
     grounding_context,
     media_context_context,
+    niche_context,
+    production_profile_context,
 )
+from app.prompts.quality import editorial_quality_charter
 from app.prompts.workflows import WorkflowSpec
 
 
@@ -41,6 +42,7 @@ class PromptBuilder:
         self._niche_text: str | None = None
         self._grounding_text: str | None = None
         self._media_context_text: str | None = None
+        self._author_briefing: str | None = None
 
     def with_niche(self, prompt_nicho: str | None) -> "PromptBuilder":
         self._niche_text = prompt_nicho
@@ -52,6 +54,10 @@ class PromptBuilder:
 
     def with_media_context(self, texto: str | None) -> "PromptBuilder":
         self._media_context_text = texto
+        return self
+
+    def with_author_briefing(self, texto: str | None) -> "PromptBuilder":
+        self._author_briefing = texto
         return self
 
     def build(self, task_context: str) -> ComposedPrompt:
@@ -73,6 +79,11 @@ class PromptBuilder:
 
         user_parts = [task_context]
 
+        briefing_text = author_briefing_context(self._author_briefing)
+        if briefing_text:
+            user_parts.append(briefing_text)
+            componentes_usados.append("author_briefing")
+
         # Media context comes before grounding in the user message
         media_text = media_context_context(self._media_context_text)
         if media_text:
@@ -92,6 +103,7 @@ class PromptBuilder:
             "components": componentes_usados,
             "system_prompt_chars": len(system),
             "user_prompt_chars": len(user),
+            "author_briefing_present": self._author_briefing is not None,
         }
 
         return ComposedPrompt(system=system, user=user, trace=trace)

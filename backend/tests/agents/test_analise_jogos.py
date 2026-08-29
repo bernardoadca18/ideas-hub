@@ -3,22 +3,23 @@ Tests for AnaliseJogosService with Media Indexer integration.
 
 Tests the game analysis workflow with optional media context.
 """
-import pytest
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
-import json
+
+import pytest
 
 from app.agents.analise_jogos import (
     AnaliseJogosService,
     format_media_context_for_prompt,
 )
-from app.agents.roteirista import RoteiroEstruturado, BlocoNarrativo
+from app.agents.roteirista import RoteiroEstruturado
 from app.schemas.media_indexer import (
     GameAnalysisMediaContext,
-    MediaIndexerTimelineSession,
-    MediaIndexerTimelineNote,
-    MediaIndexerNote,
     MediaIndexerAlignment,
+    MediaIndexerNote,
+    MediaIndexerTimelineNote,
+    MediaIndexerTimelineSession,
 )
 
 
@@ -157,7 +158,7 @@ class TestFormatMediaContextForPrompt:
         assert "Note 1" in result
         # Unmatched notes don't have timestamp info
         lines = result.split("\n")
-        note_line = [l for l in lines if "Note 1" in l][0]
+        note_line = next(line for line in lines if "Note 1" in line)
         assert "confidence" not in note_line
 
     def test_includes_warnings(self):
@@ -364,7 +365,11 @@ class TestAnaliseJogosServiceMediaContext:
             roteiro_json = {
                 "titulo": "Session Specific Analysis",
                 "duracao_total_segundos": 400,
-                "blocos": [],
+                "blocos": [{
+                    "tipo": "desenvolvimento", "duracao_segundos": 400,
+                    "conteudo": "Session-specific analysis", "dicas_visual": None,
+                    "dicas_audio": None,
+                }],
                 "tags": [],
                 "referencias": None,
                 "justificativa": "Test",
@@ -423,7 +428,11 @@ class TestAnaliseJogosServiceMediaContext:
             roteiro_json = {
                 "titulo": "Sekiro Analysis with Context",
                 "duracao_total_segundos": 800,
-                "blocos": [],
+                "blocos": [{
+                    "tipo": "desenvolvimento", "duracao_segundos": 800,
+                    "conteudo": "Combined analysis", "dicas_visual": None,
+                    "dicas_audio": None,
+                }],
                 "tags": ["sekiro"],
                 "referencias": ["FromSoftware info"],
                 "justificativa": "Combined grounding and media evidence",
@@ -479,7 +488,9 @@ class TestAnaliseJogosServiceLazyInit:
             mock_settings.media_indexer_api_key = ""
             mock_settings.game_analysis_media_context_max_chars = 50000
 
-            from app.services.media_indexer_context_provider import MediaIndexerContextProvider
+            from app.services.media_indexer_context_provider import (
+                MediaIndexerContextProvider,
+            )
             service = AnaliseJogosService()
             provider = service.media_context_provider
 

@@ -8,13 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.curador import IdeiaBruta, curador_service
 from app.core.database import get_db
 from app.repositories.ideia_repository import IdeiaRepository
 from app.repositories.nicho_repository import NichoRepository
-from app.schemas.ideia import IdeiaCreate, IdeiaUpdate, IdeiaResponse
-from app.agents.curador import curador_service, IdeiaBruta
+from app.schemas.ideia import IdeiaCreate, IdeiaResponse, IdeiaUpdate
+from app.schemas.llm_outputs import LLMOutputError
 from app.services.embeddings import embedding_service
-
 
 router = APIRouter(prefix="/ideias", tags=["ideias"])
 
@@ -35,6 +35,10 @@ class IdeiaBrutaInput(BaseModel):
     """Schema para entrada de ideia bruta manual."""
     titulo: str = Field(..., max_length=300, description="Título da ideia")
     descricao: str | None = Field(None, description="Descrição opcional da ideia")
+    author_briefing: str | None = Field(
+        None,
+        description="Contexto editorial opcional fornecido pelo autor; não é refinado pelo Curador",
+    )
     nicho_id: UUID | None = Field(None, description="ID do nicho (opcional)")
 
 
@@ -85,10 +89,12 @@ async def create_ideia(
     """
     # 1. Busca o nicho para obter o prompt (se nicho_id fornecido)
     prompt_nicho = None
+    perfil_id = None
     if ideia_data.nicho_id:
         nicho = await nicho_repo.get_by_id(ideia_data.nicho_id)
         if nicho:
             prompt_nicho = nicho.prompt_ideacao
+            perfil_id = nicho.perfil_producao
 
     # 2. Gera embedding para busca de similaridade
     embedding = await embedding_service.generate_for_ideia(
@@ -108,11 +114,11 @@ async def create_ideia(
     # Converte para formato esperado pelo curador
     ideias_similares = [
         {
-            "id": str(s.id),
-            "titulo": s.titulo,
-            "similaridade": 1 - 0.15,  # Aproximação (distance já aplicada)
+            "id": str(match.idea.id),
+            "titulo": match.idea.titulo,
+            "similaridade": match.similarity,
         }
-        for s in similares
+        for match in similares
     ] if similares else None
 
     # 4. Processa via Agente Curador
@@ -123,11 +129,26 @@ async def create_ideia(
         origem="manual"
     )
 
-    ideia_refinada = await curador_service.processar(
-        ideia_bruta=ideia_bruta,
-        prompt_nicho=prompt_nicho,
-        ideias_similares=ideias_similares,
-    )
+    try:
+        ideia_refinada = await curador_service.processar(
+            ideia_bruta=ideia_bruta,
+            prompt_nicho=prompt_nicho,
+            ideias_similares=ideias_similares,
+            perfil_id=perfil_id,
+        )
+    except LLMOutputError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"category": exc.category, "message": exc.public_message},
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "category": "provider_failure",
+                "message": "O serviço de curadoria está temporariamente indisponível.",
+            },
+        ) from exc
 
     # 5. Cria a ideia no banco com dados refinados
     # Nota: eh_continuacao_de e numero_parte são definidos manualmente pelo usuário
@@ -137,6 +158,7 @@ async def create_ideia(
         origem="manual",
         titulo=ideia_refinada.titulo,
         descricao_breve=ideia_refinada.descricao_breve,
+        author_briefing=ideia_data.author_briefing,
         status="rascunho",
         eh_continuacao_de=None,  # Definido manualmente pelo usuário
         numero_parte=None,  # Definido manualmente pelo usuário
@@ -149,22 +171,26 @@ async def create_ideia(
     await ideia_repo.update_embedding(ideia_criada.id, embedding)
 
     # 7. Recarrega a ideia para garantir que todos os atributos estão disponíveis
-    ideia_criada = await ideia_repo.get_by_id(ideia_criada.id)
+    ideia_recarregada = await ideia_repo.get_by_id(ideia_criada.id)
+    assert ideia_recarregada is not None
 
     # 8. Prepara resposta com metadados de curadoria
     response = IdeiaRefinadaResponse(
-        id=ideia_criada.id,
-        nicho_id=ideia_criada.nicho_id,
-        origem=ideia_criada.origem,
-        titulo=ideia_criada.titulo,
-        descricao_breve=ideia_criada.descricao_breve,
-        status=ideia_criada.status,
-        eh_continuacao_de=ideia_criada.eh_continuacao_de,
-        numero_parte=ideia_criada.numero_parte,
-        fonte_trend_id=ideia_criada.fonte_trend_id,
-        justificativa_llm=ideia_criada.justificativa_llm,
-        criado_em=ideia_criada.criado_em,
-        atualizado_em=ideia_criada.atualizado_em,
+        id=ideia_recarregada.id,
+        nicho_id=ideia_recarregada.nicho_id,
+        origem=ideia_recarregada.origem,
+        titulo=ideia_recarregada.titulo,
+        descricao_breve=ideia_recarregada.descricao_breve,
+        author_briefing=ideia_recarregada.author_briefing,
+        author_briefing_identity=ideia_recarregada.author_briefing_identity,
+        perfil_producao=ideia_recarregada.perfil_producao,
+        status=ideia_recarregada.status,
+        eh_continuacao_de=ideia_recarregada.eh_continuacao_de,
+        numero_parte=ideia_recarregada.numero_parte,
+        fonte_trend_id=ideia_recarregada.fonte_trend_id,
+        justificativa_llm=ideia_recarregada.justificativa_llm,
+        criado_em=ideia_recarregada.criado_em,
+        atualizado_em=ideia_recarregada.atualizado_em,
         eh_duplicada=ideia_refinada.eh_duplicada,
         eh_continuacao=ideia_refinada.eh_continuacao,
         ideia_similar_id=UUID(ideia_refinada.ideia_similar_id) if ideia_refinada.ideia_similar_id else None,
@@ -294,7 +320,16 @@ async def gerar_roteiro(
 
     try:
         resultado = await generator.generate_from_ideia(ideia_id=ideia_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        from app.services.roteiros.gerador_roteiro import ScriptGenerationError
+
+        if isinstance(exc, ScriptGenerationError):
+            raise HTTPException(
+                status_code=502,
+                detail={"category": exc.category, "message": exc.public_message},
+            ) from exc
+        raise
 
     return resultado

@@ -3,11 +3,12 @@ Testes para o Agente Curador.
 
 Testa o processamento de ideias com mock de LLM e Tavily.
 """
-import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.agents.curador import CuradorService, IdeiaBruta, IdeiaRefinada
+import pytest
+
+from app.agents.curador import CuradorService, IdeiaRefinada
 
 
 @pytest.fixture
@@ -197,8 +198,8 @@ class TestCuradorService:
         assert result.eh_duplicada is False
 
     @pytest.mark.asyncio
-    async def test_processar_llm_error_fallback(self, curador_service, sample_ideia_bruta, mock_httpx_client):
-        """Testa fallback quando LLM falha."""
+    async def test_processar_llm_error_is_explicit(self, curador_service, sample_ideia_bruta, mock_httpx_client):
+        """Provider failure must not be converted into a successful refinement."""
         # Mock resposta do Tavily
         tavily_response = MagicMock()
         tavily_response.status_code = 200
@@ -209,15 +210,34 @@ class TestCuradorService:
         mock_httpx_client.post.side_effect = [tavily_response, Exception("LLM error")]
         curador_service.tavily_api_key = "test-key"
 
-        result = await curador_service.processar(
-            ideia_bruta=sample_ideia_bruta,
-            prompt_nicho=None,
-            ideias_similares=None
-        )
+        with pytest.raises(Exception, match="LLM error"):
+            await curador_service.processar(
+                ideia_bruta=sample_ideia_bruta,
+                prompt_nicho=None,
+                ideias_similares=None,
+            )
 
-        # Fallback: usa dados originais
-        assert result.titulo == sample_ideia_bruta.titulo
-        assert "não disponível" in result.justificativa_llm
+    @pytest.mark.parametrize(
+        ("score", "duplicate", "continuation"),
+        [(0.97, True, False), (0.90, False, True), (0.84, False, False)],
+    )
+    @pytest.mark.asyncio
+    async def test_similarity_boundaries_use_real_score(
+        self, curador_service, sample_ideia_bruta, score, duplicate, continuation
+    ):
+        curador_service.tavily_api_key = None
+        curador_service._call_llm = AsyncMock(
+            return_value=json.dumps(
+                {"titulo": "Refinada", "descricao_breve": "Descrição", "justificativa": "ok"}
+            )
+        )
+        result = await curador_service.processar(
+            sample_ideia_bruta,
+            ideias_similares=[{"id": "id", "titulo": "Similar", "similaridade": score}],
+        )
+        assert result.similaridade == score
+        assert result.eh_duplicada is duplicate
+        assert result.eh_continuacao is continuation
 
     @pytest.mark.asyncio
     async def test_llm_retry_on_connection_error(self, curador_service):

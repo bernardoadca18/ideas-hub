@@ -3,10 +3,10 @@ Testes para os repositórios.
 
 Testa operações CRUD com banco de dados mockado.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
-from datetime import datetime
+
+import pytest
 
 from app.repositories.ideia_repository import IdeiaRepository
 from app.repositories.nicho_repository import NichoRepository
@@ -142,7 +142,11 @@ class TestRoteiroRepository:
             estrutura={
                 "titulo": "Roteiro Teste",
                 "duracao_total_segundos": 180,
-                "blocos": []
+                "blocos": [{
+                    "tipo": "desenvolvimento",
+                    "duracao_segundos": 180,
+                    "conteudo": "Conteúdo válido",
+                }]
             },
             status="rascunho"
         )

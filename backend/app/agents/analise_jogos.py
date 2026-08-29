@@ -11,13 +11,14 @@ from uuid import UUID
 
 import httpx
 
+from app.agents.roteirista import BlocoNarrativo, RoteiroEstruturado
 from app.core.config import settings
 from app.core.logging import roteirista_logger
 from app.core.retry import retry_llm, retry_tavily
-from app.production_profiles import get_profile, GAME_ANALYSIS
+from app.production_profiles import GAME_ANALYSIS, get_profile
 from app.prompts.builder import PromptBuilder
 from app.prompts.workflows import get_workflow
-from app.agents.roteirista import RoteiroEstruturado, BlocoNarrativo
+from app.schemas.llm_outputs import ScriptLLMOutput, validate_model_output
 from app.schemas.media_indexer import GameAnalysisMediaContext
 from app.schemas.visual_query import VisualQuery
 from app.services.media_context_provider import MediaContextProvider
@@ -251,7 +252,7 @@ class AnaliseJogosService:
                 for r in data.get("results", [])[:3]:
                     parts.append(f"- {r.get('title', '')}: {r.get('content', '')[:200]}")
                 return "\n".join(parts) if parts else ""
-        except Exception:
+        except Exception:  # noqa: BLE001 - optional external-grounding boundary
             return ""
 
     async def gerar_roteiro_de_notas(
@@ -263,6 +264,7 @@ class AnaliseJogosService:
         usar_grounding: bool = False,
         media_project_id: UUID | None = None,
         media_session_ids: list[UUID] | None = None,
+        author_briefing: str | None = None,
     ) -> RoteiroEstruturado:
         """
         Transforma anotações brutas de gameplay em um roteiro de análise estruturado.
@@ -275,6 +277,7 @@ class AnaliseJogosService:
             usar_grounding: liga grounding factual pontual (desligado por padrão neste perfil)
             media_project_id: ID do projeto no Media Indexer para contexto audiovisual
             media_session_ids: filtro opcional para sessões específicas do Media Indexer
+            author_briefing: intenção/opinião/contexto editorial distinto das notas
         """
         profile = get_profile(GAME_ANALYSIS.id)
         workflow = get_workflow(profile.workflow_roteiro)
@@ -307,7 +310,7 @@ class AnaliseJogosService:
                         "total_chars": media_context.total_chars,
                     },
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - optional Media Indexer boundary
                 roteirista_logger.logger.warning(
                     "media_context_retrieval_failed",
                     extra={
@@ -328,6 +331,7 @@ class AnaliseJogosService:
         composed = (
             PromptBuilder(workflow=workflow, profile=profile)
             .with_niche(prompt_nicho)
+            .with_author_briefing(author_briefing)
             .with_media_context(media_context_text)
             .with_grounding(contexto_grounding)
             .build(task_context=usuario_message)
@@ -341,47 +345,41 @@ class AnaliseJogosService:
             temperature=0.7,
         )
 
-        import json
-        texto = resposta_llm
-        if "```json" in texto:
-            texto = texto.split("```json")[1].split("```")[0]
-        elif "```" in texto:
-            texto = texto.split("```")[1].split("```")[0]
-
-        dados = json.loads(texto.strip())
+        dados = validate_model_output(ScriptLLMOutput, resposta_llm)
+        assert isinstance(dados, ScriptLLMOutput)
 
         # Build provenance lookup for visual queries
         note_lookup = self._build_note_provenance_lookup(media_context)
 
         blocos = []
         duracao_total = 0
-        for b in dados.get("blocos", []):
-            duracao_bloco = b.get("duracao_segundos", 60)
+        for bloco in dados.blocos:
+            duracao_bloco = bloco.duracao_segundos
 
             # Parse visual queries with provenance canonicalization
             visual_queries = self._parse_visual_queries(
-                b.get("visual_queries"), note_lookup
+                [item.model_dump(mode="json") for item in bloco.visual_queries], note_lookup
             )
 
             blocos.append(BlocoNarrativo(
-                tipo=b.get("tipo", "desenvolvimento"),
+                tipo=bloco.tipo,
                 duracao_segundos=duracao_bloco,
-                conteudo=b.get("conteudo", ""),
-                dicas_visual=b.get("dicas_visual"),
-                dicas_audio=b.get("dicas_audio"),
+                conteudo=bloco.conteudo,
+                dicas_visual=bloco.dicas_visual,
+                dicas_audio=bloco.dicas_audio,
                 visual_queries=visual_queries,
             ))
             duracao_total += duracao_bloco
 
-        duracao_final = max(dados.get("duracao_total_segundos", duracao_total), duracao_total, 60)
+        duracao_final = max(dados.duracao_total_segundos, duracao_total, 60)
 
         resultado = RoteiroEstruturado(
-            titulo=dados.get("titulo", titulo_provisorio)[:80],
+            titulo=dados.titulo[:80],
             duracao_total_segundos=duracao_final,
             blocos=blocos,
-            tags=dados.get("tags", []),
-            referencias=dados.get("referencias"),
-            justificativa_llm=dados.get("justificativa"),
+            tags=dados.tags,
+            referencias=dados.referencias,
+            justificativa_llm=dados.justificativa,
             prompt_trace=composed.trace,
             media_context=(
                 {

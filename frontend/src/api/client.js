@@ -53,6 +53,12 @@ class ApiClient {
             body: JSON.stringify(data),
         });
     }
+    async updateIdeia(id, data) {
+        return this.request(`/ideias/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify(data),
+        });
+    }
     async aprovarIdeia(id) {
         return this.request(`/ideias/${id}/aprovar`, { method: 'PATCH' });
     }
@@ -104,6 +110,18 @@ class ApiClient {
     }
     async rejeitarRoteiro(id) {
         return this.request(`/roteiros/${id}/rejeitar`, { method: 'PATCH' });
+    }
+    async editarRoteiroComoRevisao(id, data) {
+        return this.request(`/roteiros/${id}/revisoes/editar`, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    }
+    async regenerarRoteiroComFeedback(id, feedback) {
+        return this.request(`/roteiros/${id}/revisoes/regenerar`, {
+            method: 'POST',
+            body: JSON.stringify({ feedback }),
+        });
     }
 }
 export const api = new ApiClient(API_BASE);

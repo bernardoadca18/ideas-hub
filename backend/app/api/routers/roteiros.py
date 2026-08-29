@@ -5,14 +5,17 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.repositories.roteiro_repository import RoteiroRepository
-from app.schemas.roteiro import RoteiroCreate, RoteiroUpdate, RoteiroResponse
 from app.schemas.analise_jogo import AnaliseJogoRequest, AnaliseJogoResponse
-
+from app.schemas.roteiro import (
+    RoteiroResponse,
+    ScriptCreateRequest,
+    ScriptEditRevisionRequest,
+    ScriptRegenerationRequest,
+)
 
 router = APIRouter(prefix="/roteiros", tags=["roteiros"])
 
@@ -46,14 +49,21 @@ async def list_roteiros(
 
 @router.post("/", response_model=RoteiroResponse, status_code=201)
 async def create_roteiro(
-    roteiro_data: RoteiroCreate,
-    repo: Annotated[RoteiroRepository, Depends(get_roteiro_repo)],
+    roteiro_data: ScriptCreateRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Cria um novo roteiro."""
-    return await repo.create(roteiro_data)
+    """Create a versioned draft while keeping snapshot/provenance server-owned."""
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    try:
+        return await get_roteiro_generator(db).create_manual_draft(
+            roteiro_data.ideia_id, roteiro_data.estrutura
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/{roteiro_id}", response_model=RoteiroResponse)
+@router.get("/{roteiro_id:uuid}", response_model=RoteiroResponse)
 async def get_roteiro(
     roteiro_id: UUID,
     repo: Annotated[RoteiroRepository, Depends(get_roteiro_repo)],
@@ -80,31 +90,88 @@ async def get_latest_roteiro_by_ideia(
     return roteiro
 
 
-@router.put("/{roteiro_id}", response_model=RoteiroResponse)
+@router.put("/{roteiro_id:uuid}", response_model=RoteiroResponse)
 async def update_roteiro(
     roteiro_id: UUID,
-    roteiro_data: RoteiroUpdate,
-    repo: Annotated[RoteiroRepository, Depends(get_roteiro_repo)],
+    roteiro_data: dict,
 ):
-    """Atualiza um roteiro existente."""
-    roteiro = await repo.update(roteiro_id, roteiro_data)
-    if not roteiro:
-        raise HTTPException(status_code=404, detail="Roteiro não encontrado")
-    return roteiro
+    """Deprecated mutation boundary: scripts are revised, never overwritten."""
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "Roteiros são versionados e não podem ser sobrescritos. "
+            "Use POST /roteiros/{id}/revisoes/editar."
+        ),
+    )
 
 
-@router.delete("/{roteiro_id}", status_code=204)
+@router.delete("/{roteiro_id:uuid}", status_code=204)
 async def delete_roteiro(
     roteiro_id: UUID,
-    repo: Annotated[RoteiroRepository, Depends(get_roteiro_repo)],
 ):
-    """Remove um roteiro."""
-    deleted = await repo.delete(roteiro_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Roteiro não encontrado")
+    """Scripts form an audit history and are not physically deleted through the API."""
+    raise HTTPException(status_code=409, detail="O histórico de versões de roteiro é imutável.")
 
 
-@router.patch("/{roteiro_id}/aprovar", response_model=RoteiroResponse)
+@router.post(
+    "/{roteiro_id:uuid}/revisoes/editar",
+    response_model=RoteiroResponse,
+    status_code=201,
+)
+async def editar_como_nova_revisao(
+    roteiro_id: UUID,
+    payload: ScriptEditRevisionRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Create a human-edited version while preserving VisualQuery provenance."""
+
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    try:
+        created = await get_roteiro_generator(db).create_human_edit_revision(
+            roteiro_id, payload
+        )
+        refreshed = await RoteiroRepository(db).get_by_id(created.id)
+        assert refreshed is not None
+        return refreshed
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{roteiro_id:uuid}/revisoes/regenerar",
+    response_model=RoteiroResponse,
+    status_code=201,
+)
+async def regenerar_com_feedback(
+    roteiro_id: UUID,
+    payload: ScriptRegenerationRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Generate a new version from explicit operator feedback."""
+
+    from app.services.roteiros.gerador_roteiro import (
+        ScriptGenerationError,
+        get_roteiro_generator,
+    )
+
+    try:
+        created = await get_roteiro_generator(db).regenerate_with_feedback(
+            roteiro_id, payload.feedback
+        )
+        refreshed = await RoteiroRepository(db).get_by_id(created.id)
+        assert refreshed is not None
+        return refreshed
+    except ScriptGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"category": exc.category, "message": exc.public_message},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/{roteiro_id:uuid}/aprovar", response_model=RoteiroResponse)
 async def aprovar_roteiro(
     roteiro_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -119,9 +186,9 @@ async def aprovar_roteiro(
 
     generator = get_roteiro_generator(db)
     try:
-        resultado = await generator.aprovar_roteiro(roteiro_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        await generator.aprovar_roteiro(roteiro_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Recarrega para retornar objeto completo
     repo = RoteiroRepository(db)
@@ -129,7 +196,7 @@ async def aprovar_roteiro(
     return roteiro
 
 
-@router.patch("/{roteiro_id}/rejeitar", response_model=RoteiroResponse)
+@router.patch("/{roteiro_id:uuid}/rejeitar", response_model=RoteiroResponse)
 async def rejeitar_roteiro(
     roteiro_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -143,9 +210,9 @@ async def rejeitar_roteiro(
 
     generator = get_roteiro_generator(db)
     try:
-        resultado = await generator.rejeitar_roteiro(roteiro_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        await generator.rejeitar_roteiro(roteiro_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Recarrega para retornar objeto completo
     repo = RoteiroRepository(db)
@@ -162,11 +229,19 @@ async def criar_analise_de_jogo(
     Workflow de Análise de Jogos: recebe as anotações de gameplay do autor e gera
     diretamente uma Ideia (já aprovada) + Roteiro v1, fora do funil de trends.
     """
-    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+    from app.services.roteiros.gerador_roteiro import (
+        ScriptGenerationError,
+        get_roteiro_generator,
+    )
 
     generator = get_roteiro_generator(db)
     try:
         resultado = await generator.generate_from_notas(request)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ScriptGenerationError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"category": exc.category, "message": exc.public_message},
+        ) from exc
     return resultado

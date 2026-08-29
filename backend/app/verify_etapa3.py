@@ -8,23 +8,26 @@ Este script:
 4. Confirma que a segunda é encontrada como candidata a continuação
 """
 import asyncio
-from app.core.database import AsyncSessionLocal
+import sys
+
+import httpx
+
 from app.core.config import settings
-from app.repositories import NichoRepository, IdeiaRepository
-from app.schemas import NichoCreate, IdeiaCreate
+from app.core.database import AsyncSessionLocal
+from app.repositories import IdeiaRepository, NichoRepository
+from app.schemas import IdeiaCreate, NichoCreate
 from app.services.embeddings import embedding_service
 
 
-def check_litellm_proxy():
+def check_litellm_proxy() -> bool:
     """Verifica se o LiteLLM Proxy está acessível."""
-    import httpx
     try:
         # LiteLLM pode retornar 401 se precisar de auth, mas significa que está acessível
         response = httpx.get(f"{settings.litellm_base_url}/health", timeout=2.0)
         if response.status_code in (200, 401):
             return True
-    except Exception:
-        pass
+    except httpx.HTTPError as exc:
+        print(f"LiteLLM health check falhou: {type(exc).__name__}")
 
     print(f"❌ ERRO: LiteLLM Proxy não está acessível em {settings.litellm_base_url}")
     print("\nPara executar este script de verificação:")
@@ -34,7 +37,7 @@ def check_litellm_proxy():
     return False
 
 
-async def main():
+async def main() -> None:
     async with AsyncSessionLocal() as session:
         nicho_repo = NichoRepository(session)
         ideia_repo = IdeiaRepository(session)
@@ -100,16 +103,16 @@ async def main():
 
         print(f'Encontradas {len(similares)} ideia(s) similar(es):')
         for s in similares:
-            print(f'  - {s.titulo}')
+            print(f'  - {s.idea.titulo} (similaridade={s.similarity:.4f})')
 
         # Verificar se a segunda ideia foi encontrada
-        ideia2_encontrada = any(s.id == ideia2.id for s in similares)
+        ideia2_encontrada = any(s.idea.id == ideia2.id for s in similares)
 
         if ideia2_encontrada:
-            print(f'\n✅ SUCESSO: Ideia 2 foi encontrada como candidata a continuação de Ideia 1!')
-            print(f'   Isso confirma que a busca por similaridade está funcionando corretamente.')
+            print("\n✅ SUCESSO: Ideia 2 foi encontrada como candidata a continuação de Ideia 1!")
+            print("   Isso confirma que a busca por similaridade está funcionando corretamente.")
         else:
-            print(f'\n❌ FALHA: Ideia 2 NÃO foi encontrada.')
+            print("\n❌ FALHA: Ideia 2 NÃO foi encontrada.")
             print(f'   Verifique se o threshold ({settings.ideia_similarity_threshold}) está adequado.')
 
         # Limpeza (opcional - comentar para manter dados)
@@ -120,5 +123,5 @@ async def main():
 
 if __name__ == "__main__":
     if not check_litellm_proxy():
-        exit(1)
+        sys.exit(1)
     asyncio.run(main())

@@ -17,6 +17,9 @@ export interface Ideia {
   origem: string;
   titulo: string;
   descricao_breve?: string;
+  author_briefing?: string;
+  author_briefing_identity: string;
+  perfil_producao?: string;
   status: string;
   eh_continuacao_de?: string;
   numero_parte?: number;
@@ -48,8 +51,15 @@ export interface Roteiro {
     tags: string[];
     referencias?: string[];
     justificativa_llm?: string;
+    prompt_trace?: Record<string, unknown>;
   };
   status: string;
+  author_briefing_snapshot?: string;
+  author_briefing_identity?: string;
+  author_briefing_changed_since_creation?: boolean;
+  parent_roteiro_id?: string;
+  revision_kind: string;
+  revision_feedback?: string;
   criado_em: string;
   atualizado_em: string;
 }
@@ -60,6 +70,15 @@ export interface BlocoNarrativo {
   conteudo: string;
   dicas_visual?: string;
   dicas_audio?: string;
+  visual_queries?: Array<Record<string, unknown>>;
+}
+
+export interface ScriptEditRevision {
+  titulo: string;
+  blocos: Array<Pick<BlocoNarrativo, 'tipo' | 'duracao_segundos' | 'conteudo' | 'dicas_visual' | 'dicas_audio'>>;
+  tags: string[];
+  referencias?: string[];
+  edit_summary?: string;
 }
 
 // API Client
@@ -112,9 +131,16 @@ class ApiClient {
     return this.request<Ideia[]>(`/ideias/${query ? `?${query}` : ''}`);
   }
 
-  async createIdeia(data: { titulo: string; descricao?: string; nicho_id?: string }): Promise<Ideia> {
+  async createIdeia(data: { titulo: string; descricao?: string; author_briefing?: string; nicho_id?: string }): Promise<Ideia> {
     return this.request<Ideia>('/ideias/', {
       method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateIdeia(id: string, data: { author_briefing: string | null }): Promise<Ideia> {
+    return this.request<Ideia>(`/ideias/${id}`, {
+      method: 'PUT',
       body: JSON.stringify(data),
     });
   }
@@ -178,6 +204,21 @@ class ApiClient {
 
   async rejeitarRoteiro(id: string): Promise<Roteiro> {
     return this.request<Roteiro>(`/roteiros/${id}/rejeitar`, { method: 'PATCH' });
+  }
+
+
+  async editarRoteiroComoRevisao(id: string, data: ScriptEditRevision): Promise<Roteiro> {
+    return this.request<Roteiro>(`/roteiros/${id}/revisoes/editar`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async regenerarRoteiroComFeedback(id: string, feedback: string): Promise<Roteiro> {
+    return this.request<Roteiro>(`/roteiros/${id}/revisoes/regenerar`, {
+      method: 'POST',
+      body: JSON.stringify({ feedback }),
+    });
   }
 }
 
