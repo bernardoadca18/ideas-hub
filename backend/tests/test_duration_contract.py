@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
+
 from app.production_profiles import get_profile
 from app.schemas.llm_outputs import EvidenceTier, ScriptLLMOutput
 from app.services.duration_contract import (
@@ -54,6 +55,32 @@ def test_twelve_minute_target_near_eleven_thirty_is_acceptable() -> None:
     assert report["predicted_duration_seconds"] == pytest.approx(690, abs=15)
     assert report["status"] in {"excellent", "acceptable"}
     assert report["revision_required"] is False
+
+
+@pytest.mark.parametrize("target_seconds", [300, 720, 1200])
+def test_duration_contract_scales_across_five_twelve_and_twenty_minutes(
+    target_seconds: int,
+) -> None:
+    target_words = round(_calibration().words_per_minute * target_seconds / 60)
+    report = evaluate_duration(
+        _blocks(target_words, duration=target_seconds),
+        target_seconds=target_seconds,
+        calibration=_calibration(),
+        profile=get_profile("faceless_general"),
+    )
+    assert report["status"] in {"excellent", "acceptable"}
+    assert report["revision_required"] is False
+
+
+def test_materially_overlong_script_requires_compression() -> None:
+    report = evaluate_duration(
+        _blocks(1500, duration=300),
+        target_seconds=300,
+        calibration=_calibration(),
+        profile=get_profile("faceless_general"),
+    )
+    assert report["status"] == "far_above_target"
+    assert report["revision_required"] is True
 
 
 def test_no_target_is_estimate_only() -> None:
@@ -112,7 +139,13 @@ def test_section_budgets_and_editorial_diagnostics_are_deterministic() -> None:
     quality = evaluate_editorial_quality(blocks)
     assert len(report["sections"]) == 2
     assert sum(item["target_duration_seconds"] for item in report["sections"]) == 720
+    assert all(
+        item["min_words"] < item["target_words"] < item["max_words"]
+        for item in report["sections"]
+    )
     assert quality["generic_hook"] is True
+    assert quality["missing_section_purpose_count"] == 2
+    assert quality["missing_editorial_beats_count"] == 2
 
 
 def test_duration_prompt_forbids_filler_and_identifies_calibration() -> None:
@@ -146,6 +179,16 @@ def test_claim_tiers_and_music_intent_remain_structured_non_speakable_metadata()
                             "confidence": 0.5,
                         },
                     ],
+                    "purpose": "Separar observação oficial de inferência.",
+                    "beats": [
+                        {
+                            "purpose": "Mostrar a evidência",
+                            "key_point": "A câmera aparece, mas a mecânica não foi confirmada.",
+                            "evidence_refs": ["official-trailer"],
+                            "target_words": 45,
+                            "retention_role": "evidence_to_interpretation",
+                        }
+                    ],
                     "audio_intent": {
                         "music_enabled": True,
                         "moods": ["investigative"],
@@ -161,6 +204,7 @@ def test_claim_tiers_and_music_intent_remain_structured_non_speakable_metadata()
     )
     assert output.blocos[0].claims[0].evidence_tier is EvidenceTier.official_observation
     assert output.blocos[0].claims[1].evidence_tier is EvidenceTier.inference
+    assert output.blocos[0].beats[0].target_words == 45
     assert "investigative" not in speakable_text_from_blocks(
         [output.blocos[0].model_dump()]
     )

@@ -3,11 +3,13 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+
 from app.agents.roteirista import BlocoNarrativo, RoteiroEstruturado
 from app.schemas.analise_jogo import AnaliseJogoRequest
 from app.schemas.llm_outputs import LLMOutputError
 from app.schemas.roteiro import RoteiroEstrutura, ScriptEditRevisionRequest
 from app.services.author_briefing import author_briefing_identity
+from app.services.duration_contract import DurationCalibration
 from app.services.roteiros.gerador_roteiro import (
     RoteiroGenerator,
     ScriptGenerationError,
@@ -264,3 +266,65 @@ async def test_stale_draft_rejection_cannot_reset_idea_state() -> None:
 
     generator.roteiro_repo.update.assert_not_awaited()
     generator.ideia_repo.update.assert_not_awaited()
+
+
+def test_absent_explicit_duration_remains_estimate_only() -> None:
+    current = idea()
+    current.target_duration_seconds = None
+    assert RoteiroGenerator._target_duration(current) is None
+
+
+def test_explicit_duration_is_preserved_as_editorial_target() -> None:
+    current = idea()
+    current.target_duration_seconds = 720
+    assert RoteiroGenerator._target_duration(current) == 720
+
+
+@pytest.mark.asyncio
+async def test_duration_policy_is_resolved_from_idea_niche() -> None:
+    generator = RoteiroGenerator(AsyncMock())
+    current = idea()
+    current.nicho_id = uuid4()
+    generator.nicho_repo = AsyncMock()
+    generator.nicho_repo.get_by_id.return_value = SimpleNamespace(
+        perfil_producao="game_analysis"
+    )
+
+    profile = await generator._profile_for_idea(current)
+
+    assert profile.id == "game_analysis"
+
+
+@pytest.mark.asyncio
+async def test_duration_revision_loop_is_bounded_and_persists_diagnostics() -> None:
+    generator = RoteiroGenerator(AsyncMock())
+    current = idea()
+    current.target_duration_seconds = 720
+    generator.ideia_repo = AsyncMock()
+    generator.ideia_repo.get_by_id.return_value = current
+    generator._persist_revision = AsyncMock(
+        return_value=SimpleNamespace(
+            id=uuid4(), ideia_id=current.id, versao=1, status="rascunho"
+        )
+    )
+    llm = AsyncMock(side_effect=[generated_script(), generated_script(), generated_script()])
+    calibration = DurationCalibration.fallback_for(
+        production_profile="faceless_general"
+    )
+
+    with (
+        patch(
+            "app.services.roteiros.gerador_roteiro.duration_calibration_client.get",
+            AsyncMock(return_value=calibration),
+        ),
+        patch(
+            "app.services.roteiros.gerador_roteiro.roteirista_service.gerar_roteiro",
+            llm,
+        ),
+    ):
+        await generator.generate_from_ideia(current.id)
+
+    assert llm.await_count == 3  # initial + configured maximum of two revisions
+    persisted = generator._persist_revision.await_args.kwargs["estrutura"]
+    assert persisted.duration_contract["revision_required"] is True
+    assert persisted.duration_contract["status"] == "far_below_target"

@@ -93,12 +93,24 @@ class RoteiroGenerator:
         return ideia.author_briefing, author_briefing_identity(ideia.author_briefing)
 
     @staticmethod
-    def _target_duration(ideia: Ideia, profile: ProductionProfile) -> int | None:
+    def _target_duration(ideia: Ideia) -> int | None:
         # Historical/test projections may predate the migration. Real mapped rows
         # always expose the attribute; absence preserves legacy estimate-only behavior.
         if not hasattr(ideia, "target_duration_seconds"):
             return None
-        return ideia.target_duration_seconds or profile.duracao.default_target_seconds
+        # A profile range is editorial guidance, not an author-selected target.
+        # Inventing its midpoint would make `target` indistinguishable from a
+        # deterministic estimate and would incorrectly block otherwise valid scripts.
+        return ideia.target_duration_seconds
+
+    async def _profile_for_idea(self, ideia: Ideia) -> ProductionProfile:
+        """Resolve profile through the owning niche; ideas do not own this policy."""
+
+        if ideia.nicho_id:
+            nicho = await self.nicho_repo.get_by_id(ideia.nicho_id)
+            if nicho:
+                return get_profile(nicho.perfil_producao)
+        return get_profile(None)
 
     @staticmethod
     def _attach_validation(
@@ -216,7 +228,7 @@ class RoteiroGenerator:
                 perfil_id = nicho.perfil_producao
 
         profile = get_profile(perfil_id)
-        target_seconds = self._target_duration(ideia, profile)
+        target_seconds = self._target_duration(ideia)
         calibration = await duration_calibration_client.get(profile.id)
         budget_prompt = duration_budget_prompt(target_seconds, calibration)
 
@@ -347,6 +359,41 @@ class RoteiroGenerator:
             calibration=calibration,
             profile=get_profile("game_analysis"),
         )
+        for _ in range(settings.duration_revision_max_iterations):
+            if (
+                not generated.duration_contract
+                or not generated.duration_contract["revision_required"]
+            ):
+                break
+            revision_source = roteirista_service.to_dict(generated)
+            feedback = self._targeted_revision_feedback(generated)
+            generated = await self._call_script_agent(
+                partial(
+                    analise_jogos_service.gerar_roteiro_de_notas,
+                    titulo_provisorio=request.titulo_provisorio,
+                    anotacoes=request.anotacoes,
+                    nome_jogo=request.nome_jogo,
+                    prompt_nicho=prompt_nicho,
+                    usar_grounding=request.usar_grounding,
+                    media_project_id=request.media_project_id,
+                    media_session_ids=request.media_session_ids,
+                    author_briefing=request.author_briefing,
+                    duration_contract_prompt=duration_budget_prompt(
+                        request.target_duration_seconds,
+                        calibration,
+                    ),
+                    revision_source=revision_source,
+                    revision_feedback=feedback,
+                ),
+                ideia_id=None,
+                workflow="game_analysis_targeted_duration_revision",
+            )
+            self._attach_validation(
+                generated,
+                target_seconds=request.target_duration_seconds,
+                calibration=calibration,
+                profile=get_profile("game_analysis"),
+            )
         if generated.prompt_trace is not None:
             generated.prompt_trace["author_briefing_identity"] = (
                 ideia.author_briefing_identity
@@ -369,12 +416,12 @@ class RoteiroGenerator:
         ideia = await self.ideia_repo.get_by_id(ideia_id)
         if not ideia:
             raise ValueError("Ideia não encontrada")
-        profile = get_profile(getattr(ideia, "perfil_producao", None))
+        profile = await self._profile_for_idea(ideia)
         calibration = await duration_calibration_client.get(profile.id)
         payload = estrutura.model_dump(mode="json")
         payload["duration_contract"] = evaluate_duration(
             estrutura.blocos,
-            target_seconds=self._target_duration(ideia, profile),
+            target_seconds=self._target_duration(ideia),
             calibration=calibration,
             profile=profile,
         )
@@ -422,11 +469,11 @@ class RoteiroGenerator:
             }
         )
         estrutura = RoteiroEstrutura.model_validate(structure_payload)
-        profile = get_profile(getattr(source.ideia, "perfil_producao", None))
+        profile = await self._profile_for_idea(source.ideia)
         calibration = await duration_calibration_client.get(profile.id)
         structure_payload["duration_contract"] = evaluate_duration(
             estrutura.blocos,
-            target_seconds=self._target_duration(source.ideia, profile),
+            target_seconds=self._target_duration(source.ideia),
             calibration=calibration,
             profile=profile,
         )
@@ -458,7 +505,7 @@ class RoteiroGenerator:
                 perfil_id = nicho.perfil_producao
 
         profile = get_profile(perfil_id)
-        target_seconds = self._target_duration(ideia, profile)
+        target_seconds = self._target_duration(ideia)
         calibration = await duration_calibration_client.get(profile.id)
         budget_prompt = duration_budget_prompt(target_seconds, calibration)
 
@@ -569,11 +616,11 @@ class RoteiroGenerator:
         if not roteiro:
             raise ValueError("Roteiro não encontrado")
         structure = RoteiroEstrutura.model_validate(roteiro.estrutura)
-        profile = get_profile(getattr(roteiro.ideia, "perfil_producao", None))
+        profile = await self._profile_for_idea(roteiro.ideia)
         calibration = await duration_calibration_client.get(profile.id)
         report = evaluate_duration(
             structure.blocos,
-            target_seconds=self._target_duration(roteiro.ideia, profile),
+            target_seconds=self._target_duration(roteiro.ideia),
             calibration=calibration,
             profile=profile,
         )

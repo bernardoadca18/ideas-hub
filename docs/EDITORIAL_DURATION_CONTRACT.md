@@ -17,7 +17,8 @@ It never calls Qwen. If telemetry is unavailable, a configured and identity-bear
 is used. Estimation combines calibrated words/minute and characters/second; snapshots record
 sample count, source window, profile dimensions and identity.
 
-`script_duration_contract_v1` derives total and per-section word budgets. A severe mismatch
+`script_duration_contract_v1` derives total and per-section target/minimum/maximum word
+budgets. Beats may carry an approximate `target_words` planning hint. A severe mismatch
 such as a 12-minute target with roughly six minutes of speakable text is
 `far_below_target`, requires revision and cannot be approved. The bounded reviser receives
 the exact deficit and weak sections. It may add evidence, examples, contrast, context,
@@ -44,3 +45,13 @@ Run the CPU-only evaluation harness with:
 ```bash
 PYTHONPATH=backend .venv/bin/pytest -q backend/tests/test_duration_contract.py
 ```
+
+Inspect a real exported script without an LLM or TTS call:
+
+```bash
+PYTHONPATH=backend .venv/bin/python backend/scripts/evaluate_script.py \
+  /path/to/script.json --target-seconds 720 --profile faceless_general --offline
+```
+
+The command exits `2` when deterministic duration validation requires revision, which makes
+it suitable for an explicit editorial check in scripts or CI.

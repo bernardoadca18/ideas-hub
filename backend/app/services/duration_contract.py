@@ -233,15 +233,28 @@ def evaluate_duration(
         )
         section_predicted = _predicted_seconds(section_text, calibration)
         section_ratio = section_predicted / section_target if section_target else None
+        section_target_words = (
+            round(calibration.words_per_minute * section_target / 60)
+            if section_target
+            else None
+        )
         sections.append(
             {
                 "index": index,
                 "type": block.get("tipo") if isinstance(block, dict) else block.tipo,
                 "target_duration_seconds": section_target,
-                "target_words": round(
-                    calibration.words_per_minute * section_target / 60
+                "target_words": section_target_words,
+                "min_words": round(
+                    section_target_words
+                    * (1 - profile.duracao.acceptable_tolerance_ratio)
                 )
-                if section_target
+                if section_target_words
+                else None,
+                "max_words": round(
+                    section_target_words
+                    * (1 + profile.duracao.acceptable_tolerance_ratio)
+                )
+                if section_target_words
                 else None,
                 "actual_words": count_words(section_text),
                 "predicted_duration_seconds": section_predicted,
@@ -297,18 +310,41 @@ def evaluate_editorial_quality(blocks: Sequence[Any]) -> dict[str, Any]:
         ngrams[gram] = ngrams.get(gram, 0) + 1
     repeated = [" ".join(gram) for gram, count in ngrams.items() if count >= 2][:20]
     issues: list[str] = []
+    missing_purpose = 0
+    missing_beats = 0
+    unverified_claims = 0
+    for block in blocks:
+        value = block if isinstance(block, dict) else vars(block)
+        if not str(value.get("purpose") or "").strip():
+            missing_purpose += 1
+        if not value.get("beats"):
+            missing_beats += 1
+        for claim in value.get("claims") or []:
+            claim_value = claim if isinstance(claim, dict) else vars(claim)
+            tier = claim_value.get("evidence_tier")
+            if getattr(tier, "value", tier) == "unverified":
+                unverified_claims += 1
     if any(pattern in first for pattern in _GENERIC_HOOKS):
         issues.append("generic_hook")
     if repeated:
         issues.append("repeated_phrases")
     if long_sentences:
         issues.append("overlong_spoken_sentences")
+    if missing_purpose:
+        issues.append("missing_section_purpose")
+    if missing_beats:
+        issues.append("missing_editorial_beats")
+    if unverified_claims:
+        issues.append("unverified_claims")
     return {
         "version": EDITORIAL_VALIDATOR_VERSION,
         "generic_hook": "generic_hook" in issues,
         "repeated_ngrams": repeated,
         "long_sentence_word_counts": long_sentences,
         "sentence_count": len(sentences),
+        "missing_section_purpose_count": missing_purpose,
+        "missing_editorial_beats_count": missing_beats,
+        "unverified_claim_count": unverified_claims,
         "issues": issues,
         "identity": _identity(
             {"version": EDITORIAL_VALIDATOR_VERSION, "text": lowered, "issues": issues}

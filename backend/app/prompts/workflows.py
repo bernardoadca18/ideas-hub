@@ -81,7 +81,7 @@ narrativos coerentes.
       "dicas_visual": "Sugestões concretas de imagens, vídeos, gráficos ou animações",
       "dicas_audio": "Representação humana da intenção sonora",
       "purpose": "Função narrativa explícita desta seção",
-      "beats": [{"purpose": "setup/evidence/contrast/implication/transition/payoff", "key_point": "Ponto novo", "evidence_refs": ["identidade da fonte"], "retention_role": "Por que o próximo beat importa"}],
+      "beats": [{"purpose": "setup/evidence/contrast/implication/transition/payoff", "key_point": "Ponto novo", "evidence_refs": ["identidade da fonte"], "target_words": 90, "retention_role": "Por que o próximo beat importa"}],
       "claims": [{"summary": "Claim auditável", "evidence_tier": "official_confirmed | official_observation | reliable_secondary | leak_authenticated | inference | speculation | unverified | author_opinion", "source_identity": "fonte ou null", "confidence": 0.8}],
       "audio_intent": {"music_enabled": true, "moods": ["investigative"], "energy": 0.45, "styles": ["electronic", "documentary"], "vocals": false, "transition": "rise", "sfx_intent": []}
     }
@@ -200,7 +200,7 @@ CONSULTAS VISUAIS ESTRUTURADAS (visual_queries):
       "dicas_visual": "Sugestões gerais de footage de gameplay para este trecho",
       "dicas_audio": "Sugestões de música/ritmo de narração",
       "purpose": "Função narrativa explícita desta seção",
-      "beats": [{"purpose": "evidence/interpretation/contrast/transition/payoff", "key_point": "Ponto novo", "evidence_refs": ["source_note_id quando aplicável"], "retention_role": "progressão"}],
+      "beats": [{"purpose": "evidence/interpretation/contrast/transition/payoff", "key_point": "Ponto novo", "evidence_refs": ["source_note_id quando aplicável"], "target_words": 90, "retention_role": "progressão"}],
       "claims": [{"summary": "Claim auditável", "evidence_tier": "gameplay_note | author_opinion | official_confirmed | official_observation | reliable_secondary | inference | speculation | unverified", "source_identity": "source_note_id/fonte ou null", "confidence": 0.8}],
       "audio_intent": {"music_enabled": true, "moods": ["analytical"], "energy": 0.4, "styles": ["documentary"], "vocals": false, "transition": null, "sfx_intent": []},
       "visual_queries": [

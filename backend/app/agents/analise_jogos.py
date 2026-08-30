@@ -6,6 +6,7 @@ fornecido diretamente pelo autor (anotações de sessões de jogo), não pesquis
 automática. Reaproveita as mesmas dataclasses de roteiro (RoteiroEstruturado,
 BlocoNarrativo) para não exigir nenhuma mudança de schema de Roteiro.
 """
+import json
 import time
 from uuid import UUID
 
@@ -266,6 +267,8 @@ class AnaliseJogosService:
         media_session_ids: list[UUID] | None = None,
         author_briefing: str | None = None,
         duration_contract_prompt: str | None = None,
+        revision_source: dict | None = None,
+        revision_feedback: str | None = None,
     ) -> RoteiroEstruturado:
         """
         Transforma anotações brutas de gameplay em um roteiro de análise estruturado.
@@ -327,6 +330,16 @@ class AnaliseJogosService:
             usuario_parts.append(f"Jogo analisado: {nome_jogo}")
         usuario_parts.append("\nAnotações brutas do autor (fonte primária, prioridade máxima):\n")
         usuario_parts.append(anotacoes)
+        if revision_source is not None and revision_feedback is not None:
+            usuario_parts.append(
+                "\nRevisão direcionada do rascunho anterior. Preserve as notas humanas, "
+                "claims sustentados, IDs/timestamps e VisualQueries com provenance."
+            )
+            usuario_parts.append(f"Feedback determinístico:\n{revision_feedback}")
+            usuario_parts.append(
+                "Rascunho anterior:\n"
+                + json.dumps(revision_source, ensure_ascii=False)
+            )
         usuario_message = "\n".join(usuario_parts)
 
         composed = (

@@ -121,6 +121,7 @@ class LLMEditorialBeat(StrictModel):
     purpose: str = Field(min_length=1, max_length=1000)
     key_point: str = Field(min_length=1, max_length=2000)
     evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+    target_words: int | None = Field(default=None, ge=1, le=10_000)
     retention_role: str | None = Field(default=None, max_length=500)
 
 
