@@ -12,6 +12,7 @@ export default function Ideias() {
   const [titulo, setTitulo] = useState('');
   const [descricao, setDescricao] = useState('');
   const [authorBriefing, setAuthorBriefing] = useState('');
+  const [targetMinutes, setTargetMinutes] = useState('');
   const [nichoId, setNichoId] = useState('');
   const [editingBriefing, setEditingBriefing] = useState<Ideia | null>(null);
   const [briefingDraft, setBriefingDraft] = useState('');
@@ -53,11 +54,13 @@ export default function Ideias() {
         titulo,
         descricao: descricao || undefined,
         author_briefing: authorBriefing || undefined,
+        target_duration_seconds: targetMinutes ? Math.round(Number(targetMinutes) * 60) : undefined,
         nicho_id: nichoId || undefined,
       });
       setTitulo('');
       setDescricao('');
       setAuthorBriefing('');
+      setTargetMinutes('');
       setNichoId('');
       setShowForm(false);
       loadData();
@@ -197,7 +200,7 @@ export default function Ideias() {
                 />
               </div>
               <details className="advanced-field">
-                <summary>Adicionar contexto do autor (opcional)</summary>
+                <summary>Planejamento editorial avançado (opcional)</summary>
                 <div className="form-group">
                   <label>Contexto do autor</label>
                   <textarea
@@ -207,6 +210,18 @@ export default function Ideias() {
                     placeholder="Sua tese, opinião, restrições editoriais e pontos que o roteirista não deve esquecer."
                   />
                   <small>Este texto não é a descrição e não será reescrito pelo Curador.</small>
+                </div>
+                <div className="form-group">
+                  <label>Duração editorial alvo (minutos)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="480"
+                    step="0.5"
+                    value={targetMinutes}
+                    onChange={(e) => setTargetMinutes(e.target.value)}
+                  />
+                  <small>É um contrato de conteúdo; não altera velocidade, pausas ou TTS.</small>
                 </div>
               </details>
               <div className="form-group">

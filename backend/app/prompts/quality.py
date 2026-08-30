@@ -18,6 +18,8 @@ pergunte-se "isto acrescenta informação, contexto, personalidade, tensão ou p
 real?" — se não, corte, condense ou reescreva.
 
 Evite ativamente:
+- aberturas burocráticas como "Hoje vamos falar", "Neste vídeo veremos" ou "Desde os
+  primórdios"; abra com tensão, contraste, descoberta, pergunta ou consequência real;
 - repetir a mesma informação ou a mesma conclusão com palavras diferentes;
 - introduções longas antes de chegar a algo interessante;
 - parágrafos de preenchimento só para aumentar duração/contagem de palavras;
@@ -39,7 +41,9 @@ Busque ativamente, quando o conteúdo permitir:
 - desenvolver o suficiente os pontos importantes sem se alongar nos pontos simples;
 - transições naturais entre seções, decorrentes do conteúdo, não fórmulas fixas;
 - encerrar quando o conteúdo relevante foi desenvolvido — nunca perseguir uma contagem
-  de palavras ou minutos artificialmente.
+  de palavras ou minutos artificialmente sem um contrato editorial explícito;
+- quando houver contrato de duração, cumprir o orçamento com evidência, exemplos,
+  contraexemplos, contexto, implicações e payoff — nunca com filler ou recap redundante.
 
 Hierarquia e natureza do contexto:
 - AUTHOR BRIEFING é intenção, opinião e contexto editorial deliberado do autor;
@@ -48,6 +52,9 @@ Hierarquia e natureza do contexto:
 - GROUNDING EXTERNO pode sustentar fatos verificáveis, não transformar opinião em fato.
 Nunca invente momentos de gameplay ou timestamps e nunca apresente uma opinião do briefing
 como consenso ou fato estabelecido sem evidência factual independente.
+Preserve também o grau de certeza: observação oficial não confirma automaticamente uma
+mecânica; diferencie fonte oficial, fonte secundária, leak autenticado, inferência,
+especulação e informação não verificada na linguagem usada pelo roteiro.
 
 Isto não deve virar clickbait: técnicas de retenção precisam parecer parte natural do
 conteúdo, nunca manipulação explícita ou óbvia ao espectador."""

@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     # Game Analysis media context budget
     game_analysis_media_context_max_chars: int = 50000
 
+    # Duration calibration is supplied by Orchestrator telemetry. The fallback is
+    # explicit and versioned so Ideas Hub never needs to call a TTS provider.
+    orchestrator_base_url: str = "http://localhost:8011"
+    orchestrator_timeout_seconds: int = 5
+    duration_fallback_words_per_minute: float = 145.0
+    duration_fallback_chars_per_second: float = 14.5
+    duration_revision_max_iterations: int = 2
+
     # Parâmetros ajustáveis
     ideia_similarity_threshold: float = 0.85
     ideias_por_trend: int = 3

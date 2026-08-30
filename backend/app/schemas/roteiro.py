@@ -37,6 +37,10 @@ class PersistedNarrativeBlock(BaseModel):
     dicas_visual: str | None = None
     dicas_audio: str | None = None
     visual_queries: list[PersistedVisualQuery] = Field(default_factory=list, max_length=5)
+    purpose: str | None = None
+    beats: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    claims: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    audio_intent: dict[str, Any] | None = None
 
     @field_validator("tipo", "conteudo")
     @classmethod
@@ -60,6 +64,8 @@ class RoteiroEstrutura(BaseModel):
     justificativa_llm: str | None = None
     prompt_trace: dict[str, Any] | None = None
     media_context: dict[str, Any] | None = None
+    duration_contract: dict[str, Any] | None = None
+    editorial_quality: dict[str, Any] | None = None
 
     @field_validator("titulo")
     @classmethod

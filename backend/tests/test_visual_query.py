@@ -7,22 +7,26 @@ Tests cover:
 - Backward compatibility for old roteiros without visual_queries
 - VisualQueryIntent and VisualQueryImportance enums
 """
-import pytest
-from uuid import uuid4, UUID
 
-from app.schemas.visual_query import (
-    VisualQuery,
-    VisualQueryIntent,
-    VisualQueryImportance,
+from uuid import UUID, uuid4
+
+import pytest
+from app.agents.analise_jogos import (
+    AnaliseJogosService,
+    format_media_context_for_prompt,
 )
 from app.agents.roteirista import BlocoNarrativo, RoteiroEstruturado
-from app.agents.analise_jogos import AnaliseJogosService, format_media_context_for_prompt
 from app.schemas.media_indexer import (
     GameAnalysisMediaContext,
-    MediaIndexerTimelineSession,
-    MediaIndexerTimelineNote,
-    MediaIndexerNote,
     MediaIndexerAlignment,
+    MediaIndexerNote,
+    MediaIndexerTimelineNote,
+    MediaIndexerTimelineSession,
+)
+from app.schemas.visual_query import (
+    VisualQuery,
+    VisualQueryImportance,
+    VisualQueryIntent,
 )
 
 
@@ -275,7 +279,7 @@ class TestRoteiristaServiceSerialization:
         result = service.to_dict(roteiro)
 
         assert "production_script_schema_version" in result
-        assert result["production_script_schema_version"] == "2.0"
+        assert result["production_script_schema_version"] == "2.1"
         assert result["media_context"] is None
         assert len(result["blocos"]) == 1
         assert "visual_queries" in result["blocos"][0]
@@ -456,10 +460,7 @@ class TestProvenanceCanonicalization:
         """Test that only 5 visual queries are parsed per block."""
         lookup = {}
 
-        vq_data = [
-            {"intent": "illustration", "query": f"Query {i}"}
-            for i in range(10)
-        ]
+        vq_data = [{"intent": "illustration", "query": f"Query {i}"} for i in range(10)]
 
         queries = service._parse_visual_queries(vq_data, lookup)
 
@@ -610,4 +611,4 @@ class TestBackwardCompatibility:
 
         # New schema includes version
         assert "production_script_schema_version" in result
-        assert result["production_script_schema_version"] == "2.0"
+        assert result["production_script_schema_version"] == "2.1"

@@ -265,6 +265,7 @@ class AnaliseJogosService:
         media_project_id: UUID | None = None,
         media_session_ids: list[UUID] | None = None,
         author_briefing: str | None = None,
+        duration_contract_prompt: str | None = None,
     ) -> RoteiroEstruturado:
         """
         Transforma anotações brutas de gameplay em um roteiro de análise estruturado.
@@ -334,8 +335,11 @@ class AnaliseJogosService:
             .with_author_briefing(author_briefing)
             .with_media_context(media_context_text)
             .with_grounding(contexto_grounding)
+            .with_duration_contract(duration_contract_prompt)
             .build(task_context=usuario_message)
         )
+        composed.trace["model"] = self.llm_model
+        composed.trace["provider"] = "litellm_openai_compatible"
 
         resposta_llm = await self._call_llm(
             messages=[
@@ -368,6 +372,14 @@ class AnaliseJogosService:
                 dicas_visual=bloco.dicas_visual,
                 dicas_audio=bloco.dicas_audio,
                 visual_queries=visual_queries,
+                purpose=bloco.purpose,
+                beats=[item.model_dump(mode="json") for item in bloco.beats],
+                claims=[item.model_dump(mode="json") for item in bloco.claims],
+                audio_intent=(
+                    bloco.audio_intent.model_dump(mode="json")
+                    if bloco.audio_intent is not None
+                    else None
+                ),
             ))
             duracao_total += duracao_bloco
 

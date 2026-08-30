@@ -75,6 +75,21 @@ async def get_roteiro(
     return roteiro
 
 
+@router.get("/{roteiro_id:uuid}/duration")
+async def get_duration_contract(
+    roteiro_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Re-evaluate speakable duration against the current calibration snapshot."""
+
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    try:
+        return await get_roteiro_generator(db).duration_report(roteiro_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/ideia/{ideia_id}/latest", response_model=RoteiroResponse)
 async def get_latest_roteiro_by_ideia(
     ideia_id: UUID,

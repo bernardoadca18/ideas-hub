@@ -13,6 +13,12 @@ function statusColor(status: string) {
   return '#6b7280';
 }
 
+function durationStatusColor(status?: string) {
+  if (status === 'excellent' || status === 'acceptable' || status === 'estimate_only') return '#10b981';
+  if (status === 'below_target' || status === 'above_target') return '#f59e0b';
+  return '#ef4444';
+}
+
 export default function Roteiros() {
   const [roteiros, setRoteiros] = useState<Roteiro[]>([]);
   const [loading, setLoading] = useState(true);
@@ -165,10 +171,30 @@ export default function Roteiros() {
                 <div className="roteiro-info">
                   <span className="status-badge" style={{ backgroundColor: statusColor(selected.status) }}>{selected.status}</span>
                   <span>Versão {selected.versao}</span>
-                  <span>{formatDuration(selected.estrutura.duracao_total_segundos)}</span>
+                  <span>Target: {selected.estrutura.duration_contract?.target_duration_seconds ? formatDuration(selected.estrutura.duration_contract.target_duration_seconds) : 'não definido'}</span>
+                  <span>Predicted: {formatDuration(Math.round(selected.estrutura.duration_contract?.predicted_duration_seconds || 0))}</span>
+                  <span>{selected.estrutura.duration_contract?.speakable_words || 0} palavras narráveis</span>
                   <span>{selected.estrutura.blocos.length} blocos</span>
                   <span>Origem: {selected.revision_kind}</span>
                 </div>
+                {selected.estrutura.duration_contract && (
+                  <div className="script-provenance">
+                    <strong style={{ color: durationStatusColor(selected.estrutura.duration_contract.status) }}>
+                      Duração: {selected.estrutura.duration_contract.status.replace(/_/g, ' ').toUpperCase()}
+                    </strong>
+                    <p>
+                      Delta previsto: {selected.estrutura.duration_contract.delta_seconds === null
+                        ? '—'
+                        : `${selected.estrutura.duration_contract.delta_seconds > 0 ? '+' : ''}${formatDuration(Math.abs(Math.round(selected.estrutura.duration_contract.delta_seconds)))}`}
+                    </p>
+                    <details>
+                      <summary>Orçamento por seção</summary>
+                      <ul>{selected.estrutura.duration_contract.sections.map((section) => (
+                        <li key={section.index}>{section.type}: target {section.target_words || '—'} palavras · atual {section.actual_words} · predicted {formatDuration(Math.round(section.predicted_duration_seconds))} · {section.status}</li>
+                      ))}</ul>
+                    </details>
+                  </div>
+                )}
                 <div className="script-provenance">
                   <strong>Contexto do autor usado nesta versão</strong>
                   <p>{selected.author_briefing_snapshot || 'Nenhum contexto fornecido.'}</p>
@@ -205,7 +231,7 @@ export default function Roteiros() {
         {roteiros.length === 0 ? <div className="empty-state">Nenhum roteiro encontrado</div> : roteiros.map((script) => (
           <div key={script.id} className="card">
             <div className="card-header"><h3 className="card-title">{script.estrutura.titulo}</h3><span className="status-badge" style={{ backgroundColor: statusColor(script.status) }}>{script.status}</span></div>
-            <div className="card-meta"><span>Versão: {script.versao}</span><span>Origem: {script.revision_kind}</span><span>Duração: {formatDuration(script.estrutura.duracao_total_segundos)}</span><span>Ideia: {script.ideia_id.slice(0, 8)}…</span></div>
+            <div className="card-meta"><span>Versão: {script.versao}</span><span>Origem: {script.revision_kind}</span><span>Target: {script.estrutura.duration_contract?.target_duration_seconds ? formatDuration(script.estrutura.duration_contract.target_duration_seconds) : '—'}</span><span>Predicted: {formatDuration(Math.round(script.estrutura.duration_contract?.predicted_duration_seconds || 0))}</span><span style={{ color: durationStatusColor(script.estrutura.duration_contract?.status) }}>{script.estrutura.duration_contract?.status || 'legacy/unvalidated'}</span><span>Ideia: {script.ideia_id.slice(0, 8)}…</span></div>
             <div className="card-actions"><button onClick={() => { setSelected(script); setFeedback(''); }} className="btn btn-sm btn-secondary">Revisar detalhes</button>{script.status === 'rascunho' && script.versao === latestVersionByIdea.get(script.ideia_id) && <><button onClick={() => approve(script)} className="btn btn-sm btn-success">Aprovar</button><button onClick={() => reject(script)} className="btn btn-sm btn-danger">Rejeitar</button></>}</div>
           </div>
         ))}

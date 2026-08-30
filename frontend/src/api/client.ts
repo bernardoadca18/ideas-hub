@@ -18,6 +18,7 @@ export interface Ideia {
   titulo: string;
   descricao_breve?: string;
   author_briefing?: string;
+  target_duration_seconds?: number;
   author_briefing_identity: string;
   perfil_producao?: string;
   status: string;
@@ -52,6 +53,8 @@ export interface Roteiro {
     referencias?: string[];
     justificativa_llm?: string;
     prompt_trace?: Record<string, unknown>;
+    duration_contract?: DurationContract;
+    editorial_quality?: Record<string, unknown>;
   };
   status: string;
   author_briefing_snapshot?: string;
@@ -71,6 +74,33 @@ export interface BlocoNarrativo {
   dicas_visual?: string;
   dicas_audio?: string;
   visual_queries?: Array<Record<string, unknown>>;
+  purpose?: string;
+  beats?: Array<Record<string, unknown>>;
+  claims?: Array<Record<string, unknown>>;
+  audio_intent?: Record<string, unknown>;
+}
+
+export interface DurationContract {
+  target_duration_seconds: number | null;
+  predicted_duration_seconds: number;
+  actual_narration_duration_seconds: number | null;
+  delta_seconds: number | null;
+  ratio: number | null;
+  status: string;
+  revision_required: boolean;
+  speakable_words: number;
+  speakable_chars: number;
+  target_words: number | null;
+  calibration: { identity: string; fallback: boolean; sample_count: number };
+  sections: Array<{
+    index: number;
+    type: string;
+    target_duration_seconds: number | null;
+    target_words: number | null;
+    actual_words: number;
+    predicted_duration_seconds: number;
+    status: string;
+  }>;
 }
 
 export interface ScriptEditRevision {
@@ -131,14 +161,14 @@ class ApiClient {
     return this.request<Ideia[]>(`/ideias/${query ? `?${query}` : ''}`);
   }
 
-  async createIdeia(data: { titulo: string; descricao?: string; author_briefing?: string; nicho_id?: string }): Promise<Ideia> {
+  async createIdeia(data: { titulo: string; descricao?: string; author_briefing?: string; target_duration_seconds?: number; nicho_id?: string }): Promise<Ideia> {
     return this.request<Ideia>('/ideias/', {
       method: 'POST',
       body: JSON.stringify(data),
     });
   }
 
-  async updateIdeia(id: string, data: { author_briefing: string | null }): Promise<Ideia> {
+  async updateIdeia(id: string, data: { author_briefing?: string | null; target_duration_seconds?: number | null }): Promise<Ideia> {
     return this.request<Ideia>(`/ideias/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data),

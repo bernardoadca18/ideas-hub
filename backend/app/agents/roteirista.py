@@ -34,6 +34,10 @@ class BlocoNarrativo:
     dicas_visual: str | None = None
     dicas_audio: str | None = None
     visual_queries: list[VisualQuery] = field(default_factory=list)
+    purpose: str | None = None
+    beats: list[dict[str, Any]] = field(default_factory=list)
+    claims: list[dict[str, Any]] = field(default_factory=list)
+    audio_intent: dict[str, Any] | None = None
 
 
 @dataclass
@@ -47,6 +51,8 @@ class RoteiroEstruturado:
     justificativa_llm: str | None = None
     prompt_trace: dict | None = None  # observabilidade: perfil/workflow/componentes usados
     media_context: dict[str, Any] | None = None
+    duration_contract: dict[str, Any] | None = None
+    editorial_quality: dict[str, Any] | None = None
 
 
 class RoteiristaService:
@@ -179,6 +185,7 @@ class RoteiristaService:
         author_briefing: str | None = None,
         revision_source: dict[str, Any] | None = None,
         revision_feedback: str | None = None,
+        duration_contract_prompt: str | None = None,
     ) -> RoteiroEstruturado:
         """
         Gera um roteiro estruturado a partir de uma ideia.
@@ -244,8 +251,11 @@ class RoteiristaService:
                 .with_niche(prompt_roteiro)
                 .with_author_briefing(author_briefing)
                 .with_grounding(contexto_grounding)
+                .with_duration_contract(duration_contract_prompt)
                 .build(task_context=usuario_message)
             )
+            composed.trace["model"] = self.llm_model
+            composed.trace["provider"] = "litellm_openai_compatible"
 
             resposta_llm = await self._call_llm(
                 messages=[
@@ -282,6 +292,14 @@ class RoteiristaService:
                     dicas_visual=bloco.dicas_visual,
                     dicas_audio=bloco.dicas_audio,
                     visual_queries=visual_queries,
+                    purpose=bloco.purpose,
+                    beats=[item.model_dump(mode="json") for item in bloco.beats],
+                    claims=[item.model_dump(mode="json") for item in bloco.claims],
+                    audio_intent=(
+                        bloco.audio_intent.model_dump(mode="json")
+                        if bloco.audio_intent is not None
+                        else None
+                    ),
                 ))
                 duracao_total_calculada += bloco.duracao_segundos
 
@@ -346,7 +364,7 @@ class RoteiristaService:
     def to_dict(self, roteiro: RoteiroEstruturado) -> dict:
         """Converte RoteiroEstruturado para dicionário (JSON)."""
         return {
-            "production_script_schema_version": "2.0",
+            "production_script_schema_version": "2.1",
             "titulo": roteiro.titulo,
             "duracao_total_segundos": roteiro.duracao_total_segundos,
             "blocos": [
@@ -357,6 +375,10 @@ class RoteiristaService:
                     "dicas_visual": b.dicas_visual,
                     "dicas_audio": b.dicas_audio,
                     "visual_queries": [vq.to_dict() for vq in b.visual_queries],
+                    "purpose": b.purpose,
+                    "beats": b.beats,
+                    "claims": b.claims,
+                    "audio_intent": b.audio_intent,
                 }
                 for b in roteiro.blocos
             ],
@@ -365,6 +387,8 @@ class RoteiristaService:
             "justificativa_llm": roteiro.justificativa_llm,
             "prompt_trace": roteiro.prompt_trace,
             "media_context": roteiro.media_context,
+            "duration_contract": roteiro.duration_contract,
+            "editorial_quality": roteiro.editorial_quality,
         }
 
 

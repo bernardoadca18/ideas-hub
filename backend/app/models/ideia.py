@@ -53,6 +53,7 @@ class Ideia(Base, TimestampMixin):
     titulo: Mapped[str] = mapped_column(String(300), nullable=False)
     descricao_breve: Mapped[str | None] = mapped_column(Text, nullable=True)
     author_briefing: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_duration_seconds: Mapped[int | None] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(StatusIdeia, nullable=False, default="rascunho")
     eh_continuacao_de: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),

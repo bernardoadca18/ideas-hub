@@ -14,6 +14,7 @@ class AnaliseJogoRequest(BaseModel):
         None,
         description="Contexto editorial opcional do autor; distinto das notas de gameplay",
     )
+    target_duration_seconds: int | None = Field(default=None, ge=60, le=28_800)
 
     # Media Indexer integration (optional)
     media_project_id: UUID | None = Field(

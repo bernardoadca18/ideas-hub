@@ -13,6 +13,7 @@ class IdeiaBase(BaseModel):
     titulo: str = Field(..., max_length=300)
     descricao_breve: str | None = None
     author_briefing: str | None = None
+    target_duration_seconds: int | None = Field(default=None, ge=60, le=28_800)
     status: str = Field(default="rascunho", max_length=50)
     eh_continuacao_de: UUID | None = None
     numero_parte: int | None = Field(default=None, gt=1)
@@ -30,6 +31,7 @@ class IdeiaUpdate(BaseModel):
     titulo: str | None = Field(default=None, max_length=300)
     descricao_breve: str | None = None
     author_briefing: str | None = None
+    target_duration_seconds: int | None = Field(default=None, ge=60, le=28_800)
     status: str | None = Field(default=None, max_length=50)
     eh_continuacao_de: UUID | None = None
     numero_parte: int | None = Field(default=None, gt=1)

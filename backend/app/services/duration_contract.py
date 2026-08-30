@@ -1,0 +1,319 @@
+"""Deterministic, TTS-independent script duration and editorial diagnostics."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import statistics
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass
+from typing import Any
+
+import httpx
+
+from app.core.config import settings
+from app.production_profiles import ProductionProfile
+
+DURATION_CONTRACT_VERSION = "script_duration_contract_v1"
+SPEAKABLE_TEXT_VERSION = "speakable_text_blocks_v1"
+EDITORIAL_VALIDATOR_VERSION = "editorial_validator_v1"
+_WORD_RE = re.compile(r"\b[\wÀ-ÿ]+(?:[-'][\wÀ-ÿ]+)*\b", re.UNICODE)
+_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+_GENERIC_HOOKS = (
+    "hoje vamos falar",
+    "hoje vamos analisar",
+    "neste vídeo veremos",
+    "neste vídeo vamos",
+    "desde os primórdios",
+)
+
+
+def _identity(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def normalize_speakable_text(text: str) -> str:
+    """Normalize whitespace only; canonical script content is never rewritten."""
+
+    return " ".join(text.split())
+
+
+def speakable_text_from_blocks(blocks: Sequence[Any]) -> str:
+    """Return exactly the narrative content sent downstream, excluding metadata."""
+
+    parts: list[str] = []
+    for block in blocks:
+        content = (
+            block.get("conteudo", "") if isinstance(block, dict) else block.conteudo
+        )
+        normalized = normalize_speakable_text(str(content))
+        if normalized:
+            parts.append(normalized)
+    return "\n\n".join(parts)
+
+
+def count_words(text: str) -> int:
+    return len(_WORD_RE.findall(text))
+
+
+@dataclass(frozen=True)
+class DurationCalibration:
+    version: str
+    identity: str
+    words_per_minute: float
+    chars_per_second: float
+    sample_count: int
+    source_window: str
+    generated_at: str | None
+    fallback: bool
+    language: str
+    voice_profile: str | None
+    generation_profile: str | None
+    production_profile: str | None
+
+    @classmethod
+    def fallback_for(cls, *, production_profile: str | None) -> DurationCalibration:
+        version = "speaking_rate_fallback_v1"
+        words_per_minute = float(settings.duration_fallback_words_per_minute)
+        chars_per_second = float(settings.duration_fallback_chars_per_second)
+        payload = {
+            "version": version,
+            "words_per_minute": words_per_minute,
+            "chars_per_second": chars_per_second,
+            "language": "pt-BR",
+            "production_profile": production_profile,
+        }
+        return cls(
+            version=version,
+            identity=_identity(payload),
+            words_per_minute=words_per_minute,
+            chars_per_second=chars_per_second,
+            sample_count=0,
+            source_window="configured_fallback",
+            generated_at=None,
+            fallback=True,
+            language="pt-BR",
+            voice_profile=None,
+            generation_profile=None,
+            production_profile=production_profile,
+        )
+
+
+class DurationCalibrationClient:
+    """Read accepted-take telemetry from Orchestrator, with an explicit fallback."""
+
+    async def get(self, production_profile: str | None) -> DurationCalibration:
+        fallback = DurationCalibration.fallback_for(
+            production_profile=production_profile
+        )
+        try:
+            async with httpx.AsyncClient(
+                timeout=settings.orchestrator_timeout_seconds
+            ) as client:
+                response = await client.get(
+                    f"{settings.orchestrator_base_url.rstrip('/')}/workflow/calibration/speaking-rate",
+                    params={"production_profile": production_profile}
+                    if production_profile
+                    else None,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            return DurationCalibration(
+                version=str(payload["version"]),
+                identity=str(payload["identity"]),
+                words_per_minute=float(payload["words_per_minute"]),
+                chars_per_second=float(payload["chars_per_second"]),
+                sample_count=int(payload["sample_count"]),
+                source_window=str(payload["source_window"]),
+                generated_at=payload.get("generated_at"),
+                fallback=bool(payload["fallback"]),
+                language=str(payload.get("language") or "pt-BR"),
+                voice_profile=payload.get("voice_profile"),
+                generation_profile=payload.get("generation_profile"),
+                production_profile=payload.get("production_profile"),
+            )
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            return fallback
+
+
+def duration_budget_prompt(
+    target_seconds: int | None, calibration: DurationCalibration
+) -> str:
+    if target_seconds is None:
+        return (
+            "DURATION MODE: estimate-only. There is no explicit editorial target. "
+            "Do not invent length; cover only evidence-supported material."
+        )
+    target_words = round(calibration.words_per_minute * target_seconds / 60)
+    tolerance = 0.15
+    return (
+        "DURATION CONTRACT (deterministic validator follows):\n"
+        f"- target_duration_seconds: {target_seconds}\n"
+        f"- calibrated target_words: {target_words}\n"
+        f"- acceptable word interval: {round(target_words * (1 - tolerance))}-"
+        f"{round(target_words * (1 + tolerance))}\n"
+        f"- calibration identity: {calibration.identity}\n"
+        "Plan section budgets and beats before writing. Every section must add evidence, "
+        "contrast, explanation, implication or payoff. Never fill the budget with recap, "
+        "paraphrase, generic CTA, artificial pauses or repeated thesis."
+    )
+
+
+def _predicted_seconds(text: str, calibration: DurationCalibration) -> float:
+    words = count_words(text)
+    chars = len(normalize_speakable_text(text))
+    estimates = []
+    if calibration.words_per_minute > 0:
+        estimates.append(words * 60 / calibration.words_per_minute)
+    if calibration.chars_per_second > 0:
+        estimates.append(chars / calibration.chars_per_second)
+    return round(statistics.median(estimates), 3) if estimates else 0.0
+
+
+def _status(ratio: float, profile: ProductionProfile) -> str:
+    delta = ratio - 1.0
+    if abs(delta) <= profile.duracao.excellent_tolerance_ratio:
+        return "excellent"
+    if abs(delta) <= profile.duracao.acceptable_tolerance_ratio:
+        return "acceptable"
+    if ratio < 0.70:
+        return "far_below_target"
+    if ratio < 1:
+        return "below_target"
+    if ratio > 1.30:
+        return "far_above_target"
+    return "above_target"
+
+
+def evaluate_duration(
+    blocks: Sequence[Any],
+    *,
+    target_seconds: int | None,
+    calibration: DurationCalibration,
+    profile: ProductionProfile,
+) -> dict[str, Any]:
+    text = speakable_text_from_blocks(blocks)
+    words = count_words(text)
+    chars = len(normalize_speakable_text(text))
+    predicted = _predicted_seconds(text, calibration)
+    ratio = predicted / target_seconds if target_seconds else None
+    status = _status(ratio, profile) if ratio is not None else "estimate_only"
+    target_words = (
+        round(calibration.words_per_minute * target_seconds / 60)
+        if target_seconds
+        else None
+    )
+    sections: list[dict[str, Any]] = []
+    declared_total = sum(
+        int(
+            block.get("duracao_segundos", 0)
+            if isinstance(block, dict)
+            else block.duracao_segundos
+        )
+        for block in blocks
+    )
+    for index, block in enumerate(blocks):
+        duration = int(
+            block.get("duracao_segundos", 0)
+            if isinstance(block, dict)
+            else block.duracao_segundos
+        )
+        content = (
+            block.get("conteudo", "") if isinstance(block, dict) else block.conteudo
+        )
+        section_text = normalize_speakable_text(str(content))
+        section_target = (
+            round(target_seconds * duration / declared_total)
+            if target_seconds and declared_total > 0
+            else None
+        )
+        section_predicted = _predicted_seconds(section_text, calibration)
+        section_ratio = section_predicted / section_target if section_target else None
+        sections.append(
+            {
+                "index": index,
+                "type": block.get("tipo") if isinstance(block, dict) else block.tipo,
+                "target_duration_seconds": section_target,
+                "target_words": round(
+                    calibration.words_per_minute * section_target / 60
+                )
+                if section_target
+                else None,
+                "actual_words": count_words(section_text),
+                "predicted_duration_seconds": section_predicted,
+                "ratio": round(section_ratio, 4) if section_ratio is not None else None,
+                "status": _status(section_ratio, profile)
+                if section_ratio is not None
+                else "estimate_only",
+            }
+        )
+    revision_required = status not in {"excellent", "acceptable", "estimate_only"}
+    payload = {
+        "version": DURATION_CONTRACT_VERSION,
+        "speakable_text_version": SPEAKABLE_TEXT_VERSION,
+        "target_duration_seconds": target_seconds,
+        "predicted_duration_seconds": predicted,
+        "actual_narration_duration_seconds": None,
+        "delta_seconds": round(predicted - target_seconds, 3)
+        if target_seconds
+        else None,
+        "ratio": round(ratio, 4) if ratio is not None else None,
+        "status": status,
+        "revision_required": revision_required,
+        "speakable_words": words,
+        "speakable_chars": chars,
+        "target_words": target_words,
+        "min_words": round(
+            target_words * (1 - profile.duracao.acceptable_tolerance_ratio)
+        )
+        if target_words
+        else None,
+        "max_words": round(
+            target_words * (1 + profile.duracao.acceptable_tolerance_ratio)
+        )
+        if target_words
+        else None,
+        "calibration": asdict(calibration),
+        "sections": sections,
+    }
+    payload["identity"] = _identity(payload)
+    return payload
+
+
+def evaluate_editorial_quality(blocks: Sequence[Any]) -> dict[str, Any]:
+    text = speakable_text_from_blocks(blocks)
+    lowered = text.casefold()
+    first = normalize_speakable_text(text)[:250].casefold()
+    sentences = [item.strip() for item in _SENTENCE_RE.split(text) if item.strip()]
+    long_sentences = [count_words(item) for item in sentences if count_words(item) > 38]
+    words = [word.casefold() for word in _WORD_RE.findall(text)]
+    ngrams: dict[tuple[str, ...], int] = {}
+    for index in range(max(0, len(words) - 5)):
+        gram = tuple(words[index : index + 6])
+        ngrams[gram] = ngrams.get(gram, 0) + 1
+    repeated = [" ".join(gram) for gram, count in ngrams.items() if count >= 2][:20]
+    issues: list[str] = []
+    if any(pattern in first for pattern in _GENERIC_HOOKS):
+        issues.append("generic_hook")
+    if repeated:
+        issues.append("repeated_phrases")
+    if long_sentences:
+        issues.append("overlong_spoken_sentences")
+    return {
+        "version": EDITORIAL_VALIDATOR_VERSION,
+        "generic_hook": "generic_hook" in issues,
+        "repeated_ngrams": repeated,
+        "long_sentence_word_counts": long_sentences,
+        "sentence_count": len(sentences),
+        "issues": issues,
+        "identity": _identity(
+            {"version": EDITORIAL_VALIDATOR_VERSION, "text": lowered, "issues": issues}
+        ),
+    }
+
+
+duration_calibration_client = DurationCalibrationClient()

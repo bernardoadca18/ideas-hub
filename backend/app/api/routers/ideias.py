@@ -39,6 +39,12 @@ class IdeiaBrutaInput(BaseModel):
         None,
         description="Contexto editorial opcional fornecido pelo autor; não é refinado pelo Curador",
     )
+    target_duration_seconds: int | None = Field(
+        None,
+        ge=60,
+        le=28_800,
+        description="Duração editorial alvo; distinta da duração prevista/real",
+    )
     nicho_id: UUID | None = Field(None, description="ID do nicho (opcional)")
 
 
@@ -159,6 +165,7 @@ async def create_ideia(
         titulo=ideia_refinada.titulo,
         descricao_breve=ideia_refinada.descricao_breve,
         author_briefing=ideia_data.author_briefing,
+        target_duration_seconds=ideia_data.target_duration_seconds,
         status="rascunho",
         eh_continuacao_de=None,  # Definido manualmente pelo usuário
         numero_parte=None,  # Definido manualmente pelo usuário
@@ -183,6 +190,7 @@ async def create_ideia(
         descricao_breve=ideia_recarregada.descricao_breve,
         author_briefing=ideia_recarregada.author_briefing,
         author_briefing_identity=ideia_recarregada.author_briefing_identity,
+        target_duration_seconds=getattr(ideia_recarregada, "target_duration_seconds", None),
         perfil_producao=ideia_recarregada.perfil_producao,
         status=ideia_recarregada.status,
         eh_continuacao_de=ideia_recarregada.eh_continuacao_de,

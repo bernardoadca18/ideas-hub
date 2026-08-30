@@ -10,18 +10,30 @@ código (prompts + regras), enquanto o Nicho continua sendo o dado editável
 pelo usuário (nome, prompts livres, fontes de trend). Adicionar um novo
 perfil = adicionar uma entrada aqui.
 """
+
 from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
 class DurationPolicy:
-    """Política de duração de um perfil. Guia o modelo, não força truncamento."""
+    """Versioned editorial duration contract for a production profile."""
+
     min_seconds: int | None
     target_min_seconds: int | None
     target_max_seconds: int | None
-    hard_minimum: bool = False  # se True, o serviço aplica um piso técnico (evitar micro-vídeos)
+    hard_minimum: bool = (
+        False  # se True, o serviço aplica um piso técnico (evitar micro-vídeos)
+    )
     allow_extended: bool = True  # se o assunto justificar, pode passar do alvo
     guidance: str = ""  # texto extra para o prompt sobre como tratar duração
+    excellent_tolerance_ratio: float = 0.08
+    acceptable_tolerance_ratio: float = 0.15
+
+    @property
+    def default_target_seconds(self) -> int | None:
+        if self.target_min_seconds is None or self.target_max_seconds is None:
+            return None
+        return round((self.target_min_seconds + self.target_max_seconds) / 2)
 
     def as_prompt_text(self) -> str:
         if self.target_min_seconds is None and self.target_max_seconds is None:
@@ -35,11 +47,10 @@ class DurationPolicy:
             tmin = self.target_min_seconds // 60 if self.target_min_seconds else None
             tmax = self.target_max_seconds // 60 if self.target_max_seconds else None
             base = (
-                f"Duração de referência: aproximadamente {tmin}-{tmax} minutos. "
-                "Isto é uma referência, não uma meta rígida: um vídeo muito bom e um pouco "
-                "mais curto é preferível a um vídeo esticado artificialmente para bater esse "
-                "número. Se o assunto realmente sustentar um vídeo mais longo com conteúdo "
-                "relevante (sem repetição ou enchimento), pode exceder esse intervalo."
+                f"Faixa editorial do perfil: aproximadamente {tmin}-{tmax} minutos. "
+                "Quando uma duração-alvo explícita for fornecida, ela é um contrato de "
+                "conteúdo verificável, não um rótulo: cumpra o orçamento com evidência, "
+                "análise e progressão úteis. Nunca use repetição, silêncio ou filler."
             )
         extra = f" {self.guidance}" if self.guidance else ""
         return base + extra
@@ -51,11 +62,15 @@ class ProductionProfile:
     nome: str
     descricao: str
     duracao: DurationPolicy
-    estrutura_guidance: str        # como organizar o roteiro (guia, não template fixo)
-    ideacao_guidance: str          # o que geração/curadoria de ideias deve priorizar neste perfil
-    pesquisa_guidance: str         # como a pesquisa/grounding deve ser usada
+    estrutura_guidance: str  # como organizar o roteiro (guia, não template fixo)
+    ideacao_guidance: (
+        str  # o que geração/curadoria de ideias deve priorizar neste perfil
+    )
+    pesquisa_guidance: str  # como a pesquisa/grounding deve ser usada
     regras_editoriais: list[str] = field(default_factory=list)
-    workflow_roteiro: str = "roteiro_padrao"  # id do WorkflowSpec usado para gerar roteiro
+    workflow_roteiro: str = (
+        "roteiro_padrao"  # id do WorkflowSpec usado para gerar roteiro
+    )
     permite_grounding_automatico: bool = True
 
 
@@ -68,7 +83,10 @@ FACELESS_POP_CULTURE_LISTS = ProductionProfile(
         "explicações de lore/personagens/eventos."
     ),
     duracao=DurationPolicy(
-        min_seconds=None, target_min_seconds=600, target_max_seconds=900, hard_minimum=False,
+        min_seconds=None,
+        target_min_seconds=600,
+        target_max_seconds=900,
+        hard_minimum=False,
         guidance=(
             "Assuntos com lore extensa (ex.: 'todas as Joias do Infinito explicadas') podem "
             "justificar mais tempo; um tópico simples não deve ser esticado só para chegar a 10 min."
@@ -107,7 +125,9 @@ FACELESS_INFORMATIONAL = ProductionProfile(
         "engenharia, curiosidades técnicas."
     ),
     duracao=DurationPolicy(
-        min_seconds=None, target_min_seconds=600, target_max_seconds=900,
+        min_seconds=None,
+        target_min_seconds=600,
+        target_max_seconds=900,
         guidance="Timelines históricas ou comparações técnicas complexas podem justificar mais tempo.",
     ),
     estrutura_guidance=(
@@ -139,7 +159,9 @@ FACELESS_GENERAL = ProductionProfile(
         "histórias, acontecimentos incomuns, sem exigir workflow especializado."
     ),
     duracao=DurationPolicy(
-        min_seconds=None, target_min_seconds=600, target_max_seconds=900,
+        min_seconds=None,
+        target_min_seconds=600,
+        target_max_seconds=900,
         guidance="Este perfil tem a maior liberdade de formato do conjunto faceless.",
     ),
     estrutura_guidance=(
@@ -152,7 +174,9 @@ FACELESS_GENERAL = ProductionProfile(
         "por atenção justamente por trazer assuntos incomuns bem contados."
     ),
     pesquisa_guidance="Use grounding para checar qualquer alegação factual central da história.",
-    regras_editoriais=["Evite sensacionalismo vazio: a curiosidade deve vir de fatos reais bem contados."],
+    regras_editoriais=[
+        "Evite sensacionalismo vazio: a curiosidade deve vir de fatos reais bem contados."
+    ],
     workflow_roteiro="roteiro_padrao",
 )
 
@@ -164,7 +188,9 @@ FACELESS_POP_CULTURE = ProductionProfile(
         "teorias, retrospectivas, lore, curiosidades sobre filmes, séries, games, franquias."
     ),
     duracao=DurationPolicy(
-        min_seconds=None, target_min_seconds=600, target_max_seconds=1200,
+        min_seconds=None,
+        target_min_seconds=600,
+        target_max_seconds=1200,
         guidance="Retrospectivas de franquia ou análises de universo extenso podem passar de 15 min.",
     ),
     estrutura_guidance=(
@@ -177,7 +203,9 @@ FACELESS_POP_CULTURE = ProductionProfile(
         "este perfil pode ter opinião/interpretação editorial, desde que sinalizada como tal."
     ),
     pesquisa_guidance="Separe claramente fato canônico, declaração oficial de autores/estúdio e teoria de fã.",
-    regras_editoriais=["Teorias devem ser apresentadas como teorias, nunca como fato estabelecido."],
+    regras_editoriais=[
+        "Teorias devem ser apresentadas como teorias, nunca como fato estabelecido."
+    ],
     workflow_roteiro="roteiro_padrao",
 )
 
@@ -190,7 +218,10 @@ GAME_ANALYSIS = ProductionProfile(
         "ou ideação automática."
     ),
     duracao=DurationPolicy(
-        min_seconds=None, target_min_seconds=None, target_max_seconds=None, allow_extended=True,
+        min_seconds=None,
+        target_min_seconds=None,
+        target_max_seconds=None,
+        allow_extended=True,
         guidance=(
             "A duração é inteiramente derivada da profundidade das anotações fornecidas e da "
             "quantidade de argumentos relevantes que elas sustentam. Não existe meta de minutos."
@@ -214,10 +245,14 @@ GAME_ANALYSIS = ProductionProfile(
     ),
     regras_editoriais=[
         "As anotações do autor são a fonte de prioridade máxima e não podem ser contradizidas.",
-        "Nunca invente reações, opiniões ou experiências pessoais que não estejam nas anotações "
-        "ou razoavelmente implícitas nelas.",
-        "Preserve a perspectiva e as conclusões do autor — o agente edita e estrutura, não "
-        "substitui a opinião dele pela própria.",
+        (
+            "Nunca invente reações, opiniões ou experiências pessoais que não estejam nas "
+            "anotações ou razoavelmente implícitas nelas."
+        ),
+        (
+            "Preserve a perspectiva e as conclusões do autor — o agente edita e estrutura, "
+            "não substitui a opinião dele pela própria."
+        ),
     ],
     workflow_roteiro="roteiro_analise_jogos",
     permite_grounding_automatico=False,

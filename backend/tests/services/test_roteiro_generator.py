@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-
 from app.agents.roteirista import BlocoNarrativo, RoteiroEstruturado
 from app.schemas.analise_jogo import AnaliseJogoRequest
 from app.schemas.llm_outputs import LLMOutputError
@@ -50,12 +49,17 @@ async def test_generation_snapshots_verbatim_briefing_and_identity() -> None:
 
     async def create(payload):
         return SimpleNamespace(
-            id=uuid4(), ideia_id=current_idea.id, versao=payload.versao, status=payload.status
+            id=uuid4(),
+            ideia_id=current_idea.id,
+            versao=payload.versao,
+            status=payload.status,
         )
 
     generator.roteiro_repo.create.side_effect = create
     llm = AsyncMock(return_value=generated_script())
-    with patch("app.services.roteiros.gerador_roteiro.roteirista_service.gerar_roteiro", llm):
+    with patch(
+        "app.services.roteiros.gerador_roteiro.roteirista_service.gerar_roteiro", llm
+    ):
         result = await generator.generate_from_ideia(current_idea.id)
 
     llm.assert_awaited_once()
@@ -69,16 +73,21 @@ async def test_generation_snapshots_verbatim_briefing_and_identity() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generation_failure_does_not_persist_fake_script_or_change_status() -> None:
+async def test_generation_failure_does_not_persist_fake_script_or_change_status() -> (
+    None
+):
     generator = RoteiroGenerator(AsyncMock())
     current_idea = idea(None)
     generator.ideia_repo = AsyncMock()
     generator.ideia_repo.get_by_id.return_value = current_idea
     generator.roteiro_repo = AsyncMock()
-    with patch(
-        "app.services.roteiros.gerador_roteiro.roteirista_service.gerar_roteiro",
-        AsyncMock(side_effect=LLMOutputError("malformed_json", "invalid")),
-    ), pytest.raises(ScriptGenerationError) as error:
+    with (
+        patch(
+            "app.services.roteiros.gerador_roteiro.roteirista_service.gerar_roteiro",
+            AsyncMock(side_effect=LLMOutputError("malformed_json", "invalid")),
+        ),
+        pytest.raises(ScriptGenerationError) as error,
+    ):
         await generator.generate_from_ideia(current_idea.id)
     assert error.value.category == "malformed_json"
     generator.roteiro_repo.create.assert_not_awaited()
@@ -105,11 +114,13 @@ async def test_manual_create_uses_server_owned_revision_and_briefing_snapshot() 
     await generator.create_manual_draft(current_idea.id, structure)
 
     persisted = generator._persist_revision.await_args.kwargs
-    assert persisted == {
-        "ideia": current_idea,
-        "estrutura": structure,
-        "revision_kind": "manual_create",
-    }
+    assert persisted["ideia"] is current_idea
+    assert persisted["revision_kind"] == "manual_create"
+    assert persisted["estrutura"].titulo == structure.titulo
+    assert persisted["estrutura"].duration_contract["status"] == "estimate_only"
+    assert (
+        persisted["estrutura"].editorial_quality["version"] == "editorial_validator_v1"
+    )
 
 
 @pytest.mark.asyncio
@@ -148,10 +159,13 @@ async def test_game_analysis_passes_separate_briefing_and_snapshots_it() -> None
 async def test_game_analysis_provider_failure_creates_no_partial_idea() -> None:
     generator = RoteiroGenerator(AsyncMock())
     generator.ideia_repo = AsyncMock()
-    with patch(
-        "app.services.roteiros.gerador_roteiro.analise_jogos_service.gerar_roteiro_de_notas",
-        AsyncMock(side_effect=ConnectionError("provider offline")),
-    ), pytest.raises(ScriptGenerationError) as error:
+    with (
+        patch(
+            "app.services.roteiros.gerador_roteiro.analise_jogos_service.gerar_roteiro_de_notas",
+            AsyncMock(side_effect=ConnectionError("provider offline")),
+        ),
+        pytest.raises(ScriptGenerationError) as error,
+    ):
         await generator.generate_from_notas(
             AnaliseJogoRequest(
                 titulo_provisorio="Análise",
@@ -176,19 +190,23 @@ async def test_human_edit_creates_revision_and_preserves_visual_provenance() -> 
             "production_script_schema_version": "2.0",
             "titulo": "Original",
             "duracao_total_segundos": 60,
-            "blocos": [{
-                "tipo": "desenvolvimento",
-                "duracao_segundos": 60,
-                "conteudo": "Original",
-                "visual_queries": [{
-                    "id": str(query_id),
-                    "order": 0,
-                    "intent": "evidence",
-                    "query": "momento registrado",
-                    "importance": "required",
-                    "source_note_id": str(note_id),
-                }],
-            }],
+            "blocos": [
+                {
+                    "tipo": "desenvolvimento",
+                    "duracao_segundos": 60,
+                    "conteudo": "Original",
+                    "visual_queries": [
+                        {
+                            "id": str(query_id),
+                            "order": 0,
+                            "intent": "evidence",
+                            "query": "momento registrado",
+                            "importance": "required",
+                            "source_note_id": str(note_id),
+                        }
+                    ],
+                }
+            ],
             "tags": [],
         },
     )
@@ -197,12 +215,14 @@ async def test_human_edit_creates_revision_and_preserves_visual_provenance() -> 
     generator._persist_revision = AsyncMock(return_value=SimpleNamespace(id=uuid4()))
     request = ScriptEditRevisionRequest(
         titulo="Editado",
-        blocos=[{
-            "tipo": "desenvolvimento",
-            "duracao_segundos": 75,
-            "conteudo": "Texto humano corrigido",
-            "dicas_visual": "Dica segura",
-        }],
+        blocos=[
+            {
+                "tipo": "desenvolvimento",
+                "duracao_segundos": 75,
+                "conteudo": "Texto humano corrigido",
+                "dicas_visual": "Dica segura",
+            }
+        ],
         tags=["editado"],
         edit_summary="Removi repetição.",
     )
@@ -235,7 +255,9 @@ async def test_stale_draft_rejection_cannot_reset_idea_state() -> None:
     generator.roteiro_repo = AsyncMock()
     generator.ideia_repo = AsyncMock()
     generator.roteiro_repo.get_by_id.return_value = stale
-    generator.roteiro_repo.get_latest_version_by_ideia.return_value = SimpleNamespace(id=uuid4())
+    generator.roteiro_repo.get_latest_version_by_ideia.return_value = SimpleNamespace(
+        id=uuid4()
+    )
 
     with pytest.raises(ValueError, match="versão mais recente"):
         await generator.rejeitar_roteiro(stale.id)

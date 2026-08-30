@@ -105,6 +105,42 @@ class LLMVisualQuery(StrictModel):
         return value
 
 
+class EvidenceTier(str, Enum):
+    official_confirmed = "official_confirmed"
+    official_observation = "official_observation"
+    reliable_secondary = "reliable_secondary"
+    leak_authenticated = "leak_authenticated"
+    inference = "inference"
+    speculation = "speculation"
+    unverified = "unverified"
+    gameplay_note = "gameplay_note"
+    author_opinion = "author_opinion"
+
+
+class LLMEditorialBeat(StrictModel):
+    purpose: str = Field(min_length=1, max_length=1000)
+    key_point: str = Field(min_length=1, max_length=2000)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+    retention_role: str | None = Field(default=None, max_length=500)
+
+
+class LLMClaim(StrictModel):
+    summary: str = Field(min_length=1, max_length=2000)
+    evidence_tier: EvidenceTier
+    source_identity: str | None = Field(default=None, max_length=1000)
+    confidence: float = Field(ge=0, le=1)
+
+
+class LLMAudioIntent(StrictModel):
+    music_enabled: bool = False
+    moods: list[str] = Field(default_factory=list, max_length=8)
+    energy: float | None = Field(default=None, ge=0, le=1)
+    styles: list[str] = Field(default_factory=list, max_length=8)
+    vocals: bool = False
+    transition: str | None = Field(default=None, max_length=500)
+    sfx_intent: list[str] = Field(default_factory=list, max_length=8)
+
+
 class LLMNarrativeBlock(StrictModel):
     tipo: str = Field(min_length=1, max_length=100)
     duracao_segundos: int = Field(gt=0, le=7200)
@@ -112,6 +148,10 @@ class LLMNarrativeBlock(StrictModel):
     dicas_visual: str | None = Field(default=None, max_length=10_000)
     dicas_audio: str | None = Field(default=None, max_length=10_000)
     visual_queries: list[LLMVisualQuery] = Field(default_factory=list, max_length=5)
+    purpose: str | None = Field(default=None, max_length=2000)
+    beats: list[LLMEditorialBeat] = Field(default_factory=list, max_length=20)
+    claims: list[LLMClaim] = Field(default_factory=list, max_length=50)
+    audio_intent: LLMAudioIntent | None = None
 
     @field_validator("tipo", "conteudo")
     @classmethod
