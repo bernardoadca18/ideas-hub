@@ -608,7 +608,7 @@ class ScriptGenerationJobService:
             role=LLMTaskRole.PLANNING,
             prompt=prompt,
             schema=EditorialPlanOutput.model_json_schema(),
-            max_tokens=min(6000, 500 + len(requested_sections) * 350),
+            max_tokens=min(6000, max(2000, 500 + len(requested_sections) * 350)),
         )
         plan, planning_provenance = await self._parse_or_repair(
             run, result, EditorialPlanOutput

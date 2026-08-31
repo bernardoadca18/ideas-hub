@@ -1,18 +1,28 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import httpx
 import pytest
 from app.core.config import Settings
-from app.services.llm_gateway import LLMCallResult, LLMTaskRole
+from app.schemas.generation import EditorialPlanOutput
+from app.services.llm_gateway import (
+    LLMCallResult,
+    LLMFailureCategory,
+    LLMGateway,
+    LLMGatewayError,
+    LLMTaskRole,
+)
 from app.services.script_generation_jobs import (
     GenerationFailureCategory,
     GenerationJobError,
     ScriptGenerationJobService,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _config() -> Settings:
@@ -39,6 +49,50 @@ def _result(role: LLMTaskRole, model: str) -> LLMCallResult:
         total_tokens=12,
         latency_seconds=0.01,
         attempt_count=1,
+    )
+
+
+def _editorial_plan_json(*, section_keys: list[str] | None = None) -> str:
+    keys = section_keys or ["section-01"]
+    return json.dumps(
+        {
+            "thesis": "Uma tese editorial verificável.",
+            "audience_promise": "Entender o argumento sem fatos inventados.",
+            "chapters": ["Capítulo único"],
+            "sections": [
+                {
+                    "key": key,
+                    "title": f"Seção {index}",
+                    "purpose": "Desenvolver o argumento com clareza.",
+                    "narrative_role": "desenvolvimento",
+                    "beats": ["Apresentar o ponto central"],
+                    "evidence_refs": [],
+                    "must_cover": ["A tese editorial"],
+                    "must_not_repeat": [],
+                    "transition_target": "Conectar com a próxima seção",
+                }
+                for index, key in enumerate(keys, start=1)
+            ],
+            "claim_ledger": [],
+            "open_loops": [],
+        }
+    )
+
+
+def _gateway_response(content: str) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "model": "provider/model",
+            "provider": "test",
+            "choices": [{"message": {"content": content}}],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "total_tokens": 30,
+            },
+        },
+        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
     )
 
 
@@ -82,6 +136,239 @@ async def test_task_policy_routes_by_function_without_provider_names(
     assert gateway.complete.await_args.kwargs["model_alias"] == expected
     assert run.call_usage["calls"] == 1
     assert (len(run.call_usage["escalations"]) == 1) is bool(escalation)
+
+
+@pytest.mark.asyncio
+async def test_parse_or_repair_returns_valid_pydantic_output_without_repair() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    service._complete = AsyncMock()  # type: ignore[method-assign]
+    result = _result(LLMTaskRole.PLANNING, "standard-route")
+    result = LLMCallResult(**{**result.__dict__, "content": _editorial_plan_json()})
+
+    parsed, provenance = await service._parse_or_repair(
+        SimpleNamespace(), result, EditorialPlanOutput
+    )
+
+    assert isinstance(parsed, EditorialPlanOutput)
+    assert parsed.sections[0].key == "section-01"
+    assert provenance == result.provenance()
+    service._complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_parse_or_repair_handles_json_decode_error_and_repairs_once() -> None:
+    class JsonLoadsEditorialPlanOutput(EditorialPlanOutput):
+        @classmethod
+        def model_validate_json(cls, json_data, **kwargs):
+            return cls.model_validate(json.loads(json_data), **kwargs)
+
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    malformed = _result(LLMTaskRole.PLANNING, "standard-route")
+    malformed = LLMCallResult(**{**malformed.__dict__, "content": "{"})
+    repaired = _result(LLMTaskRole.REPAIR, "fast-route")
+    repaired = LLMCallResult(**{**repaired.__dict__, "content": _editorial_plan_json()})
+    service._complete = AsyncMock(return_value=repaired)  # type: ignore[method-assign]
+
+    parsed, provenance = await service._parse_or_repair(
+        SimpleNamespace(), malformed, JsonLoadsEditorialPlanOutput
+    )
+
+    assert isinstance(parsed, EditorialPlanOutput)
+    assert provenance["repair_reason"] == "JSONDecodeError"
+    assert provenance["repair"]["task_role"] == LLMTaskRole.REPAIR.value
+    service._complete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_parse_or_repair_repairs_schema_invalid_json() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    invalid = _result(LLMTaskRole.PLANNING, "standard-route")
+    invalid = LLMCallResult(
+        **{
+            **invalid.__dict__,
+            "content": json.dumps(
+                {
+                    "thesis": "Tese",
+                    "audience_promise": "Promessa",
+                    "chapters": ["Capítulo"],
+                    "sections": [],
+                }
+            ),
+        }
+    )
+    repaired = _result(LLMTaskRole.REPAIR, "fast-route")
+    repaired = LLMCallResult(**{**repaired.__dict__, "content": _editorial_plan_json()})
+    service._complete = AsyncMock(return_value=repaired)  # type: ignore[method-assign]
+
+    parsed, provenance = await service._parse_or_repair(
+        SimpleNamespace(), invalid, EditorialPlanOutput
+    )
+
+    assert isinstance(parsed, EditorialPlanOutput)
+    assert provenance["repair_reason"] == "ValidationError"
+    repair_call = service._complete.await_args.kwargs
+    assert repair_call["role"] is LLMTaskRole.REPAIR
+    assert "Repair only JSON serialization and schema shape" in repair_call["prompt"]
+    assert "do not add facts" in repair_call["prompt"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("still_invalid", ["{", '{"thesis":"still incomplete"}'])
+async def test_parse_or_repair_fails_after_one_invalid_repair(
+    still_invalid: str,
+) -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    initial = _result(LLMTaskRole.PLANNING, "standard-route")
+    initial = LLMCallResult(**{**initial.__dict__, "content": "{"})
+    repair = _result(LLMTaskRole.REPAIR, "fast-route")
+    repair = LLMCallResult(**{**repair.__dict__, "content": still_invalid})
+    service._complete = AsyncMock(return_value=repair)  # type: ignore[method-assign]
+
+    with pytest.raises(LLMGatewayError) as captured:
+        await service._parse_or_repair(SimpleNamespace(), initial, EditorialPlanOutput)
+
+    assert captured.value.category is LLMFailureCategory.FORMAT
+    assert "bounded repair" in str(captured.value)
+    service._complete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_real_plan_uses_schema_fallback_repair_and_deterministic_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema_rejection = httpx.Response(
+        400,
+        text='{"error":{"message":"Request contains an invalid argument",'
+        '"status":"INVALID_ARGUMENT"}}',
+        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
+    )
+    invalid_plan = json.dumps(
+        {
+            "thesis": "Tese inicial",
+            "audience_promise": "Promessa inicial",
+            "chapters": ["Capítulo"],
+            "sections": [
+                {
+                    "key": "llm-key-1",
+                    "title": "Seção 1",
+                    "purpose": "Explicar o primeiro ponto",
+                    "narrative_role": "x" * 101,
+                    "beats": ["Ponto 1"],
+                    "must_cover": ["Tese"],
+                },
+                {
+                    "key": "llm-key-2",
+                    "title": "Seção 2",
+                    "purpose": "Explicar o segundo ponto",
+                    "narrative_role": "conclusão",
+                    "beats": ["Ponto 2"],
+                    "must_cover": ["Síntese"],
+                },
+            ],
+            "claim_ledger": {"unexpected": "shape"},
+            "open_loops": [],
+        }
+    )
+    repaired_plan = _editorial_plan_json(section_keys=["llm-key-1", "llm-key-2"])
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.side_effect = [
+        schema_rejection,
+        _gateway_response(invalid_plan),
+        _gateway_response(repaired_plan),
+    ]
+    config = Settings(
+        litellm_base_url="http://litellm.test",
+        llm_model="standard-route",
+        llm_fast_model="fast-route",
+        llm_standard_model="standard-route",
+        llm_strong_model="strong-route",
+        llm_max_attempts=3,
+    )
+    gateway = LLMGateway(config, client=client)
+    session = AsyncMock(spec=AsyncSession)
+    requested_sections = [
+        {
+            "key": "deterministic-01",
+            "order": 0,
+            "chapter_order": 0,
+            "target_duration_seconds": 300,
+            "target_words": 725,
+            "min_words": 650,
+            "max_words": 800,
+        },
+        {
+            "key": "deterministic-02",
+            "order": 1,
+            "chapter_order": 0,
+            "target_duration_seconds": 300,
+            "target_words": 725,
+            "min_words": 650,
+            "max_words": 800,
+        },
+    ]
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        phase="queued",
+        plan={"sections": requested_sections},
+        evidence_dossier={
+            "sources": [{"id": "idea-description"}],
+            "fragments": [],
+        },
+        call_usage={"calls": 0, "total_tokens": 0, "escalations": []},
+        model_policy={"strategy": "standard"},
+        strategy_identity="editorial-test-v3",
+    )
+    idea = SimpleNamespace(
+        titulo="Plano sintético de regressão",
+        descricao_breve="Conteúdo controlado, sem evidência factual externa.",
+        author_briefing=None,
+    )
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+        AsyncMock(return_value=idea),
+    )
+    service = ScriptGenerationJobService(session, gateway=gateway, config=config)
+
+    await service._plan(run)
+
+    assert run.phase == "writing"
+    assert EditorialPlanOutput.model_validate(run.plan["editorial"])
+    assert run.plan["planning_provenance"]["initial"]["attempt_count"] == 2
+    assert (
+        run.plan["planning_provenance"]["initial"]["fallback_reason"]
+        == "provider_json_schema_unsupported"
+    )
+    assert run.plan["planning_provenance"]["repair"]["task_role"] == "repair"
+    assert run.call_usage["calls"] == 2
+    assert client.post.await_count == 3
+    payloads = [call.kwargs["json"] for call in client.post.await_args_list]
+    assert payloads[0]["response_format"]["type"] == "json_schema"
+    assert payloads[1]["response_format"] == {"type": "json_object"}
+    assert payloads[2]["response_format"]["type"] == "json_schema"
+    assert [payload["max_tokens"] for payload in payloads] == [2000, 2000, 2000]
+    persisted_sections = [call.args[0] for call in session.add.call_args_list]
+    assert [section.section_key for section in persisted_sections] == [
+        "deterministic-01",
+        "deterministic-02",
+    ]
+    assert [section.section_plan["target_words"] for section in persisted_sections] == [
+        725,
+        725,
+    ]
+    assert [section.section_plan["key"] for section in persisted_sections] == [
+        "deterministic-01",
+        "deterministic-02",
+    ]
+    session.flush.assert_awaited_once()
 
 
 @pytest.mark.asyncio

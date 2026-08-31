@@ -166,3 +166,24 @@ async def test_json_schema_rejected_without_schema_returns_error() -> None:
         )
     assert captured.value.category is LLMFailureCategory.REQUEST
     assert client.post.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_regular_400_with_schema_does_not_use_capability_fallback() -> None:
+    rejected = httpx.Response(
+        400,
+        text="request rejected because the input is too large",
+        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
+    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = rejected
+    with pytest.raises(LLMGatewayError) as captured:
+        await LLMGateway(_settings(), client=client).complete(
+            messages=[{"role": "user", "content": "test"}],
+            role=LLMTaskRole.PLANNING,
+            temperature=0.5,
+            max_tokens=100,
+            response_schema={"type": "object"},
+        )
+    assert captured.value.category is LLMFailureCategory.REQUEST
+    assert client.post.await_count == 1
