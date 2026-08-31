@@ -17,7 +17,9 @@ from app.services.editorial_generation import (
     GenerationStrategy,
     build_generation_plan,
     content_capacity_report,
+    estimate_content_capacity,
     resolve_duration_intent,
+    select_generation_strategy,
     validate_section_words,
 )
 from app.services.script_generation_jobs import assemble_written_sections
@@ -169,6 +171,74 @@ def test_content_capacity_is_advisory_but_exposes_unsustainable_target() -> None
     )
     assert report["status"] == "probably_insufficient"
     assert report["advisory_only"] is True
+
+
+@pytest.mark.parametrize(
+    ("evidence_chars", "evidence_units", "expected_strategy"),
+    [
+        (5_000, 0, GenerationStrategy.SINGLE_PASS),
+        (30_000, 0, GenerationStrategy.STAGED),
+        (90_000, 0, GenerationStrategy.HIERARCHICAL_LONG_FORM),
+        (150_000, 0, GenerationStrategy.HIERARCHICAL_LONG_FORM),
+        (0, 50, GenerationStrategy.STAGED),
+        (0, 150, GenerationStrategy.HIERARCHICAL_LONG_FORM),
+    ],
+)
+def test_content_driven_strategy_uses_capacity_estimate(
+    evidence_chars: int, evidence_units: int, expected_strategy: GenerationStrategy
+) -> None:
+    profile = get_profile("game_analysis")
+    intent = resolve_duration_intent(
+        mode=DurationMode.CONTENT_DRIVEN,
+        requested_target_seconds=None,
+        profile=profile,
+    )
+    strategy = select_generation_strategy(
+        intent,
+        evidence_chars=evidence_chars,
+        evidence_units=evidence_units,
+        config=_settings(),
+    )
+    assert strategy is expected_strategy
+
+
+def test_content_capacity_estimate_scales_with_evidence() -> None:
+    small = estimate_content_capacity(evidence_chars=5_000, evidence_units=0)
+    medium = estimate_content_capacity(evidence_chars=50_000, evidence_units=0)
+    large = estimate_content_capacity(evidence_chars=150_000, evidence_units=0)
+
+    assert small.estimated_seconds < medium.estimated_seconds < large.estimated_seconds
+    assert small.confidence == "low"
+    assert medium.confidence in {"medium", "high"}
+    assert large.confidence == "high"
+
+
+@pytest.mark.parametrize(
+    ("evidence_chars", "expected_section_range"),
+    [
+        (5_000, (1, 2)),
+        (30_000, (3, 8)),
+        (90_000, (12, 25)),
+        (150_000, (20, 40)),
+    ],
+)
+def test_content_driven_plan_scales_sections_by_capacity(
+    evidence_chars: int, expected_section_range: tuple[int, int]
+) -> None:
+    profile = get_profile("game_analysis")
+    intent = resolve_duration_intent(
+        mode=DurationMode.CONTENT_DRIVEN,
+        requested_target_seconds=None,
+        profile=profile,
+    )
+    plan = build_generation_plan(
+        intent=intent,
+        words_per_minute=145,
+        evidence_chars=evidence_chars,
+        config=_settings(),
+    )
+    min_sections, max_sections = expected_section_range
+    assert min_sections <= len(plan.sections) <= max_sections
 
 
 @pytest.mark.parametrize("minutes", [30, 60, 120, 180])

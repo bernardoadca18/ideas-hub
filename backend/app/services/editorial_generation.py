@@ -13,8 +13,9 @@ from app.core.config import Settings, settings
 from app.production_profiles import ProductionProfile
 
 DURATION_INTENT_VERSION = "duration_intent_v1"
-GENERATION_STRATEGY_VERSION = "editorial_generation_strategy_v1"
+GENERATION_STRATEGY_VERSION = "editorial_generation_strategy_v2"
 SECTION_PLAN_VERSION = "editorial_section_plan_v1"
+CONTENT_CAPACITY_VERSION = "content_capacity_estimate_v1"
 
 
 class DurationMode(StrEnum):
@@ -34,6 +35,25 @@ class GenerationStrategy(StrEnum):
     SINGLE_PASS = "single_pass"
     STAGED = "staged"
     HIERARCHICAL_LONG_FORM = "hierarchical_long_form"
+
+
+@dataclass(frozen=True)
+class ContentCapacityEstimate:
+    estimated_seconds: int
+    confidence: str
+    evidence_units: int
+    limiting_reason: str | None
+    version: str = CONTENT_CAPACITY_VERSION
+
+    @property
+    def identity(self) -> str:
+        return _identity(asdict(self))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **asdict(self),
+            "identity": self.identity,
+        }
 
 
 @dataclass(frozen=True)
@@ -137,15 +157,20 @@ def select_generation_strategy(
     intent: ResolvedDurationIntent,
     *,
     evidence_chars: int = 0,
+    evidence_units: int = 0,
     config: Settings = settings,
 ) -> GenerationStrategy:
     target = intent.target_seconds
     if target is None:
-        return (
-            GenerationStrategy.STAGED
-            if evidence_chars >= 20_000
-            else GenerationStrategy.SINGLE_PASS
+        capacity = estimate_content_capacity(
+            evidence_chars=evidence_chars, evidence_units=evidence_units
         )
+        estimated = capacity.estimated_seconds
+        if estimated <= config.generation_single_pass_max_seconds:
+            return GenerationStrategy.SINGLE_PASS
+        if estimated <= config.generation_staged_max_seconds:
+            return GenerationStrategy.STAGED
+        return GenerationStrategy.HIERARCHICAL_LONG_FORM
     if target <= config.generation_single_pass_max_seconds:
         return GenerationStrategy.SINGLE_PASS
     if target <= config.generation_staged_max_seconds:
@@ -153,24 +178,60 @@ def select_generation_strategy(
     return GenerationStrategy.HIERARCHICAL_LONG_FORM
 
 
+def estimate_content_capacity(
+    *,
+    evidence_chars: int = 0,
+    evidence_units: int = 0,
+    words_per_minute: float = 145.0,
+) -> ContentCapacityEstimate:
+    words_from_chars = max(0, evidence_chars) / 10
+    words_from_units = max(0, evidence_units) * 120
+    estimated_words = max(words_from_chars, words_from_units)
+    estimated_seconds = round(estimated_words * 60 / words_per_minute)
+    units = max(1, evidence_units, evidence_chars // 1000)
+    if estimated_seconds < 600:
+        confidence = "low"
+        limiting_reason = "insufficient_evidence"
+    elif estimated_seconds < 1800:
+        confidence = "medium"
+        limiting_reason = None
+    else:
+        confidence = "high"
+        limiting_reason = None
+    return ContentCapacityEstimate(
+        estimated_seconds=estimated_seconds,
+        confidence=confidence,
+        evidence_units=units,
+        limiting_reason=limiting_reason,
+    )
+
+
 def build_generation_plan(
     *,
     intent: ResolvedDurationIntent,
     words_per_minute: float,
     evidence_chars: int = 0,
+    evidence_units: int = 0,
     config: Settings = settings,
 ) -> GenerationPlan:
     strategy = select_generation_strategy(
-        intent, evidence_chars=evidence_chars, config=config
+        intent,
+        evidence_chars=evidence_chars,
+        evidence_units=evidence_units,
+        config=config,
     )
     target = intent.target_seconds
     target_words = round(words_per_minute * target / 60) if target else None
     if target is None:
+        capacity = estimate_content_capacity(
+            evidence_chars=evidence_chars, evidence_units=evidence_units
+        )
+        effective_seconds = capacity.estimated_seconds
         section_count = max(
             1,
             min(
                 config.generation_max_sections,
-                math.ceil(max(evidence_chars, 1) / 12_000),
+                math.ceil(effective_seconds / config.generation_section_target_seconds),
             ),
         )
         chapter_count = max(1, math.ceil(section_count / 6))
