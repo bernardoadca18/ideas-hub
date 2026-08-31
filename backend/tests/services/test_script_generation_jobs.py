@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -128,3 +129,87 @@ def test_section_cannot_escape_the_approved_claim_ledger() -> None:
     with pytest.raises(GenerationJobError) as captured:
         ScriptGenerationJobService._validate_claim_refs(run, ["invented-claim"])
     assert captured.value.category is GenerationFailureCategory.GROUNDING
+
+
+@pytest.mark.asyncio
+async def test_claim_next_sets_timezone_aware_timestamps() -> None:
+    now = datetime.now(UTC)
+    stale_before = now - timedelta(seconds=300)
+    run = SimpleNamespace(
+        id=uuid4(),
+        status="queued",
+        started_at=None,
+        heartbeat_at=None,
+        criado_em=now - timedelta(seconds=60),
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=run))
+    )
+    service = ScriptGenerationJobService(
+        session, gateway=AsyncMock(), config=Settings(generation_stale_after_seconds=300)
+    )
+    claimed = await service.claim_next()
+    assert claimed is run
+    assert run.status == "running"
+    assert run.started_at is not None
+    assert run.heartbeat_at is not None
+    assert run.started_at.tzinfo is not None
+    assert run.heartbeat_at.tzinfo is not None
+    session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_claim_next_reclaims_stale_running_job() -> None:
+    now = datetime.now(UTC)
+    stale_heartbeat = now - timedelta(seconds=600)
+    run = SimpleNamespace(
+        id=uuid4(),
+        status="running",
+        started_at=now - timedelta(seconds=500),
+        heartbeat_at=stale_heartbeat,
+        criado_em=now - timedelta(seconds=700),
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=run))
+    )
+    service = ScriptGenerationJobService(
+        session, gateway=AsyncMock(), config=Settings(generation_stale_after_seconds=300)
+    )
+    claimed = await service.claim_next()
+    assert claimed is run
+    assert run.status == "running"
+    assert run.heartbeat_at.tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_update_preserves_timezone_awareness() -> None:
+    now = datetime.now(UTC)
+    run = SimpleNamespace(
+        id=uuid4(),
+        status="running",
+        started_at=now - timedelta(seconds=100),
+        heartbeat_at=now - timedelta(seconds=50),
+        criado_em=now - timedelta(seconds=200),
+        sections=[],
+        evidence_dossier={"research_complete": True},
+    )
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    service = ScriptGenerationJobService(
+        session, gateway=AsyncMock(), config=Settings()
+    )
+    service.get = AsyncMock(return_value=run)
+    run.heartbeat_at = datetime.now(UTC)
+    assert run.heartbeat_at.tzinfo is not None
+
+
+def test_datetime_now_utc_produces_timezone_aware_values() -> None:
+    now = datetime.now(UTC)
+    assert now.tzinfo is not None
+    naive = now.replace(tzinfo=None)
+    assert naive.tzinfo is None
+    aware_again = naive.replace(tzinfo=UTC)
+    assert aware_again.tzinfo is not None
