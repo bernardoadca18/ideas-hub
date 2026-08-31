@@ -6,14 +6,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-import httpx
 import pytest
 from app.core.config import Settings
-from app.schemas.generation import EditorialPlanOutput
+from app.schemas.generation import (
+    EditorialPlanOutput,
+    GlobalEditorialPlanOutput,
+    PlannedSectionBatchOutput,
+)
 from app.services.llm_gateway import (
     LLMCallResult,
     LLMFailureCategory,
-    LLMGateway,
     LLMGatewayError,
     LLMTaskRole,
 )
@@ -21,12 +23,13 @@ from app.services.script_generation_jobs import (
     GenerationFailureCategory,
     GenerationJobError,
     ScriptGenerationJobService,
-    _editorial_plan_output_contract,
+    _global_plan_output_contract,
     _planning_max_tokens,
     _repair_max_tokens,
+    _section_batch_output_contract,
+    _section_batches,
     _temperature_for_role,
 )
-from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _config() -> Settings:
@@ -38,100 +41,136 @@ def _config() -> Settings:
     )
 
 
-def _result(role: LLMTaskRole, model: str) -> LLMCallResult:
+def _result(
+    content: str,
+    *,
+    role: LLMTaskRole = LLMTaskRole.PLANNING,
+    finish_reason: str = "stop",
+    max_tokens: int = 3000,
+    completion_tokens: int = 300,
+) -> LLMCallResult:
     return LLMCallResult(
-        content="{}",
+        content=content,
         task_role=role.value,
-        model_alias=model,
+        model_alias="standard-route"
+        if role is not LLMTaskRole.REPAIR
+        else "fast-route",
         actual_model="provider/model",
         provider="test",
         prompt_identity="prompt",
-        temperature=0.5,
-        max_tokens=100,
-        prompt_tokens=10,
-        completion_tokens=2,
-        total_tokens=12,
+        temperature=0.0 if role is LLMTaskRole.REPAIR else 0.5,
+        max_tokens=max_tokens,
+        prompt_tokens=100,
+        completion_tokens=completion_tokens,
+        total_tokens=100 + completion_tokens,
         latency_seconds=0.01,
         attempt_count=1,
+        finish_reason=finish_reason,
     )
 
 
-def _editorial_plan_json(*, section_keys: list[str] | None = None) -> str:
-    keys = section_keys or ["section-01"]
-    return json.dumps(
-        {
-            "thesis": "Uma tese editorial verificável.",
-            "audience_promise": "Entender o argumento sem fatos inventados.",
-            "chapters": ["Capítulo único"],
-            "sections": [
-                {
-                    "key": key,
-                    "title": f"Seção {index}",
-                    "purpose": "Desenvolver o argumento com clareza.",
-                    "narrative_role": "desenvolvimento",
-                    "beats": ["Apresentar o ponto central"],
-                    "evidence_refs": [],
-                    "must_cover": ["A tese editorial"],
-                    "must_not_repeat": [],
-                    "transition_target": "Conectar com a próxima seção",
-                }
-                for index, key in enumerate(keys, start=1)
-            ],
-            "claim_ledger": [],
-            "open_loops": [],
-        }
-    )
-
-
-def _gateway_response(
-    content: str,
-    *,
-    finish_reason: str = "stop",
-    completion_tokens: int = 20,
-) -> httpx.Response:
-    return httpx.Response(
-        200,
-        json={
-            "model": "provider/model",
-            "provider": "test",
-            "choices": [
-                {
-                    "message": {"content": content},
-                    "finish_reason": finish_reason,
-                }
-            ],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": completion_tokens,
-                "total_tokens": 10 + completion_tokens,
-            },
-        },
-        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
-    )
-
-
-def _problematic_run_budgets() -> list[dict[str, int | str]]:
+def _budgets(count: int, *, chapter_count: int = 1) -> list[dict[str, int | str]]:
     return [
         {
-            "key": f"section-{index:03d}",
-            "order": index - 1,
-            "chapter_order": 0,
+            "key": f"section-{index + 1:03d}",
+            "order": index,
+            "chapter_order": min(chapter_count - 1, index * chapter_count // count),
             "target_duration_seconds": 240,
             "target_words": 596,
             "min_words": 507,
             "max_words": 685,
         }
-        for index in range(1, 4)
+        for index in range(count)
     ]
 
 
-def _section_keyed_plan_json() -> str:
-    valid = json.loads(
-        _editorial_plan_json(
-            section_keys=["section-001", "section-002", "section-003"]
-        )
+def _global_json(*, chapter_count: int = 1) -> str:
+    return json.dumps(
+        {
+            "thesis": "Uma tese editorial verificável.",
+            "audience_promise": "Entender o argumento sem fatos inventados.",
+            "chapters": [
+                {
+                    "key": f"chapter-{index + 1:03d}",
+                    "title": f"Capítulo {index + 1}",
+                    "purpose": "Organizar a progressão editorial.",
+                }
+                for index in range(chapter_count)
+            ],
+            "open_loops": [],
+        }
     )
-    return json.dumps({section["key"]: section for section in valid["sections"]})
+
+
+def _section_dict(key: str) -> dict[str, object]:
+    return {
+        "key": key,
+        "title": f"Plano {key}",
+        "purpose": "Desenvolver o argumento com clareza.",
+        "narrative_role": "desenvolvimento",
+        "beats": ["Apresentar o ponto central"],
+        "evidence_refs": [],
+        "must_cover": ["A tese editorial"],
+        "must_not_repeat": [],
+        "transition_target": "Conectar com a próxima seção",
+    }
+
+
+def _batch_json(keys: list[str]) -> str:
+    return json.dumps({"sections": [_section_dict(key) for key in keys]})
+
+
+def _planning_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    section_count: int = 3,
+    chapter_count: int = 1,
+) -> tuple[
+    ScriptGenerationJobService, AsyncMock, SimpleNamespace, list[SimpleNamespace]
+]:
+    rows: list[SimpleNamespace] = []
+    session = AsyncMock()
+    scalar_result = MagicMock()
+    scalar_result.scalars.return_value.all.side_effect = lambda: rows
+    session.execute = AsyncMock(return_value=scalar_result)
+    session.add = MagicMock(side_effect=rows.append)
+    service = ScriptGenerationJobService(session, gateway=AsyncMock(), config=_config())
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        phase="queued",
+        status="running",
+        plan={
+            "sections": _budgets(section_count, chapter_count=chapter_count),
+            "chapter_count": chapter_count,
+        },
+        sections=rows,
+        evidence_dossier={
+            "sources": [{"id": "idea-description"}],
+            "fragments": [],
+            "claims": [],
+        },
+        call_usage={
+            "calls": 0,
+            "total_tokens": 0,
+            "fallbacks": [],
+            "escalations": [],
+        },
+        model_policy={"strategy": "standard"},
+        strategy_identity="fragmented-planning-test",
+        heartbeat_at=None,
+    )
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                titulo="Fixture editorial",
+                descricao_breve="Conteúdo sintético sem fatos externos.",
+                author_briefing=None,
+            )
+        ),
+    )
+    return service, session, run, rows
 
 
 @pytest.mark.asyncio
@@ -156,7 +195,9 @@ async def test_task_policy_routes_by_function_without_provider_names(
     gateway = MagicMock()
     gateway.complete = AsyncMock()
     gateway.model_for.return_value = "standard-route"
-    gateway.complete.side_effect = lambda **kwargs: _result(role, kwargs["model_alias"])
+    gateway.complete.side_effect = lambda **kwargs: _result(
+        "{}", role=role, max_tokens=kwargs["max_tokens"]
+    )
     run = SimpleNamespace(
         call_usage={"calls": 0, "total_tokens": 0, "escalations": []},
         model_policy={"strategy": strategy},
@@ -176,255 +217,321 @@ async def test_task_policy_routes_by_function_without_provider_names(
         role
     )
     assert run.call_usage["calls"] == 1
+    assert run.call_usage["by_role"] == {role.value: 1}
+    assert run.call_usage["finish_reasons"][0]["role"] == role.value
     assert (len(run.call_usage["escalations"]) == 1) is bool(escalation)
 
 
 @pytest.mark.asyncio
-async def test_parse_or_repair_returns_valid_pydantic_output_without_repair() -> None:
+async def test_valid_global_fragment_does_not_call_repair() -> None:
     service = ScriptGenerationJobService(
         AsyncMock(), gateway=AsyncMock(), config=_config()
     )
     service._complete = AsyncMock()  # type: ignore[method-assign]
-    result = _result(LLMTaskRole.PLANNING, "standard-route")
-    result = LLMCallResult(**{**result.__dict__, "content": _editorial_plan_json()})
-
+    result = _result(_global_json())
     parsed, provenance = await service._parse_or_repair(
-        SimpleNamespace(), result, EditorialPlanOutput
+        SimpleNamespace(), result, GlobalEditorialPlanOutput
     )
-
-    assert isinstance(parsed, EditorialPlanOutput)
-    assert parsed.sections[0].key == "section-01"
+    assert parsed.thesis.startswith("Uma tese")
     assert provenance == result.provenance()
     service._complete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_parse_or_repair_handles_json_decode_error_and_repairs_once() -> None:
-    class JsonLoadsEditorialPlanOutput(EditorialPlanOutput):
-        @classmethod
-        def model_validate_json(cls, json_data, **kwargs):
-            return cls.model_validate(json.loads(json_data), **kwargs)
-
+async def test_global_wrong_root_uses_global_only_repair() -> None:
     service = ScriptGenerationJobService(
         AsyncMock(), gateway=AsyncMock(), config=_config()
     )
-    malformed = _result(LLMTaskRole.PLANNING, "standard-route")
-    malformed = LLMCallResult(**{**malformed.__dict__, "content": "{"})
-    repaired = _result(LLMTaskRole.REPAIR, "fast-route")
-    repaired = LLMCallResult(**{**repaired.__dict__, "content": _editorial_plan_json()})
-    service._complete = AsyncMock(return_value=repaired)  # type: ignore[method-assign]
-
-    parsed, provenance = await service._parse_or_repair(
-        SimpleNamespace(), malformed, JsonLoadsEditorialPlanOutput
+    invalid = _result(json.dumps({"chapter-001": {"title": "Capítulo"}}))
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(_global_json(), role=LLMTaskRole.REPAIR)
     )
+    parsed, provenance = await service._parse_or_repair(
+        SimpleNamespace(),
+        invalid,
+        GlobalEditorialPlanOutput,
+        repair_contract=_global_plan_output_contract(["chapter-001"]),
+    )
+    assert parsed.chapters[0].key == "chapter-001"
+    assert provenance["repair_reason"] == "ValidationError"
+    prompt = service._complete.await_args.kwargs["prompt"]
+    assert "VALIDATION ERRORS" in prompt
+    assert "Do not return sections" in prompt
+    assert "IMMUTABLE BATCH SKELETON" not in prompt
 
-    assert isinstance(parsed, EditorialPlanOutput)
-    assert provenance["repair_reason"] == "JSONDecodeError"
-    assert provenance["repair"]["task_role"] == LLMTaskRole.REPAIR.value
+
+@pytest.mark.asyncio
+async def test_section_wrong_root_repairs_only_that_batch() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    keys = ["section-001", "section-002"]
+    invalid = _result(json.dumps({key: _section_dict(key) for key in keys}))
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(_batch_json(keys), role=LLMTaskRole.REPAIR)
+    )
+    parsed, _ = await service._parse_or_repair(
+        SimpleNamespace(),
+        invalid,
+        PlannedSectionBatchOutput,
+        repair_contract=_section_batch_output_contract(keys),
+    )
+    assert [section.key for section in parsed.sections] == keys
+    prompt = service._complete.await_args.kwargs["prompt"]
+    assert "section-001" in prompt and "section-002" in prompt
+    assert "GLOBAL THESIS" not in prompt
+    assert "audience_promise" not in prompt
+    assert "EditorialPlanOutput" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_fragment_repair_is_bounded_and_truncation_is_terminal() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(
+            "{",
+            role=LLMTaskRole.REPAIR,
+            finish_reason="length",
+            max_tokens=2500,
+            completion_tokens=2490,
+        )
+    )
+    with pytest.raises(LLMGatewayError) as captured:
+        await service._parse_or_repair(
+            SimpleNamespace(), _result("{"), PlannedSectionBatchOutput
+        )
+    assert captured.value.category is LLMFailureCategory.FORMAT
     service._complete.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_parse_or_repair_repairs_schema_invalid_json() -> None:
-    service = ScriptGenerationJobService(
-        AsyncMock(), gateway=AsyncMock(), config=_config()
-    )
-    invalid = _result(LLMTaskRole.PLANNING, "standard-route")
-    invalid = LLMCallResult(
-        **{
-            **invalid.__dict__,
-            "content": json.dumps(
-                {
-                    "thesis": "Tese",
-                    "audience_promise": "Promessa",
-                    "chapters": ["Capítulo"],
-                    "sections": [],
-                }
+async def test_three_sections_assemble_exact_host_owned_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, rows = _planning_fixture(monkeypatch)
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_global_json(), max_tokens=2500),
+            _result(
+                _batch_json(["section-001", "section-002", "section-003"]),
+                max_tokens=4000,
             ),
-        }
+        ]
     )
-    repaired = _result(LLMTaskRole.REPAIR, "fast-route")
-    repaired = LLMCallResult(**{**repaired.__dict__, "content": _editorial_plan_json()})
-    service._complete = AsyncMock(return_value=repaired)  # type: ignore[method-assign]
-
-    parsed, provenance = await service._parse_or_repair(
-        SimpleNamespace(), invalid, EditorialPlanOutput
-    )
-
-    assert isinstance(parsed, EditorialPlanOutput)
-    assert provenance["repair_reason"] == "ValidationError"
-    repair_call = service._complete.await_args.kwargs
-    assert repair_call["role"] is LLMTaskRole.REPAIR
-    assert "Repair only serialization, root shape" in repair_call["prompt"]
-    assert "add examples or add facts" in repair_call["prompt"]
-
-
-@pytest.mark.asyncio
-async def test_parse_or_repair_restructures_section_keyed_root_compactly() -> None:
-    service = ScriptGenerationJobService(
-        AsyncMock(), gateway=AsyncMock(), config=_config()
-    )
-    initial = _result(LLMTaskRole.PLANNING, "standard-route")
-    initial = LLMCallResult(
-        **{
-            **initial.__dict__,
-            "content": _section_keyed_plan_json(),
-            "finish_reason": "stop",
-            "completion_tokens": 1519,
-            "max_tokens": 4000,
-        }
-    )
-    repaired = _result(LLMTaskRole.REPAIR, "fast-route")
-    repaired = LLMCallResult(
-        **{
-            **repaired.__dict__,
-            "content": _editorial_plan_json(
-                section_keys=["section-001", "section-002", "section-003"]
-            ),
-            "finish_reason": "stop",
-            "completion_tokens": 700,
-            "max_tokens": 3519,
-        }
-    )
-    service._complete = AsyncMock(return_value=repaired)  # type: ignore[method-assign]
-    contract = _editorial_plan_output_contract(
-        ["section-001", "section-002", "section-003"]
-    )
-
-    parsed, provenance = await service._parse_or_repair(
-        SimpleNamespace(),
-        initial,
-        EditorialPlanOutput,
-        repair_contract=contract,
-    )
-
-    assert [section.key for section in parsed.sections] == [
+    await service._plan(run)
+    canonical = EditorialPlanOutput.model_validate(run.plan["editorial"])
+    assert [section.key for section in canonical.sections] == [
         "section-001",
         "section-002",
         "section-003",
     ]
-    original_sections = json.loads(initial.content)
-    assert [section.title for section in parsed.sections] == [
-        original_sections[key]["title"]
-        for key in ("section-001", "section-002", "section-003")
+    assert run.phase == "writing"
+    assert run.plan["planning_state"]["status"] == "completed"
+    assert len(run.plan["planning_state"]["accepted_batches"]) == 1
+    assert [row.status for row in rows] == ["pending", "pending", "pending"]
+    assert [row.section_plan["target_words"] for row in rows] == [596, 596, 596]
+    schemas = [call.kwargs["schema"] for call in service._complete.await_args_list]
+    assert schemas == [
+        GlobalEditorialPlanOutput.model_json_schema(),
+        PlannedSectionBatchOutput.model_json_schema(),
     ]
-    assert all(len(section.beats) == 1 for section in parsed.sections)
-    assert parsed.claim_ledger == []
-    assert provenance["initial"]["finish_reason"] == "stop"
-    assert provenance["repair"]["finish_reason"] == "stop"
-    repair_call = service._complete.await_args.kwargs
-    assert repair_call["max_tokens"] == 3519
-    assert "not an editorial writer" in repair_call["prompt"]
-    assert "Do not elaborate, expand" in repair_call["prompt"]
-    assert "smallest valid JSON" in repair_call["prompt"]
-    assert "Never return a bare sections map" in repair_call["prompt"]
-    assert "thesis (non-empty string)" in repair_call["prompt"]
-    assert "chapters (non-empty array" in repair_call["prompt"]
-    assert "never use empty strings or empty arrays" in repair_call["prompt"]
-    assert "Satisfy this JSON Schema exactly" not in repair_call["prompt"]
+    assert EditorialPlanOutput.model_json_schema() not in schemas
 
 
 @pytest.mark.asyncio
-async def test_truncated_repair_is_terminal_without_capacity_retry() -> None:
-    service = ScriptGenerationJobService(
-        AsyncMock(), gateway=AsyncMock(), config=_config()
-    )
-    initial = _result(LLMTaskRole.PLANNING, "standard-route")
-    initial = LLMCallResult(
-        **{
-            **initial.__dict__,
-            "content": _section_keyed_plan_json(),
-            "completion_tokens": 1519,
-            "max_tokens": 4000,
-            "finish_reason": "stop",
+async def test_wrong_section_batch_root_repairs_only_batch_in_real_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, _ = _planning_fixture(monkeypatch)
+    keyed_root = json.dumps(
+        {
+            key: _section_dict(key)
+            for key in ["section-001", "section-002", "section-003"]
         }
     )
-    truncated = _result(LLMTaskRole.REPAIR, "fast-route")
-    truncated = LLMCallResult(
-        **{
-            **truncated.__dict__,
-            "content": "{",
-            "completion_tokens": 3515,
-            "max_tokens": 3519,
-            "finish_reason": "length",
-        }
-    )
-    service._complete = AsyncMock(return_value=truncated)  # type: ignore[method-assign]
-
-    with pytest.raises(LLMGatewayError) as captured:
-        await service._parse_or_repair(
-            SimpleNamespace(),
-            initial,
-            EditorialPlanOutput,
-            repair_contract=_editorial_plan_output_contract(
-                ["section-001", "section-002", "section-003"]
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_global_json()),
+            _result(keyed_root, completion_tokens=900),
+            _result(
+                _batch_json(["section-001", "section-002", "section-003"]),
+                role=LLMTaskRole.REPAIR,
             ),
-        )
+        ]
+    )
+    await service._plan(run)
+    assert run.phase == "writing"
+    roles = [call.kwargs["role"] for call in service._complete.await_args_list]
+    assert roles == [LLMTaskRole.PLANNING, LLMTaskRole.PLANNING, LLMTaskRole.REPAIR]
+    repair_prompt = service._complete.await_args_list[2].kwargs["prompt"]
+    assert "section-001" in repair_prompt
+    assert "Uma tese editorial verificável" not in repair_prompt
+    assert "claim_ledger" not in repair_prompt
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "actual_keys",
+    [
+        ["section-001", "section-002", "section-003", "section-004"],
+        ["section-001", "section-002"],
+        ["section-001", "wrong-key", "section-003"],
+        ["section-002", "section-001", "section-003"],
+    ],
+    ids=["extra", "missing", "wrong", "reordered"],
+)
+async def test_section_batch_contract_mismatch_is_rejected_locally(
+    monkeypatch: pytest.MonkeyPatch, actual_keys: list[str]
+) -> None:
+    service, _, run, rows = _planning_fixture(monkeypatch)
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[_result(_global_json()), _result(_batch_json(actual_keys))]
+    )
+    with pytest.raises(GenerationJobError) as captured:
+        await service._plan(run)
+    assert captured.value.category is GenerationFailureCategory.SCHEMA
+    assert "section planning batch contract mismatch" in str(captured.value)
+    assert all(row.status == "planning" for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_truncated_multi_section_batch_splits_deterministically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, _ = _planning_fixture(monkeypatch)
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_global_json()),
+            _result(
+                "{", finish_reason="length", max_tokens=4000, completion_tokens=3990
+            ),
+            _result(_batch_json(["section-001"])),
+            _result(_batch_json(["section-002", "section-003"])),
+        ]
+    )
+    await service._plan(run)
+    state = run.plan["planning_state"]
+    assert len(state["truncated_batches"]) == 1
+    assert len(state["accepted_batches"]) == 2
+    assert [section["key"] for section in run.plan["editorial"]["sections"]] == [
+        "section-001",
+        "section-002",
+        "section-003",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_singleton_batch_truncation_is_terminal_format(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, rows = _planning_fixture(monkeypatch, section_count=1)
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_global_json()),
+            _result(
+                "{", finish_reason="length", max_tokens=3000, completion_tokens=2990
+            ),
+        ]
+    )
+    with pytest.raises(LLMGatewayError) as captured:
+        await service._plan(run)
     assert captured.value.category is LLMFailureCategory.FORMAT
     assert "finish_reason=length" in str(captured.value)
-    service._complete.assert_awaited_once()
+    assert rows[0].status == "planning"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("still_invalid", ["{", '{"thesis":"still incomplete"}'])
-async def test_parse_or_repair_fails_after_one_invalid_repair(
-    still_invalid: str,
+async def test_resume_reuses_global_and_completed_sections(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = ScriptGenerationJobService(
-        AsyncMock(), gateway=AsyncMock(), config=_config()
+    service, _, run, rows = _planning_fixture(monkeypatch)
+    for budget in run.plan["sections"]:
+        key = str(budget["key"])
+        completed = key != "section-003"
+        rows.append(
+            SimpleNamespace(
+                run_id=run.id,
+                section_key=key,
+                section_order=budget["order"],
+                chapter_order=budget["chapter_order"],
+                status="pending" if completed else "planning",
+                section_plan={
+                    **budget,
+                    **(_section_dict(key) if completed else {}),
+                    "planning_status": "completed" if completed else "pending",
+                },
+                prompt_provenance={"already_completed": True} if completed else None,
+            )
+        )
+    run.plan["planning_state"] = {
+        "version": "fragmented_editorial_planning_v1",
+        "status": "planning",
+        "global_output": json.loads(_global_json()),
+        "global_provenance": {"persisted": True},
+        "accepted_batches": [{"expected_section_keys": ["section-001", "section-002"]}],
+        "truncated_batches": [],
+    }
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(_batch_json(["section-003"]))
     )
-    initial = _result(LLMTaskRole.PLANNING, "standard-route")
-    initial = LLMCallResult(**{**initial.__dict__, "content": "{"})
-    repair = _result(LLMTaskRole.REPAIR, "fast-route")
-    repair = LLMCallResult(**{**repair.__dict__, "content": still_invalid})
-    service._complete = AsyncMock(return_value=repair)  # type: ignore[method-assign]
-
-    with pytest.raises(LLMGatewayError) as captured:
-        await service._parse_or_repair(SimpleNamespace(), initial, EditorialPlanOutput)
-
-    assert captured.value.category is LLMFailureCategory.FORMAT
-    assert "bounded repair" in str(captured.value)
+    await service._plan(run)
     service._complete.assert_awaited_once()
+    assert service._complete.await_args.kwargs["role"] is LLMTaskRole.PLANNING
+    assert [row.section_plan["title"] for row in rows[:2]] == [
+        "Plano section-001",
+        "Plano section-002",
+    ]
+    assert len(run.plan["planning_state"]["accepted_batches"]) == 2
 
 
-def test_planning_output_token_budget_scales_and_remains_bounded() -> None:
+def test_long_form_batches_are_bounded_for_13_and_28_sections() -> None:
+    batches_13 = _section_batches(_budgets(13, chapter_count=3))
+    batches_28 = _section_batches(_budgets(28, chapter_count=5))
+    assert [len(batch) for batch in batches_13] == [4, 4, 4, 1]
+    assert [len(batch) for batch in batches_28] == [4, 4, 4, 4, 4, 4, 4]
+    assert max(map(len, [*batches_13, *batches_28])) == 4
+
+
+@pytest.mark.asyncio
+async def test_28_sections_never_request_monolithic_editorial_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, _ = _planning_fixture(
+        monkeypatch, section_count=28, chapter_count=5
+    )
+    results = [_result(_global_json(chapter_count=5))]
+    results.extend(
+        _result(_batch_json([str(item["key"]) for item in batch]))
+        for batch in _section_batches(run.plan["sections"])
+    )
+    service._complete = AsyncMock(side_effect=results)  # type: ignore[method-assign]
+    await service._plan(run)
+    assert service._complete.await_count == 8
+    schemas = [call.kwargs["schema"] for call in service._complete.await_args_list]
+    assert schemas[0] == GlobalEditorialPlanOutput.model_json_schema()
+    assert all(
+        schema == PlannedSectionBatchOutput.model_json_schema()
+        for schema in schemas[1:]
+    )
+    assert EditorialPlanOutput.model_json_schema() not in schemas
+    assert len(run.plan["editorial"]["sections"]) == 28
+
+
+def test_planning_and_repair_token_budgets_remain_bounded() -> None:
     assert _planning_max_tokens(1) == 3000
-    assert _planning_max_tokens(3) == 4000
     assert _planning_max_tokens(4) == 5000
-    assert _planning_max_tokens(5) == 6000
-    assert _planning_max_tokens(120) == 6000
     with pytest.raises(ValueError, match="at least one"):
         _planning_max_tokens(0)
-
-
-def test_repair_output_budget_uses_observed_size_headroom_and_hard_ceiling() -> None:
-    result = _result(LLMTaskRole.PLANNING, "standard-route")
-    observed = LLMCallResult(
-        **{
-            **result.__dict__,
-            "completion_tokens": 1519,
-            "max_tokens": 4000,
-        }
+    assert (
+        _repair_max_tokens(_result("{}", completion_tokens=1519, max_tokens=4000))
+        == 3519
     )
-    near_ceiling = LLMCallResult(
-        **{
-            **result.__dict__,
-            "completion_tokens": 5000,
-            "max_tokens": 6000,
-        }
+    assert (
+        _repair_max_tokens(_result("{}", completion_tokens=5000, max_tokens=6000))
+        == 6000
     )
-    no_usage = LLMCallResult(
-        **{
-            **result.__dict__,
-            "completion_tokens": None,
-            "max_tokens": 4000,
-        }
-    )
-
-    assert _repair_max_tokens(observed) == 3519
-    assert _repair_max_tokens(near_ceiling) == 6000
-    assert _repair_max_tokens(no_usage) == 4000
 
 
 def test_task_temperature_policy_keeps_repair_deterministic() -> None:
@@ -433,279 +540,56 @@ def test_task_temperature_policy_keeps_repair_deterministic() -> None:
     assert _temperature_for_role(LLMTaskRole.WRITING) == 0.7
 
 
-def _execute_plan_with_keys(
-    monkeypatch: pytest.MonkeyPatch,
-    section_keys: list[str],
-    *,
-    finish_reason: str = "stop",
-):
-    session = AsyncMock(spec=AsyncSession)
-    service = ScriptGenerationJobService(session, gateway=AsyncMock(), config=_config())
-    planning_result = _result(LLMTaskRole.PLANNING, "standard-route")
-    planning_result = LLMCallResult(
-        **{
-            **planning_result.__dict__,
-            "content": _editorial_plan_json(section_keys=section_keys),
-            "finish_reason": finish_reason,
-            "max_tokens": 4000,
-            "completion_tokens": 1996,
-        }
-    )
-    service._complete = AsyncMock(return_value=planning_result)  # type: ignore[method-assign]
+@pytest.mark.asyncio
+async def test_process_refreshes_new_planning_rows_before_writing() -> None:
+    section = SimpleNamespace(status="pending")
     run = SimpleNamespace(
         id=uuid4(),
-        ideia_id=uuid4(),
+        status="running",
         phase="planning",
-        plan={"sections": _problematic_run_budgets()},
-        evidence_dossier={
-            "sources": [{"id": "idea-description"}],
-            "fragments": [],
-        },
-        call_usage={"calls": 0, "total_tokens": 0, "escalations": []},
-        model_policy={"strategy": "standard"},
-        strategy_identity="problematic-run-shape",
+        sections=[],
+        plan={"sections": [], "chapter_count": 1},
+        evidence_dossier={"research_complete": True},
+        completed_sections=0,
+        heartbeat_at=None,
+        completed_at=None,
+        roteiro_id=None,
     )
-    monkeypatch.setattr(
-        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
-        AsyncMock(
-            return_value=SimpleNamespace(
-                titulo="Fixture do run problemático",
-                descricao_breve="Conteúdo sintético sem fatos externos.",
-                author_briefing=None,
-            )
-        ),
-    )
-    return service, session, run
+    session = AsyncMock()
 
+    async def refresh(target, *, attribute_names):
+        if attribute_names == ["sections"]:
+            target.sections = [section]
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "section_keys",
-    [
-        ["section-001", "section-002", "section-003", "section-004"],
-        ["section-001", "section-002"],
-        ["section-001", "renamed-section", "section-003"],
-        ["section-002", "section-001", "section-003"],
-    ],
-    ids=["extra", "missing", "renamed", "reordered"],
-)
-async def test_plan_rejects_section_contract_mismatch(
-    monkeypatch: pytest.MonkeyPatch, section_keys: list[str]
-) -> None:
-    service, session, run = _execute_plan_with_keys(monkeypatch, section_keys)
-
-    with pytest.raises(GenerationJobError) as captured:
-        await service._plan(run)
-
-    assert captured.value.category is GenerationFailureCategory.SCHEMA
-    assert "planner section contract mismatch" in str(captured.value)
-    assert "expected_count=3" in str(captured.value)
-    assert f"actual_count={len(section_keys)}" in str(captured.value)
-    session.add.assert_not_called()
-    service._complete.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "repaired_keys",
-    [
-        ["section-001", "section-002", "section-003", "section-004"],
-        ["section-001", "section-002"],
-        ["section-001", "wrong-key", "section-003"],
-        ["section-002", "section-001", "section-003"],
-    ],
-    ids=["repair-extra", "repair-missing", "repair-wrong", "repair-reordered"],
-)
-async def test_plan_rejects_repaired_section_contract_mismatch(
-    monkeypatch: pytest.MonkeyPatch, repaired_keys: list[str]
-) -> None:
-    session = AsyncMock(spec=AsyncSession)
+    session.refresh.side_effect = refresh
     service = ScriptGenerationJobService(session, gateway=AsyncMock(), config=_config())
-    initial = _result(LLMTaskRole.PLANNING, "standard-route")
-    initial = LLMCallResult(
-        **{
-            **initial.__dict__,
-            "content": _section_keyed_plan_json(),
-            "completion_tokens": 1519,
-            "max_tokens": 4000,
-            "finish_reason": "stop",
+    service.get = AsyncMock(return_value=run)  # type: ignore[method-assign]
+
+    async def complete_plan(target):
+        target.plan = {
+            **target.plan,
+            "editorial": {},
+            "planning_state": {
+                "version": "fragmented_editorial_planning_v1",
+                "status": "completed",
+            },
         }
-    )
-    repaired = _result(LLMTaskRole.REPAIR, "fast-route")
-    repaired = LLMCallResult(
-        **{
-            **repaired.__dict__,
-            "content": _editorial_plan_json(section_keys=repaired_keys),
-            "completion_tokens": 800,
-            "max_tokens": 3519,
-            "finish_reason": "stop",
-        }
-    )
-    service._complete = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[initial, repaired]
-    )
-    run = SimpleNamespace(
-        id=uuid4(),
-        ideia_id=uuid4(),
-        phase="planning",
-        plan={"sections": _problematic_run_budgets()},
-        evidence_dossier={
-            "sources": [{"id": "idea-description"}],
-            "fragments": [],
-        },
-        call_usage={"calls": 0, "total_tokens": 0, "escalations": []},
-        model_policy={"strategy": "standard"},
-        strategy_identity="repaired-contract-shape",
-    )
-    monkeypatch.setattr(
-        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
-        AsyncMock(
-            return_value=SimpleNamespace(
-                titulo="Fixture",
-                descricao_breve="Sem fatos externos",
-                author_briefing=None,
-            )
-        ),
-    )
 
-    with pytest.raises(GenerationJobError) as captured:
-        await service._plan(run)
+    async def write_section(_run, target):
+        target.status = "completed"
 
-    assert captured.value.category is GenerationFailureCategory.SCHEMA
-    assert "planner section contract mismatch" in str(captured.value)
-    assert service._complete.await_count == 2
-    session.add.assert_not_called()
+    service._plan = AsyncMock(side_effect=complete_plan)  # type: ignore[method-assign]
+    service._write_section = AsyncMock(side_effect=write_section)  # type: ignore[method-assign]
+    service._assemble = AsyncMock()  # type: ignore[method-assign]
 
+    result = await service.process(run.id)
 
-@pytest.mark.asyncio
-async def test_plan_classifies_token_limit_before_section_mismatch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service, session, run = _execute_plan_with_keys(
-        monkeypatch,
-        ["section-001", "section-002", "section-003", "section-004"],
-        finish_reason="length",
+    assert result.status == "completed"
+    service._write_section.assert_awaited_once_with(run, section)
+    assert any(
+        call.kwargs.get("attribute_names") == ["sections"]
+        for call in session.refresh.await_args_list
     )
-
-    with pytest.raises(LLMGatewayError) as captured:
-        await service._plan(run)
-
-    assert captured.value.category is LLMFailureCategory.FORMAT
-    assert "truncated" in str(captured.value)
-    assert "finish_reason=length" in str(captured.value)
-    assert "section contract mismatch" not in str(captured.value)
-    session.add.assert_not_called()
-    service._complete.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_real_plan_uses_schema_fallback_repair_and_deterministic_budgets(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    schema_rejection = httpx.Response(
-        400,
-        text='{"error":{"message":"Request contains an invalid argument",'
-        '"status":"INVALID_ARGUMENT"}}',
-        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
-    )
-    invalid_plan = _section_keyed_plan_json()
-    repaired_plan = _editorial_plan_json(
-        section_keys=["section-001", "section-002", "section-003"]
-    )
-    client = AsyncMock(spec=httpx.AsyncClient)
-    client.post.side_effect = [
-        schema_rejection,
-        _gateway_response(invalid_plan, completion_tokens=1519),
-        _gateway_response(repaired_plan, completion_tokens=700),
-    ]
-    config = Settings(
-        litellm_base_url="http://litellm.test",
-        llm_model="standard-route",
-        llm_fast_model="fast-route",
-        llm_standard_model="standard-route",
-        llm_strong_model="strong-route",
-        llm_max_attempts=3,
-    )
-    gateway = LLMGateway(config, client=client)
-    session = AsyncMock(spec=AsyncSession)
-    requested_sections = _problematic_run_budgets()
-    run = SimpleNamespace(
-        id=uuid4(),
-        ideia_id=uuid4(),
-        phase="queued",
-        plan={"sections": requested_sections},
-        evidence_dossier={
-            "sources": [{"id": "idea-description"}],
-            "fragments": [],
-        },
-        call_usage={"calls": 0, "total_tokens": 0, "escalations": []},
-        model_policy={"strategy": "standard"},
-        strategy_identity="editorial-test-v3",
-    )
-    idea = SimpleNamespace(
-        titulo="Plano sintético de regressão",
-        descricao_breve="Conteúdo controlado, sem evidência factual externa.",
-        author_briefing=None,
-    )
-    monkeypatch.setattr(
-        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
-        AsyncMock(return_value=idea),
-    )
-    service = ScriptGenerationJobService(session, gateway=gateway, config=config)
-
-    await service._plan(run)
-
-    assert run.phase == "writing"
-    assert EditorialPlanOutput.model_validate(run.plan["editorial"])
-    assert run.plan["planning_provenance"]["initial"]["attempt_count"] == 2
-    assert (
-        run.plan["planning_provenance"]["initial"]["fallback_reason"]
-        == "provider_json_schema_unsupported"
-    )
-    assert run.plan["planning_provenance"]["repair"]["task_role"] == "repair"
-    assert run.plan["planning_provenance"]["initial"]["finish_reason"] == "stop"
-    assert run.plan["planning_provenance"]["repair"]["finish_reason"] == "stop"
-    assert [section["key"] for section in run.plan["editorial"]["sections"]] == [
-        "section-001",
-        "section-002",
-        "section-003",
-    ]
-    assert run.call_usage["calls"] == 2
-    assert client.post.await_count == 3
-    payloads = [call.kwargs["json"] for call in client.post.await_args_list]
-    assert payloads[0]["response_format"]["type"] == "json_schema"
-    assert payloads[1]["response_format"] == {"type": "json_object"}
-    assert payloads[2]["response_format"]["type"] == "json_schema"
-    assert [payload["max_tokens"] for payload in payloads] == [4000, 4000, 3519]
-    assert [payload["temperature"] for payload in payloads] == [0.5, 0.5, 0.0]
-    planning_prompt = payloads[0]["messages"][1]["content"]
-    assert "Section keys and count are immutable" in planning_prompt
-    assert (
-        "Do not add, remove, merge, split, reorder or rename sections"
-        in planning_prompt
-    )
-    assert "ONE top-level JSON object" in planning_prompt
-    assert "Never return a bare sections map" in planning_prompt
-    repair_prompt = payloads[2]["messages"][1]["content"]
-    assert "not an editorial writer" in repair_prompt
-    assert "smallest valid JSON" in repair_prompt
-    persisted_sections = [call.args[0] for call in session.add.call_args_list]
-    assert [section.section_key for section in persisted_sections] == [
-        "section-001",
-        "section-002",
-        "section-003",
-    ]
-    assert [section.section_plan["target_words"] for section in persisted_sections] == [
-        596,
-        596,
-        596,
-    ]
-    assert [section.section_plan["key"] for section in persisted_sections] == [
-        "section-001",
-        "section-002",
-        "section-003",
-    ]
-    session.flush.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -721,6 +605,13 @@ async def test_resume_preserves_completed_sections_and_requeues_only_failure() -
         status="failed",
         phase="failed",
         sections=[completed, failed],
+        plan={
+            "editorial": {},
+            "planning_state": {
+                "version": "fragmented_editorial_planning_v1",
+                "status": "completed",
+            },
+        },
         error_category="provider",
         error_message="down",
         completed_at=object(),
@@ -734,6 +625,35 @@ async def test_resume_preserves_completed_sections_and_requeues_only_failure() -
     assert failed.status == "pending"
     assert resumed.phase == "writing"
     session.flush.assert_awaited_once()
+    session.refresh.assert_awaited_once_with(run)
+
+
+@pytest.mark.asyncio
+async def test_resume_incomplete_fragmented_plan_returns_to_planning() -> None:
+    planning = SimpleNamespace(
+        status="planning", error_category=None, error_message=None
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        status="failed",
+        phase="failed",
+        sections=[planning],
+        plan={
+            "planning_state": {
+                "version": "fragmented_editorial_planning_v1",
+                "status": "planning",
+            }
+        },
+        error_category="provider",
+        error_message="down",
+        completed_at=object(),
+    )
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    service.get = AsyncMock(return_value=run)  # type: ignore[method-assign]
+    resumed = await service.resume(run.id)
+    assert resumed.phase == "planning"
 
 
 @pytest.mark.asyncio
@@ -758,7 +678,6 @@ def test_section_cannot_escape_the_approved_claim_ledger() -> None:
 @pytest.mark.asyncio
 async def test_claim_next_sets_timezone_aware_timestamps() -> None:
     now = datetime.now(UTC)
-    stale_before = now - timedelta(seconds=300)
     run = SimpleNamespace(
         id=uuid4(),
         status="queued",
@@ -771,7 +690,9 @@ async def test_claim_next_sets_timezone_aware_timestamps() -> None:
         return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=run))
     )
     service = ScriptGenerationJobService(
-        session, gateway=AsyncMock(), config=Settings(generation_stale_after_seconds=300)
+        session,
+        gateway=AsyncMock(),
+        config=Settings(generation_stale_after_seconds=300),
     )
     claimed = await service.claim_next()
     assert claimed is run
@@ -786,12 +707,11 @@ async def test_claim_next_sets_timezone_aware_timestamps() -> None:
 @pytest.mark.asyncio
 async def test_claim_next_reclaims_stale_running_job() -> None:
     now = datetime.now(UTC)
-    stale_heartbeat = now - timedelta(seconds=600)
     run = SimpleNamespace(
         id=uuid4(),
         status="running",
         started_at=now - timedelta(seconds=500),
-        heartbeat_at=stale_heartbeat,
+        heartbeat_at=now - timedelta(seconds=600),
         criado_em=now - timedelta(seconds=700),
     )
     session = AsyncMock()
@@ -799,7 +719,9 @@ async def test_claim_next_reclaims_stale_running_job() -> None:
         return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=run))
     )
     service = ScriptGenerationJobService(
-        session, gateway=AsyncMock(), config=Settings(generation_stale_after_seconds=300)
+        session,
+        gateway=AsyncMock(),
+        config=Settings(generation_stale_after_seconds=300),
     )
     claimed = await service.claim_next()
     assert claimed is run

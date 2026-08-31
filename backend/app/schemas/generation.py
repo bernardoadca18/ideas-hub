@@ -41,6 +41,33 @@ class PlannedClaimOutput(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class PlannedChapterOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=200)
+    purpose: str = Field(min_length=1, max_length=1000)
+
+
+class GlobalEditorialPlanOutput(BaseModel):
+    """Small global enrichment; Python remains owner of the plan envelope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    thesis: str = Field(min_length=1, max_length=2000)
+    audience_promise: str = Field(min_length=1, max_length=1000)
+    chapters: list[PlannedChapterOutput] = Field(min_length=1, max_length=30)
+    open_loops: list[str] = Field(default_factory=list, max_length=30)
+
+
+class PlannedSectionBatchOutput(BaseModel):
+    """Bounded editorial enrichment for host-selected section keys."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sections: list[PlannedSectionOutput] = Field(min_length=1, max_length=4)
+
+
 class EditorialPlanOutput(BaseModel):
     thesis: str = Field(min_length=1, max_length=2000)
     audience_promise: str = Field(min_length=1, max_length=1000)
