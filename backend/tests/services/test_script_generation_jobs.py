@@ -21,7 +21,10 @@ from app.services.script_generation_jobs import (
     GenerationFailureCategory,
     GenerationJobError,
     ScriptGenerationJobService,
+    _editorial_plan_output_contract,
     _planning_max_tokens,
+    _repair_max_tokens,
+    _temperature_for_role,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -80,7 +83,12 @@ def _editorial_plan_json(*, section_keys: list[str] | None = None) -> str:
     )
 
 
-def _gateway_response(content: str, *, finish_reason: str = "stop") -> httpx.Response:
+def _gateway_response(
+    content: str,
+    *,
+    finish_reason: str = "stop",
+    completion_tokens: int = 20,
+) -> httpx.Response:
     return httpx.Response(
         200,
         json={
@@ -94,8 +102,8 @@ def _gateway_response(content: str, *, finish_reason: str = "stop") -> httpx.Res
             ],
             "usage": {
                 "prompt_tokens": 10,
-                "completion_tokens": 20,
-                "total_tokens": 30,
+                "completion_tokens": completion_tokens,
+                "total_tokens": 10 + completion_tokens,
             },
         },
         request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
@@ -115,6 +123,15 @@ def _problematic_run_budgets() -> list[dict[str, int | str]]:
         }
         for index in range(1, 4)
     ]
+
+
+def _section_keyed_plan_json() -> str:
+    valid = json.loads(
+        _editorial_plan_json(
+            section_keys=["section-001", "section-002", "section-003"]
+        )
+    )
+    return json.dumps({section["key"]: section for section in valid["sections"]})
 
 
 @pytest.mark.asyncio
@@ -155,6 +172,9 @@ async def test_task_policy_routes_by_function_without_provider_names(
         escalation_reason=escalation,
     )
     assert gateway.complete.await_args.kwargs["model_alias"] == expected
+    assert gateway.complete.await_args.kwargs["temperature"] == _temperature_for_role(
+        role
+    )
     assert run.call_usage["calls"] == 1
     assert (len(run.call_usage["escalations"]) == 1) is bool(escalation)
 
@@ -235,8 +255,115 @@ async def test_parse_or_repair_repairs_schema_invalid_json() -> None:
     assert provenance["repair_reason"] == "ValidationError"
     repair_call = service._complete.await_args.kwargs
     assert repair_call["role"] is LLMTaskRole.REPAIR
-    assert "Repair only JSON serialization and schema shape" in repair_call["prompt"]
-    assert "do not add facts" in repair_call["prompt"]
+    assert "Repair only serialization, root shape" in repair_call["prompt"]
+    assert "add examples or add facts" in repair_call["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_parse_or_repair_restructures_section_keyed_root_compactly() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    initial = _result(LLMTaskRole.PLANNING, "standard-route")
+    initial = LLMCallResult(
+        **{
+            **initial.__dict__,
+            "content": _section_keyed_plan_json(),
+            "finish_reason": "stop",
+            "completion_tokens": 1519,
+            "max_tokens": 4000,
+        }
+    )
+    repaired = _result(LLMTaskRole.REPAIR, "fast-route")
+    repaired = LLMCallResult(
+        **{
+            **repaired.__dict__,
+            "content": _editorial_plan_json(
+                section_keys=["section-001", "section-002", "section-003"]
+            ),
+            "finish_reason": "stop",
+            "completion_tokens": 700,
+            "max_tokens": 3519,
+        }
+    )
+    service._complete = AsyncMock(return_value=repaired)  # type: ignore[method-assign]
+    contract = _editorial_plan_output_contract(
+        ["section-001", "section-002", "section-003"]
+    )
+
+    parsed, provenance = await service._parse_or_repair(
+        SimpleNamespace(),
+        initial,
+        EditorialPlanOutput,
+        repair_contract=contract,
+    )
+
+    assert [section.key for section in parsed.sections] == [
+        "section-001",
+        "section-002",
+        "section-003",
+    ]
+    original_sections = json.loads(initial.content)
+    assert [section.title for section in parsed.sections] == [
+        original_sections[key]["title"]
+        for key in ("section-001", "section-002", "section-003")
+    ]
+    assert all(len(section.beats) == 1 for section in parsed.sections)
+    assert parsed.claim_ledger == []
+    assert provenance["initial"]["finish_reason"] == "stop"
+    assert provenance["repair"]["finish_reason"] == "stop"
+    repair_call = service._complete.await_args.kwargs
+    assert repair_call["max_tokens"] == 3519
+    assert "not an editorial writer" in repair_call["prompt"]
+    assert "Do not elaborate, expand" in repair_call["prompt"]
+    assert "smallest valid JSON" in repair_call["prompt"]
+    assert "Never return a bare sections map" in repair_call["prompt"]
+    assert "thesis (non-empty string)" in repair_call["prompt"]
+    assert "chapters (non-empty array" in repair_call["prompt"]
+    assert "never use empty strings or empty arrays" in repair_call["prompt"]
+    assert "Satisfy this JSON Schema exactly" not in repair_call["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_truncated_repair_is_terminal_without_capacity_retry() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    initial = _result(LLMTaskRole.PLANNING, "standard-route")
+    initial = LLMCallResult(
+        **{
+            **initial.__dict__,
+            "content": _section_keyed_plan_json(),
+            "completion_tokens": 1519,
+            "max_tokens": 4000,
+            "finish_reason": "stop",
+        }
+    )
+    truncated = _result(LLMTaskRole.REPAIR, "fast-route")
+    truncated = LLMCallResult(
+        **{
+            **truncated.__dict__,
+            "content": "{",
+            "completion_tokens": 3515,
+            "max_tokens": 3519,
+            "finish_reason": "length",
+        }
+    )
+    service._complete = AsyncMock(return_value=truncated)  # type: ignore[method-assign]
+
+    with pytest.raises(LLMGatewayError) as captured:
+        await service._parse_or_repair(
+            SimpleNamespace(),
+            initial,
+            EditorialPlanOutput,
+            repair_contract=_editorial_plan_output_contract(
+                ["section-001", "section-002", "section-003"]
+            ),
+        )
+
+    assert captured.value.category is LLMFailureCategory.FORMAT
+    assert "finish_reason=length" in str(captured.value)
+    service._complete.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -269,6 +396,41 @@ def test_planning_output_token_budget_scales_and_remains_bounded() -> None:
     assert _planning_max_tokens(120) == 6000
     with pytest.raises(ValueError, match="at least one"):
         _planning_max_tokens(0)
+
+
+def test_repair_output_budget_uses_observed_size_headroom_and_hard_ceiling() -> None:
+    result = _result(LLMTaskRole.PLANNING, "standard-route")
+    observed = LLMCallResult(
+        **{
+            **result.__dict__,
+            "completion_tokens": 1519,
+            "max_tokens": 4000,
+        }
+    )
+    near_ceiling = LLMCallResult(
+        **{
+            **result.__dict__,
+            "completion_tokens": 5000,
+            "max_tokens": 6000,
+        }
+    )
+    no_usage = LLMCallResult(
+        **{
+            **result.__dict__,
+            "completion_tokens": None,
+            "max_tokens": 4000,
+        }
+    )
+
+    assert _repair_max_tokens(observed) == 3519
+    assert _repair_max_tokens(near_ceiling) == 6000
+    assert _repair_max_tokens(no_usage) == 4000
+
+
+def test_task_temperature_policy_keeps_repair_deterministic() -> None:
+    assert _temperature_for_role(LLMTaskRole.REPAIR) == 0.0
+    assert _temperature_for_role(LLMTaskRole.PLANNING) == 0.5
+    assert _temperature_for_role(LLMTaskRole.WRITING) == 0.7
 
 
 def _execute_plan_with_keys(
@@ -344,6 +506,78 @@ async def test_plan_rejects_section_contract_mismatch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "repaired_keys",
+    [
+        ["section-001", "section-002", "section-003", "section-004"],
+        ["section-001", "section-002"],
+        ["section-001", "wrong-key", "section-003"],
+        ["section-002", "section-001", "section-003"],
+    ],
+    ids=["repair-extra", "repair-missing", "repair-wrong", "repair-reordered"],
+)
+async def test_plan_rejects_repaired_section_contract_mismatch(
+    monkeypatch: pytest.MonkeyPatch, repaired_keys: list[str]
+) -> None:
+    session = AsyncMock(spec=AsyncSession)
+    service = ScriptGenerationJobService(session, gateway=AsyncMock(), config=_config())
+    initial = _result(LLMTaskRole.PLANNING, "standard-route")
+    initial = LLMCallResult(
+        **{
+            **initial.__dict__,
+            "content": _section_keyed_plan_json(),
+            "completion_tokens": 1519,
+            "max_tokens": 4000,
+            "finish_reason": "stop",
+        }
+    )
+    repaired = _result(LLMTaskRole.REPAIR, "fast-route")
+    repaired = LLMCallResult(
+        **{
+            **repaired.__dict__,
+            "content": _editorial_plan_json(section_keys=repaired_keys),
+            "completion_tokens": 800,
+            "max_tokens": 3519,
+            "finish_reason": "stop",
+        }
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[initial, repaired]
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        phase="planning",
+        plan={"sections": _problematic_run_budgets()},
+        evidence_dossier={
+            "sources": [{"id": "idea-description"}],
+            "fragments": [],
+        },
+        call_usage={"calls": 0, "total_tokens": 0, "escalations": []},
+        model_policy={"strategy": "standard"},
+        strategy_identity="repaired-contract-shape",
+    )
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                titulo="Fixture",
+                descricao_breve="Sem fatos externos",
+                author_briefing=None,
+            )
+        ),
+    )
+
+    with pytest.raises(GenerationJobError) as captured:
+        await service._plan(run)
+
+    assert captured.value.category is GenerationFailureCategory.SCHEMA
+    assert "planner section contract mismatch" in str(captured.value)
+    assert service._complete.await_count == 2
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_plan_classifies_token_limit_before_section_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -374,41 +608,15 @@ async def test_real_plan_uses_schema_fallback_repair_and_deterministic_budgets(
         '"status":"INVALID_ARGUMENT"}}',
         request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
     )
-    invalid_plan = json.dumps(
-        {
-            "thesis": "Tese inicial",
-            "audience_promise": "Promessa inicial",
-            "chapters": ["Capítulo"],
-            "sections": [
-                {
-                    "key": "llm-key-1",
-                    "title": "Seção 1",
-                    "purpose": "Explicar o primeiro ponto",
-                    "narrative_role": "x" * 101,
-                    "beats": ["Ponto 1"],
-                    "must_cover": ["Tese"],
-                },
-                {
-                    "key": "llm-key-2",
-                    "title": "Seção 2",
-                    "purpose": "Explicar o segundo ponto",
-                    "narrative_role": "conclusão",
-                    "beats": ["Ponto 2"],
-                    "must_cover": ["Síntese"],
-                },
-            ],
-            "claim_ledger": {"unexpected": "shape"},
-            "open_loops": [],
-        }
-    )
+    invalid_plan = _section_keyed_plan_json()
     repaired_plan = _editorial_plan_json(
         section_keys=["section-001", "section-002", "section-003"]
     )
     client = AsyncMock(spec=httpx.AsyncClient)
     client.post.side_effect = [
         schema_rejection,
-        _gateway_response(invalid_plan),
-        _gateway_response(repaired_plan),
+        _gateway_response(invalid_plan, completion_tokens=1519),
+        _gateway_response(repaired_plan, completion_tokens=700),
     ]
     config = Settings(
         litellm_base_url="http://litellm.test",
@@ -468,13 +676,19 @@ async def test_real_plan_uses_schema_fallback_repair_and_deterministic_budgets(
     assert payloads[0]["response_format"]["type"] == "json_schema"
     assert payloads[1]["response_format"] == {"type": "json_object"}
     assert payloads[2]["response_format"]["type"] == "json_schema"
-    assert [payload["max_tokens"] for payload in payloads] == [4000, 4000, 4000]
+    assert [payload["max_tokens"] for payload in payloads] == [4000, 4000, 3519]
+    assert [payload["temperature"] for payload in payloads] == [0.5, 0.5, 0.0]
     planning_prompt = payloads[0]["messages"][1]["content"]
     assert "Section keys and count are immutable" in planning_prompt
     assert (
         "Do not add, remove, merge, split, reorder or rename sections"
         in planning_prompt
     )
+    assert "ONE top-level JSON object" in planning_prompt
+    assert "Never return a bare sections map" in planning_prompt
+    repair_prompt = payloads[2]["messages"][1]["content"]
+    assert "not an editorial writer" in repair_prompt
+    assert "smallest valid JSON" in repair_prompt
     persisted_sections = [call.args[0] for call in session.add.call_args_list]
     assert [section.section_key for section in persisted_sections] == [
         "section-001",
