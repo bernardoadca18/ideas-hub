@@ -119,5 +119,50 @@ async def test_native_schema_falls_back_only_when_provider_rejects_feature() -> 
         response_schema={"type": "object"},
     )
     assert result.fallback_reason == "provider_json_schema_unsupported"
-    assert "response_format" in client.post.await_args_list[0].kwargs["json"]
-    assert "response_format" not in client.post.await_args_list[1].kwargs["json"]
+    first_call = client.post.await_args_list[0].kwargs["json"]
+    assert first_call["response_format"]["type"] == "json_schema"
+    second_call = client.post.await_args_list[1].kwargs["json"]
+    assert second_call["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_json_schema_fallback_for_gemini_invalid_argument() -> None:
+    gemini_error = httpx.Response(
+        400,
+        text='{"error":{"message":"litellm.BadRequestError: VertexAIException BadRequestError - {\\"error\\": {\\"code\\": 400, \\"message\\": \\"Request contains an invalid argument.\\", \\"status\\": \\"INVALID_ARGUMENT\\"}}}\'',
+        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
+    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.side_effect = [gemini_error, _success()]
+    result = await LLMGateway(_settings(), client=client).complete(
+        messages=[{"role": "user", "content": "test"}],
+        role=LLMTaskRole.PLANNING,
+        temperature=0.5,
+        max_tokens=1000,
+        response_schema={"type": "object", "properties": {"thesis": {"type": "string"}}},
+    )
+    assert result.fallback_reason == "provider_json_schema_unsupported"
+    assert result.content == '{"ok":true}'
+    assert client.post.await_count == 2
+    second_call_payload = client.post.await_args_list[1].kwargs["json"]
+    assert second_call_payload.get("response_format") == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_json_schema_rejected_without_schema_returns_error() -> None:
+    gemini_error = httpx.Response(
+        400,
+        text="Request contains an invalid argument",
+        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
+    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = gemini_error
+    with pytest.raises(LLMGatewayError) as captured:
+        await LLMGateway(_settings(), client=client).complete(
+            messages=[{"role": "user", "content": "test"}],
+            role=LLMTaskRole.WRITING,
+            temperature=0.7,
+            max_tokens=100,
+        )
+    assert captured.value.category is LLMFailureCategory.REQUEST
+    assert client.post.await_count == 1

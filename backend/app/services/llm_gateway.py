@@ -90,6 +90,20 @@ def is_retryable_status(status_code: int) -> bool:
     return status_code in {408, 429} or 500 <= status_code <= 599
 
 
+def _is_structured_output_rejection(response: httpx.Response) -> bool:
+    text = response.text.casefold()
+    return any(
+        token in text
+        for token in (
+            "response_format",
+            "json_schema",
+            "invalid_argument",
+            "unsupported_parameter",
+            "structured_output",
+        )
+    )
+
+
 class LLMGateway:
     """One connection pool per process; callers retain deterministic task policy."""
 
@@ -185,12 +199,16 @@ class LLMGateway:
                     response.status_code == 400
                     and response_schema is not None
                     and not structured_fallback_used
-                    and any(
-                        token in response.text.casefold()
-                        for token in ("response_format", "json_schema")
-                    )
+                    and _is_structured_output_rejection(response)
                 ):
-                    payload.pop("response_format", None)
+                    logger.debug(
+                        "llm_json_schema_fallback",
+                        task_role=role.value,
+                        model_alias=model,
+                        status_code=400,
+                        prompt_identity=prompt_identity,
+                    )
+                    payload["response_format"] = {"type": "json_object"}
                     structured_fallback_used = True
                     fallback_reason = "provider_json_schema_unsupported"
                     continue
@@ -200,6 +218,14 @@ class LLMGateway:
                             LLMFailureCategory.AUTH
                             if response.status_code in {401, 403}
                             else LLMFailureCategory.REQUEST
+                        )
+                        logger.warning(
+                            "llm_request_rejected",
+                            task_role=role.value,
+                            model_alias=model,
+                            status_code=response.status_code,
+                            category=category.value,
+                            prompt_identity=prompt_identity,
                         )
                         raise LLMGatewayError(
                             category,

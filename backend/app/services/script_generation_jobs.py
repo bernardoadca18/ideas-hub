@@ -990,7 +990,7 @@ class ScriptGenerationJobService:
 
         try:
             return model.model_validate_json(result.content), result.provenance()
-        except ValidationError as first_error:
+        except (ValidationError, json.JSONDecodeError) as first_error:
             repair_prompt = (
                 "Repair only JSON serialization and schema shape. Preserve all substantive "
                 "content and claims; do not add facts. Return JSON only.\nSCHEMA: "
