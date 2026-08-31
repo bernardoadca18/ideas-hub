@@ -1,3 +1,3 @@
-from app.prompts.builder import PromptBuilder, ComposedPrompt
+from app.prompts.builder import ComposedPrompt, PromptBuilder
 
-__all__ = ["PromptBuilder", "ComposedPrompt"]
+__all__ = ["ComposedPrompt", "PromptBuilder"]

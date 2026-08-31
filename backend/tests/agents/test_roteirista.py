@@ -3,11 +3,11 @@ Testes para o Agente Roteirista.
 
 Testa a geração de roteiros com mock de LLM e Tavily.
 """
+
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from app.agents.roteirista import BlocoNarrativo, RoteiristaService, RoteiroEstruturado
 
 
@@ -27,14 +27,13 @@ class TestRoteiristaService:
         response.status_code = 200
         response.json.return_value = {
             "choices": [{"message": {"content": "Resposta do LLM"}}],
-            "usage": {"total_tokens": 300}
+            "usage": {"total_tokens": 300},
         }
         response.raise_for_status = MagicMock()
         mock_httpx_client.post.return_value = response
 
         result = await roteirista_service._call_llm(
-            messages=[{"role": "user", "content": "teste"}],
-            temperature=0.8
+            messages=[{"role": "user", "content": "teste"}], temperature=0.8
         )
 
         assert result == "Resposta do LLM"
@@ -48,7 +47,7 @@ class TestRoteiristaService:
             "answer": "Contexto de pesquisa",
             "results": [
                 {"title": "Fonte 1", "content": "Conteúdo da fonte 1"},
-            ]
+            ],
         }
         response.raise_for_status = MagicMock()
         mock_httpx_client.post.return_value = response
@@ -64,10 +63,7 @@ class TestRoteiristaService:
         # Mock resposta do Tavily
         tavily_response = MagicMock()
         tavily_response.status_code = 200
-        tavily_response.json.return_value = {
-            "answer": "Contexto",
-            "results": []
-        }
+        tavily_response.json.return_value = {"answer": "Contexto", "results": []}
         tavily_response.raise_for_status = MagicMock()
 
         # Mock resposta do LLM com roteiro estruturado
@@ -80,37 +76,33 @@ class TestRoteiristaService:
                     "duracao_segundos": 20,
                     "conteudo": "Introdução ao tema",
                     "dicas_visual": "Imagens de abertura",
-                    "dicas_audio": "Música suave"
+                    "dicas_audio": "Música suave",
                 },
                 {
                     "tipo": "desenvolvimento",
                     "duracao_segundos": 140,
                     "conteudo": "Conteúdo principal",
                     "dicas_visual": "Demonstrações",
-                    "dicas_audio": None
+                    "dicas_audio": None,
                 },
                 {
                     "tipo": "conclusao",
                     "duracao_segundos": 20,
                     "conteudo": "Resumo e CTA",
                     "dicas_visual": "Cards finais",
-                    "dicas_audio": "Música de fechamento"
-                }
+                    "dicas_audio": "Música de fechamento",
+                },
             ],
             "tags": ["ia", "vídeos", "tutorial"],
             "referencias": ["fonte1"],
-            "justificativa": "Roteiro educativo"
+            "justificativa": "Roteiro educativo",
         }
 
         llm_response = MagicMock()
         llm_response.status_code = 200
         llm_response.json.return_value = {
-            "choices": [{
-                "message": {
-                    "content": json.dumps(roteiro_json)
-                }
-            }],
-            "usage": {"total_tokens": 500}
+            "choices": [{"message": {"content": json.dumps(roteiro_json)}}],
+            "usage": {"total_tokens": 500},
         }
         llm_response.raise_for_status = MagicMock()
 
@@ -120,7 +112,7 @@ class TestRoteiristaService:
         result = await roteirista_service.gerar_roteiro(
             ideia_titulo="Como usar IA para criar vídeos",
             ideia_descricao="Tutorial prático",
-            prompt_roteiro="Crie roteiros envolventes"
+            prompt_roteiro="Crie roteiros envolventes",
         )
 
         assert isinstance(result, RoteiroEstruturado)
@@ -131,7 +123,9 @@ class TestRoteiristaService:
         assert result.tags == ["ia", "vídeos", "tutorial"]
 
     @pytest.mark.asyncio
-    async def test_gerar_roteiro_continuacao(self, roteirista_service, mock_httpx_client):
+    async def test_gerar_roteiro_continuacao(
+        self, roteirista_service, mock_httpx_client
+    ):
         """Testa geração de roteiro para continuação (parte 2)."""
         tavily_response = MagicMock()
         tavily_response.status_code = 200
@@ -147,19 +141,19 @@ class TestRoteiristaService:
                     "duracao_segundos": 25,
                     "conteudo": "Recapitulação e continuação",
                     "dicas_visual": None,
-                    "dicas_audio": None
+                    "dicas_audio": None,
                 }
             ],
             "tags": [],
             "referencias": None,
-            "justificativa": "Continuação"
+            "justificativa": "Continuação",
         }
 
         llm_response = MagicMock()
         llm_response.status_code = 200
         llm_response.json.return_value = {
             "choices": [{"message": {"content": json.dumps(roteiro_json)}}],
-            "usage": {"total_tokens": 400}
+            "usage": {"total_tokens": 400},
         }
         llm_response.raise_for_status = MagicMock()
 
@@ -173,8 +167,8 @@ class TestRoteiristaService:
                 "duracao_total_segundos": 180,
                 "blocos": [
                     {"tipo": "introducao", "conteudo": "Intro", "duracao_segundos": 20}
-                ]
-            }
+                ],
+            },
         }
 
         result = await roteirista_service.gerar_roteiro(
@@ -182,13 +176,15 @@ class TestRoteiristaService:
             ideia_descricao="Continuação do tutorial",
             prompt_roteiro="Crie roteiros envolventes",
             roteiro_anterior=roteiro_anterior,
-            numero_parte=2
+            numero_parte=2,
         )
 
         assert result.titulo == "Como usar IA para criar vídeos - Parte 2"
 
     @pytest.mark.asyncio
-    async def test_gerar_roteiro_provider_failure_is_explicit(self, roteirista_service, mock_httpx_client):
+    async def test_gerar_roteiro_provider_failure_is_explicit(
+        self, roteirista_service, mock_httpx_client
+    ):
         """Provider failures never produce a fake successful script."""
         tavily_response = MagicMock()
         tavily_response.status_code = 200
@@ -218,12 +214,12 @@ class TestRoteiristaService:
                     duracao_segundos=20,
                     conteudo="Intro",
                     dicas_visual="Visual",
-                    dicas_audio="Audio"
+                    dicas_audio="Audio",
                 )
             ],
             tags=["tag1"],
             referencias=["ref1"],
-            justificativa_llm="Teste"
+            justificativa_llm="Teste",
         )
 
         result = roteirista_service.to_dict(roteiro)
@@ -247,6 +243,7 @@ class TestRoteiristaService:
         # Testamos o fallback quando todas as tentativas falham
         with patch("httpx.AsyncClient") as mock_client:
             client_instance = AsyncMock()
+            mock_client.return_value = client_instance
             mock_client.return_value.__aenter__.return_value = client_instance
 
             # Simula timeout em todas as tentativas

@@ -224,3 +224,4 @@ __pycache__
 node_modules
 dist
 repomix*
+frontend/src/**/*.js

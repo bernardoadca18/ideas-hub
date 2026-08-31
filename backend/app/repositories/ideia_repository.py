@@ -1,6 +1,7 @@
 """
 Repositório assíncrono para a entidade Ideia.
 """
+
 from __future__ import annotations
 
 import builtins
@@ -88,7 +89,9 @@ class IdeiaRepository:
         await self.session.flush()
         return True
 
-    async def update_embedding(self, ideia_id: UUID, embedding: builtins.list[float]) -> bool:
+    async def update_embedding(
+        self, ideia_id: UUID, embedding: builtins.list[float]
+    ) -> bool:
         ideia = await self.get_by_id(ideia_id)
         if not ideia:
             return False
@@ -123,9 +126,13 @@ class IdeiaRepository:
 
         distance = Ideia.embedding.cosine_distance(embedding)
         similarity = (1 - distance).label("similarity")
-        query = select(Ideia, similarity).options(selectinload(Ideia.nicho)).where(
-            Ideia.embedding.isnot(None),
-            distance <= 1 - threshold,
+        query = (
+            select(Ideia, similarity)
+            .options(selectinload(Ideia.nicho))
+            .where(
+                Ideia.embedding.isnot(None),
+                distance <= 1 - threshold,
+            )
         )
         if exclude_id is not None:
             query = query.where(Ideia.id != exclude_id)

@@ -1,19 +1,24 @@
 """
 Schemas Pydantic para a entidade Ideia.
 """
+
 from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+from app.services.editorial_generation import DurationMode, DurationTargetSource
 
 
 class IdeiaBase(BaseModel):
     nicho_id: UUID | None = None
     origem: str = Field(..., max_length=50)
     titulo: str = Field(..., max_length=300)
-    descricao_breve: str | None = None
-    author_briefing: str | None = None
+    descricao_breve: str | None = Field(default=None, max_length=20_000)
+    author_briefing: str | None = Field(default=None, max_length=20_000)
     target_duration_seconds: int | None = Field(default=None, ge=60, le=28_800)
+    duration_mode: DurationMode | None = None
+    duration_target_source: DurationTargetSource | None = None
     status: str = Field(default="rascunho", max_length=50)
     eh_continuacao_de: UUID | None = None
     numero_parte: int | None = Field(default=None, gt=1)
@@ -29,9 +34,10 @@ class IdeiaUpdate(BaseModel):
     nicho_id: UUID | None = None
     origem: str | None = Field(default=None, max_length=50)
     titulo: str | None = Field(default=None, max_length=300)
-    descricao_breve: str | None = None
-    author_briefing: str | None = None
+    descricao_breve: str | None = Field(default=None, max_length=20_000)
+    author_briefing: str | None = Field(default=None, max_length=20_000)
     target_duration_seconds: int | None = Field(default=None, ge=60, le=28_800)
+    duration_mode: DurationMode | None = None
     status: str | None = Field(default=None, max_length=50)
     eh_continuacao_de: UUID | None = None
     numero_parte: int | None = Field(default=None, gt=1)

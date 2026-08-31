@@ -3,6 +3,7 @@ Serviço para gerar ideias a partir de trends aprovadas.
 
 Para cada trend aprovada, gera N ideias que passam pelo Agente Curador.
 """
+
 from typing import Any
 from uuid import UUID
 
@@ -12,11 +13,13 @@ from app.agents.curador import IdeiaBruta, curador_service
 from app.core.config import settings
 from app.core.logging import gerador_ideias_logger
 from app.models.trend_coletada import TrendColetada
+from app.production_profiles import get_profile
 from app.repositories.fonte_trend_nicho_repository import FonteTrendNichoRepository
 from app.repositories.ideia_repository import IdeiaRepository
 from app.repositories.nicho_repository import NichoRepository
 from app.repositories.trend_coletada_repository import TrendColetadaRepository
 from app.schemas.ideia import IdeiaCreate
+from app.services.editorial_generation import DurationMode, resolve_duration_intent
 from app.services.embeddings import embedding_service
 
 
@@ -37,7 +40,9 @@ class TrendIdeiasGenerator:
     ) -> dict[str, Any]:
         num_ideias = num_ideias or settings.ideias_por_trend
 
-        metrics = gerador_ideias_logger.start_operation(operation="generate_from_trend", trend_id=str(trend_id))
+        metrics = gerador_ideias_logger.start_operation(
+            operation="generate_from_trend", trend_id=str(trend_id)
+        )
 
         try:
             trend = await self.trend_repo.get_by_id(trend_id)
@@ -71,28 +76,42 @@ class TrendIdeiasGenerator:
                     )
                     ideias_geradas.append(ideia)
                 except Exception as e:  # noqa: BLE001 - isolate one failed trend candidate
-                    erros.append(f"Ideia {i+1}: {e!s}")
-                    print(f"Erro ao gerar ideia {i+1}: {e}")
+                    erros.append(f"Ideia {i + 1}: {e!s}")
+                    gerador_ideias_logger.logger.warning(
+                        "trend_idea_failure",
+                        trend_id=str(trend_id),
+                        candidate_index=i + 1,
+                        error_type=type(e).__name__,
+                    )
 
             resultado = {
-                'trend_id': str(trend_id),
-                'termo_trend': trend.termo_bruto,
-                'ideias_geradas': len(ideias_geradas),
-                'ideias': [
-                    {'id': str(ideia.id), 'titulo': ideia.titulo, 'status': ideia.status}
+                "trend_id": str(trend_id),
+                "termo_trend": trend.termo_bruto,
+                "ideias_geradas": len(ideias_geradas),
+                "ideias": [
+                    {
+                        "id": str(ideia.id),
+                        "titulo": ideia.titulo,
+                        "status": ideia.status,
+                    }
                     for ideia in ideias_geradas
                 ],
-                'erros': erros if erros else None,
+                "erros": erros if erros else None,
             }
 
             gerador_ideias_logger.end_operation(
-                metrics=metrics, success=True, num_ideias_geradas=len(ideias_geradas), nicho_id=nicho_id,
+                metrics=metrics,
+                success=True,
+                num_ideias_geradas=len(ideias_geradas),
+                nicho_id=nicho_id,
             )
 
             return resultado
 
         except Exception as e:
-            gerador_ideias_logger.end_operation(metrics=metrics, success=False, error=str(e))
+            gerador_ideias_logger.end_operation(
+                metrics=metrics, success=False, error=str(e)
+            )
             raise
 
     async def _generate_single_ideia(
@@ -104,13 +123,22 @@ class TrendIdeiasGenerator:
         total: int,
     ):
         ideia_bruta = await self._generate_ideia_bruta(
-            trend=trend, prompt_nicho=prompt_nicho, perfil_id=perfil_id, indice=indice, total=total,
+            trend=trend,
+            prompt_nicho=prompt_nicho,
+            perfil_id=perfil_id,
+            indice=indice,
+            total=total,
         )
 
-        embedding = await embedding_service.generate_for_ideia(ideia_bruta.titulo, ideia_bruta.descricao)
+        embedding = await embedding_service.generate_for_ideia(
+            ideia_bruta.titulo, ideia_bruta.descricao
+        )
 
         similares = await self.ideia_repo.find_similar(
-            embedding=embedding, threshold=settings.ideia_similarity_threshold, exclude_id=None, limit=3,
+            embedding=embedding,
+            threshold=settings.ideia_similarity_threshold,
+            exclude_id=None,
+            limit=3,
         )
 
         ideias_similares = (
@@ -133,11 +161,24 @@ class TrendIdeiasGenerator:
             perfil_id=perfil_id,
         )
 
+        profile = get_profile(perfil_id)
+        duration_intent = resolve_duration_intent(
+            mode=(
+                DurationMode.PROFILE_DEFAULT
+                if profile.duracao.default_target_seconds is not None
+                else DurationMode.CONTENT_DRIVEN
+            ),
+            requested_target_seconds=None,
+            profile=profile,
+        )
         nova_ideia_data = IdeiaCreate(
             nicho_id=trend.nicho_id,
             origem="trend",
             titulo=ideia_refinada.titulo,
             descricao_breve=ideia_refinada.descricao_breve,
+            target_duration_seconds=duration_intent.target_seconds,
+            duration_mode=duration_intent.mode,
+            duration_target_source=duration_intent.source,
             status="rascunho",
             eh_continuacao_de=None,
             numero_parte=None,

@@ -75,6 +75,22 @@ services:
       retries: 8
       start_period: 20s
 
+  generation-worker:
+    build: ./backend
+    container_name: ideas-hub-generation-worker
+    restart: "no"
+    init: true
+    stop_grace_period: 1m
+    logging: *neovids-logging
+    env_file: .env
+    command: ["python", "-m", "scripts.script_generation_worker"]
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/scripts:/app/scripts
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   ideas-hub-db-data:
     name: ideas-hub-db-data

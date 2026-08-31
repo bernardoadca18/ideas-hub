@@ -9,6 +9,65 @@ export interface Nicho {
   prompt_ideacao: string;
   prompt_roteiro: string;
   ativo: boolean;
+  perfil_producao: string;
+}
+
+export type DurationMode = 'explicit_target' | 'profile_default' | 'content_driven';
+
+export interface ProductionProfile {
+  id: string;
+  name: string;
+  description: string;
+  duration_policy: {
+    preferred_min_seconds: number | null;
+    preferred_max_seconds: number | null;
+    default_target_seconds: number | null;
+    content_driven_allowed: boolean;
+    max_practical_duration_seconds: number;
+  };
+  generation_strategy: string;
+  research_strategy: string;
+  model_routing_policy: string;
+  long_form_supported: boolean;
+}
+
+export interface GenerationRun {
+  id: string;
+  ideia_id: string;
+  roteiro_id?: string;
+  status: string;
+  phase: string;
+  generation_strategy: string;
+  production_profile: string;
+  duration_mode: DurationMode;
+  duration_target_source: string;
+  target_duration_seconds: number | null;
+  target_words: number | null;
+  total_sections: number;
+  completed_sections: number;
+  plan: Record<string, unknown>;
+  call_usage: Record<string, unknown>;
+  error_category?: string;
+  error_message?: string;
+}
+
+export interface GenerationPreview {
+  duration_intent: { mode: DurationMode; source: string; target_seconds: number | null };
+  strategy: string;
+  strategy_version: string;
+  strategy_identity: string;
+  target_words: number | null;
+  chapter_count: number;
+  section_count: number;
+  estimated_llm_calls: number;
+  calibration_identity: string;
+  content_capacity: {
+    status: string;
+    estimated_supported_words: number;
+    target_words: number | null;
+    ratio: number | null;
+    advisory_only: boolean;
+  };
 }
 
 export interface Ideia {
@@ -19,6 +78,8 @@ export interface Ideia {
   descricao_breve?: string;
   author_briefing?: string;
   target_duration_seconds?: number;
+  duration_mode?: DurationMode;
+  duration_target_source?: string;
   author_briefing_identity: string;
   perfil_producao?: string;
   status: string;
@@ -145,6 +206,10 @@ class ApiClient {
     return this.request<Nicho[]>('/nichos/');
   }
 
+  async getProductionProfiles(): Promise<ProductionProfile[]> {
+    return this.request<ProductionProfile[]>('/editorial/production-profiles');
+  }
+
   async createNicho(data: Partial<Nicho>): Promise<Nicho> {
     return this.request<Nicho>('/nichos/', {
       method: 'POST',
@@ -161,14 +226,14 @@ class ApiClient {
     return this.request<Ideia[]>(`/ideias/${query ? `?${query}` : ''}`);
   }
 
-  async createIdeia(data: { titulo: string; descricao?: string; author_briefing?: string; target_duration_seconds?: number; nicho_id?: string }): Promise<Ideia> {
+  async createIdeia(data: { titulo: string; descricao?: string; author_briefing?: string; duration_mode: DurationMode; target_duration_seconds?: number; nicho_id?: string }): Promise<Ideia> {
     return this.request<Ideia>('/ideias/', {
       method: 'POST',
       body: JSON.stringify(data),
     });
   }
 
-  async updateIdeia(id: string, data: { author_briefing?: string | null; target_duration_seconds?: number | null }): Promise<Ideia> {
+  async updateIdeia(id: string, data: { author_briefing?: string | null; duration_mode?: DurationMode; target_duration_seconds?: number | null }): Promise<Ideia> {
     return this.request<Ideia>(`/ideias/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data),
@@ -185,6 +250,50 @@ class ApiClient {
 
   async gerarRoteiro(ideiaId: string): Promise<{ roteiro_id: string; titulo: string }> {
     return this.request(`/ideias/${ideiaId}/roteiro`, { method: 'POST' });
+  }
+
+  async startGenerationRun(ideiaId: string, idempotencyKey: string): Promise<GenerationRun> {
+    return this.request<GenerationRun>(`/ideias/${ideiaId}/generation-runs`, {
+      method: 'POST',
+      body: JSON.stringify({ idempotency_key: idempotencyKey }),
+    });
+  }
+
+  async getGenerationRun(runId: string, signal?: AbortSignal): Promise<GenerationRun> {
+    return this.request<GenerationRun>(`/generation-runs/${runId}`, { signal });
+  }
+
+  async getGenerationRuns(): Promise<GenerationRun[]> {
+    return this.request<GenerationRun[]>('/generation-runs?limit=100');
+  }
+
+  async getGenerationPreview(data: {
+    production_profile: string;
+    duration_mode: DurationMode;
+    target_duration_seconds?: number;
+    evidence_chars: number;
+  }): Promise<GenerationPreview> {
+    return this.request<GenerationPreview>('/editorial/generation-preview', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async startGameGeneration(data: {
+    titulo_provisorio: string;
+    anotacoes: string;
+    nome_jogo?: string;
+    author_briefing?: string;
+    duration_mode: DurationMode;
+    target_duration_seconds?: number;
+    usar_grounding: boolean;
+    idempotency_key: string;
+    model_strategy: 'flash_only' | 'standard' | 'hybrid' | 'strong';
+  }): Promise<GenerationRun> {
+    return this.request<GenerationRun>('/editorial/game-analysis/generation-runs', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
   }
 
   // Trends

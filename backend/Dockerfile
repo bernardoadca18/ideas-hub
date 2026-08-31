@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY tests ./tests
+COPY scripts ./scripts
 COPY pytest.ini .
 COPY alembic.ini .
 COPY alembic ./alembic

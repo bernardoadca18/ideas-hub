@@ -1,5 +1,6 @@
 """Entry point da API ideas-hub."""
 
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI
@@ -14,7 +15,18 @@ from app.core.logging import setup_logging
 # Configura logging estruturado
 setup_logging()
 
-app = FastAPI(title="ideas-hub", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    yield
+    from app.services.external_research import external_research_client
+    from app.services.llm_gateway import llm_gateway
+
+    await external_research_client.close()
+    await llm_gateway.close()
+
+
+app = FastAPI(title="ideas-hub", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -52,10 +64,18 @@ async def health(
 
 
 # Routers
-from app.api.routers import nichos, ideias, trends, roteiros, fontes_trend
+from app.api.routers import (
+    fontes_trend,
+    generation_runs,
+    ideias,
+    nichos,
+    roteiros,
+    trends,
+)
 
 app.include_router(nichos.router)
 app.include_router(ideias.router)
 app.include_router(trends.router)
 app.include_router(roteiros.router)
 app.include_router(fontes_trend.router)
+app.include_router(generation_runs.router)

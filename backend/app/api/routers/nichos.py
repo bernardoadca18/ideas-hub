@@ -1,6 +1,7 @@
 """
 Router CRUD para a entidade Nicho.
 """
+
 from typing import Annotated
 from uuid import UUID
 
@@ -9,15 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.repositories.nicho_repository import NichoRepository
-from app.schemas.nicho import NichoCreate, NichoUpdate, NichoResponse
-
+from app.schemas.nicho import NichoCreate, NichoResponse, NichoUpdate
 
 router = APIRouter(prefix="/nichos", tags=["nichos"])
 
 
-def get_nicho_repo(
-    db: Annotated[AsyncSession, Depends(get_db)]
-) -> NichoRepository:
+def get_nicho_repo(db: Annotated[AsyncSession, Depends(get_db)]) -> NichoRepository:
     return NichoRepository(db)
 
 
@@ -42,8 +40,7 @@ async def create_nicho(
     existing = await repo.get_by_slug(nicho_data.slug)
     if existing:
         raise HTTPException(
-            status_code=400,
-            detail=f"Nicho com slug '{nicho_data.slug}' já existe"
+            status_code=400, detail=f"Nicho com slug '{nicho_data.slug}' já existe"
         )
     return await repo.create(nicho_data)
 

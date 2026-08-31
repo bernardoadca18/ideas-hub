@@ -3,11 +3,11 @@ Testes para o Agente Curador.
 
 Testa o processamento de ideias com mock de LLM e Tavily.
 """
+
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from app.agents.curador import CuradorService, IdeiaRefinada
 
 
@@ -27,14 +27,13 @@ class TestCuradorService:
         response.status_code = 200
         response.json.return_value = {
             "choices": [{"message": {"content": "Resposta do LLM"}}],
-            "usage": {"total_tokens": 150}
+            "usage": {"total_tokens": 150},
         }
         response.raise_for_status = MagicMock()
         mock_httpx_client.post.return_value = response
 
         result = await curador_service._call_llm(
-            messages=[{"role": "user", "content": "teste"}],
-            temperature=0.7
+            messages=[{"role": "user", "content": "teste"}], temperature=0.7
         )
 
         assert result == "Resposta do LLM"
@@ -49,7 +48,7 @@ class TestCuradorService:
             "results": [
                 {"title": "Título 1", "content": "Conteúdo 1"},
                 {"title": "Título 2", "content": "Conteúdo 2"},
-            ]
+            ],
         }
         response.raise_for_status = MagicMock()
         mock_httpx_client.post.return_value = response
@@ -69,14 +68,16 @@ class TestCuradorService:
         assert result == ""
 
     @pytest.mark.asyncio
-    async def test_processar_ideia_bruta(self, curador_service, sample_ideia_bruta, mock_httpx_client):
+    async def test_processar_ideia_bruta(
+        self, curador_service, sample_ideia_bruta, mock_httpx_client
+    ):
         """Testa processamento completo de ideia bruta."""
         # Mock resposta do Tavily
         tavily_response = MagicMock()
         tavily_response.status_code = 200
         tavily_response.json.return_value = {
             "answer": "Contexto de pesquisa",
-            "results": []
+            "results": [],
         }
         tavily_response.raise_for_status = MagicMock()
 
@@ -84,16 +85,20 @@ class TestCuradorService:
         llm_response = MagicMock()
         llm_response.status_code = 200
         llm_response.json.return_value = {
-            "choices": [{
-                "message": {
-                    "content": json.dumps({
-                        "titulo": "Título refinado",
-                        "descricao_breve": "Descrição refinada",
-                        "justificativa": "Teste"
-                    })
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "titulo": "Título refinado",
+                                "descricao_breve": "Descrição refinada",
+                                "justificativa": "Teste",
+                            }
+                        )
+                    }
                 }
-            }],
-            "usage": {"total_tokens": 200}
+            ],
+            "usage": {"total_tokens": 200},
         }
         llm_response.raise_for_status = MagicMock()
 
@@ -103,7 +108,7 @@ class TestCuradorService:
         result = await curador_service.processar(
             ideia_bruta=sample_ideia_bruta,
             prompt_nicho="Crie ideias sobre tecnologia",
-            ideias_similares=None
+            ideias_similares=None,
         )
 
         assert isinstance(result, IdeiaRefinada)
@@ -112,7 +117,9 @@ class TestCuradorService:
         assert result.eh_duplicada is False
 
     @pytest.mark.asyncio
-    async def test_processar_ideia_duplicada(self, curador_service, sample_ideia_bruta, mock_httpx_client):
+    async def test_processar_ideia_duplicada(
+        self, curador_service, sample_ideia_bruta, mock_httpx_client
+    ):
         """Testa detecção de ideia duplicada."""
         # Mock resposta do Tavily
         tavily_response = MagicMock()
@@ -124,16 +131,20 @@ class TestCuradorService:
         llm_response = MagicMock()
         llm_response.status_code = 200
         llm_response.json.return_value = {
-            "choices": [{
-                "message": {
-                    "content": json.dumps({
-                        "titulo": "Título refinado",
-                        "descricao_breve": "Descrição refinada",
-                        "justificativa": "Teste"
-                    })
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "titulo": "Título refinado",
+                                "descricao_breve": "Descrição refinada",
+                                "justificativa": "Teste",
+                            }
+                        )
+                    }
                 }
-            }],
-            "usage": {"total_tokens": 200}
+            ],
+            "usage": {"total_tokens": 200},
         }
         llm_response.raise_for_status = MagicMock()
 
@@ -148,14 +159,16 @@ class TestCuradorService:
         result = await curador_service.processar(
             ideia_bruta=sample_ideia_bruta,
             prompt_nicho=None,
-            ideias_similares=ideias_similares
+            ideias_similares=ideias_similares,
         )
 
         assert result.eh_duplicada is True
         assert result.similaridade == 0.96
 
     @pytest.mark.asyncio
-    async def test_processar_ideia_continuacao(self, curador_service, sample_ideia_bruta, mock_httpx_client):
+    async def test_processar_ideia_continuacao(
+        self, curador_service, sample_ideia_bruta, mock_httpx_client
+    ):
         """Testa detecção de ideia como continuação."""
         # Mock resposta do Tavily
         tavily_response = MagicMock()
@@ -167,16 +180,20 @@ class TestCuradorService:
         llm_response = MagicMock()
         llm_response.status_code = 200
         llm_response.json.return_value = {
-            "choices": [{
-                "message": {
-                    "content": json.dumps({
-                        "titulo": "Título refinado",
-                        "descricao_breve": "Descrição refinada",
-                        "justificativa": "Teste"
-                    })
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "titulo": "Título refinado",
+                                "descricao_breve": "Descrição refinada",
+                                "justificativa": "Teste",
+                            }
+                        )
+                    }
                 }
-            }],
-            "usage": {"total_tokens": 200}
+            ],
+            "usage": {"total_tokens": 200},
         }
         llm_response.raise_for_status = MagicMock()
 
@@ -191,14 +208,16 @@ class TestCuradorService:
         result = await curador_service.processar(
             ideia_bruta=sample_ideia_bruta,
             prompt_nicho=None,
-            ideias_similares=ideias_similares
+            ideias_similares=ideias_similares,
         )
 
         assert result.eh_continuacao is True
         assert result.eh_duplicada is False
 
     @pytest.mark.asyncio
-    async def test_processar_llm_error_is_explicit(self, curador_service, sample_ideia_bruta, mock_httpx_client):
+    async def test_processar_llm_error_is_explicit(
+        self, curador_service, sample_ideia_bruta, mock_httpx_client
+    ):
         """Provider failure must not be converted into a successful refinement."""
         # Mock resposta do Tavily
         tavily_response = MagicMock()
@@ -228,7 +247,11 @@ class TestCuradorService:
         curador_service.tavily_api_key = None
         curador_service._call_llm = AsyncMock(
             return_value=json.dumps(
-                {"titulo": "Refinada", "descricao_breve": "Descrição", "justificativa": "ok"}
+                {
+                    "titulo": "Refinada",
+                    "descricao_breve": "Descrição",
+                    "justificativa": "ok",
+                }
             )
         )
         result = await curador_service.processar(
@@ -243,21 +266,21 @@ class TestCuradorService:
     async def test_llm_retry_on_connection_error(self, curador_service):
         """Testa retry em caso de erro de conexão."""
         import httpx
+        from app.services.llm_gateway import LLMFailureCategory, LLMGatewayError
 
-        # O decorador @retry_llm está no método _call_llm
-        # Testamos que após falhar todas as tentativas, a exceção é relançada
+        # The shared gateway classifies the exhausted transport failure.
         with patch("httpx.AsyncClient") as mock_client:
             client_instance = AsyncMock()
+            mock_client.return_value = client_instance
             mock_client.return_value.__aenter__.return_value = client_instance
 
             # Simula erro de conexão em todas as tentativas
             client_instance.post.side_effect = httpx.ConnectError("Connection failed")
 
-            # O decorador @retry_llm com reraise=True deve lançar a exceção após todas as tentativas
-            with pytest.raises(httpx.ConnectError):
+            with pytest.raises(LLMGatewayError) as captured:
                 await curador_service._call_llm(
                     messages=[{"role": "user", "content": "teste"}]
                 )
 
-            # Deve ter tentado múltiplas vezes (retry decorador)
-            assert client_instance.post.call_count >= 1
+            assert captured.value.category is LLMFailureCategory.TRANSPORT
+            assert client_instance.post.call_count == 3

@@ -1,6 +1,7 @@
 """
 Router CRUD para a entidade TrendColetada.
 """
+
 from typing import Annotated
 from uuid import UUID
 
@@ -12,29 +13,30 @@ from app.core.database import get_db
 from app.repositories.trend_coletada_repository import TrendColetadaRepository
 from app.schemas.trend_coletada import (
     TrendColetadaCreate,
-    TrendColetadaUpdate,
     TrendColetadaResponse,
+    TrendColetadaUpdate,
 )
 from app.services.trends.coletor import TrendsCollectorService
-
 
 router = APIRouter(prefix="/trends", tags=["trends"])
 
 
 def get_trend_repo(
-    db: Annotated[AsyncSession, Depends(get_db)]
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TrendColetadaRepository:
     return TrendColetadaRepository(db)
 
 
 class ColetarRequest(BaseModel):
     """Request para coleta de trends."""
+
     nicho_id: UUID
     termos_adicionais: list[str] | None = None
 
 
 class ColetarResponse(BaseModel):
     """Response da coleta de trends."""
+
     nicho_id: str
     total_coletado: int
     por_fonte: dict[str, int]
@@ -132,8 +134,7 @@ async def coletar_trends(
     """
     collector = TrendsCollectorService(db)
     stats = await collector.collect_for_nicho(
-        nicho_id=request.nicho_id,
-        termos_adicionais=request.termos_adicionais
+        nicho_id=request.nicho_id, termos_adicionais=request.termos_adicionais
     )
     return stats
 
@@ -150,7 +151,7 @@ async def aprovar_trend(
     """
     collector = TrendsCollectorService(db)
     try:
-        result = await collector.approve_trend(trend_id)
+        await collector.approve_trend(trend_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -172,7 +173,7 @@ async def rejeitar_trend(
     """
     collector = TrendsCollectorService(db)
     try:
-        result = await collector.reject_trend(trend_id)
+        await collector.reject_trend(trend_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -184,6 +185,7 @@ async def rejeitar_trend(
 
 class GerarIdeiasResponse(BaseModel):
     """Response da geração de ideias."""
+
     trend_id: str
     termo_trend: str
     ideias_geradas: int
@@ -191,7 +193,9 @@ class GerarIdeiasResponse(BaseModel):
     erros: list[str] | None = None
 
 
-@router.post("/{trend_id}/gerar-ideias", response_model=GerarIdeiasResponse, status_code=201)
+@router.post(
+    "/{trend_id}/gerar-ideias", response_model=GerarIdeiasResponse, status_code=201
+)
 async def gerar_ideias_from_trend(
     trend_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],

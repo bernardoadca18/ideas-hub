@@ -16,6 +16,7 @@ Backward compatibility:
 - visual_queries is optional in BlocoNarrativo
 - Old roteiros without visual_queries continue to work
 """
+
 from dataclasses import dataclass, field
 from enum import Enum
 from uuid import UUID, uuid4
@@ -81,7 +82,9 @@ class VisualQuery:
             "narration_excerpt": self.narration_excerpt,
             "importance": self.importance,
             "source_note_id": str(self.source_note_id) if self.source_note_id else None,
-            "preferred_session_id": str(self.preferred_session_id) if self.preferred_session_id else None,
+            "preferred_session_id": str(self.preferred_session_id)
+            if self.preferred_session_id
+            else None,
             "preferred_start_seconds": self.preferred_start_seconds,
             "preferred_end_seconds": self.preferred_end_seconds,
             "desired_duration_seconds": self.desired_duration_seconds,
@@ -92,14 +95,20 @@ class VisualQuery:
     def from_dict(cls, data: dict) -> "VisualQuery":
         """Deserialize VisualQuery from dictionary."""
         return cls(
-            id=UUID(data["id"]) if isinstance(data.get("id"), str) else data.get("id", uuid4()),
+            id=UUID(data["id"])
+            if isinstance(data.get("id"), str)
+            else data.get("id", uuid4()),
             order=data.get("order", 0),
             intent=data.get("intent", VisualQueryIntent.ILLUSTRATION.value),
             query=data.get("query", ""),
             narration_excerpt=data.get("narration_excerpt"),
             importance=data.get("importance", VisualQueryImportance.PREFERRED.value),
-            source_note_id=UUID(data["source_note_id"]) if data.get("source_note_id") else None,
-            preferred_session_id=UUID(data["preferred_session_id"]) if data.get("preferred_session_id") else None,
+            source_note_id=UUID(data["source_note_id"])
+            if data.get("source_note_id")
+            else None,
+            preferred_session_id=UUID(data["preferred_session_id"])
+            if data.get("preferred_session_id")
+            else None,
             preferred_start_seconds=data.get("preferred_start_seconds"),
             preferred_end_seconds=data.get("preferred_end_seconds"),
             desired_duration_seconds=data.get("desired_duration_seconds"),

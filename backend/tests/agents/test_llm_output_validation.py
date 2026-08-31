@@ -1,7 +1,6 @@
 import json
 
 import pytest
-
 from app.agents.roteirista import RoteiristaService
 from app.schemas.llm_outputs import (
     LLMOutputError,
@@ -58,7 +57,7 @@ async def test_author_briefing_is_separate_in_script_prompt() -> None:
     service.tavily_api_key = None
     captured: list[dict] = []
 
-    async def fake_call(messages, temperature=0.7, max_tokens=8000):
+    async def fake_call(messages, temperature=0.7, max_tokens=8000, **_kwargs):
         captured.extend(messages)
         return json.dumps(valid_script())
 

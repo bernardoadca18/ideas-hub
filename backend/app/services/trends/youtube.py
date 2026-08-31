@@ -1,12 +1,15 @@
 """
 Coletador de trends do YouTube via Data API v3.
 """
-from typing import Any
 
 import httpx
+import structlog
 
-from app.services.trends.base import BaseTrendCollector, TrendColetada as TrendItem
 from app.core.config import settings
+from app.services.trends.base import BaseTrendCollector
+from app.services.trends.base import TrendColetada as TrendItem
+
+logger = structlog.get_logger("services.trends.youtube")
 
 
 class YouTubeCollector(BaseTrendCollector):
@@ -30,7 +33,7 @@ class YouTubeCollector(BaseTrendCollector):
             Lista de trends coletadas
         """
         if not self.api_key:
-            print("YOUTUBE_API_KEY não configurada")
+            logger.info("trend_source_unconfigured", source="youtube")
             return []
 
         mode = kwargs.get("mode", "search")
@@ -44,14 +47,14 @@ class YouTubeCollector(BaseTrendCollector):
     async def _search_videos(self, query: str, region_code: str) -> list[TrendItem]:
         """Busca vídeos por termo."""
         url = f"{self.base_url}/search"
-        params = {
+        params: dict[str, str | int] = {
             "part": "snippet",
             "q": query,
             "type": "video",
             "order": "relevance",
             "maxResults": self.max_results,
             "regionCode": region_code,
-            "key": self.api_key
+            "key": self.api_key,
         }
 
         try:
@@ -61,40 +64,51 @@ class YouTubeCollector(BaseTrendCollector):
                 data = response.json()
 
             trends = []
-            for item in data.get('items', []):
-                snippet = item['snippet']
-                video_id = item['id']['videoId']
+            for item in data.get("items", []):
+                snippet = item["snippet"]
+                video_id = item["id"]["videoId"]
 
-                trends.append(TrendItem(
-                    termo=snippet['title'][:300],
-                    fonte='youtube',
-                    payload={
-                        'video_id': video_id,
-                        'channel_title': snippet['channelTitle'],
-                        'description': snippet.get('description', '')[:500],
-                        'published_at': snippet['publishedAt'],
-                        'thumbnail': snippet['thumbnails'].get('default', {}).get('url'),
-                        'url': f"https://www.youtube.com/watch?v={video_id}",
-                        'mode': 'search',
-                        'query': query
-                    }
-                ))
+                trends.append(
+                    TrendItem(
+                        termo=snippet["title"][:300],
+                        fonte="youtube",
+                        payload={
+                            "video_id": video_id,
+                            "channel_title": snippet["channelTitle"],
+                            "description": snippet.get("description", "")[:500],
+                            "published_at": snippet["publishedAt"],
+                            "thumbnail": snippet["thumbnails"]
+                            .get("default", {})
+                            .get("url"),
+                            "url": f"https://www.youtube.com/watch?v={video_id}",
+                            "mode": "search",
+                            "query": query,
+                        },
+                    )
+                )
 
             return trends
 
-        except Exception as e:
-            print(f"Erro ao buscar YouTube para '{query}': {e}")
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            logger.warning(
+                "trend_source_failure",
+                source="youtube",
+                operation="search",
+                error_type=type(exc).__name__,
+            )
             return []
 
-    async def _fetch_popular_videos(self, region_code: str, category_id: str | None = None) -> list[TrendItem]:
+    async def _fetch_popular_videos(
+        self, region_code: str, category_id: str | None = None
+    ) -> list[TrendItem]:
         """Busca vídeos mais populares."""
         url = f"{self.base_url}/videos"
-        params = {
+        params: dict[str, str | int] = {
             "part": "snippet,statistics",
             "chart": "mostPopular",
             "maxResults": self.max_results,
             "regionCode": region_code,
-            "key": self.api_key
+            "key": self.api_key,
         }
 
         if category_id:
@@ -107,32 +121,41 @@ class YouTubeCollector(BaseTrendCollector):
                 data = response.json()
 
             trends = []
-            for item in data.get('items', []):
-                snippet = item['snippet']
-                stats = item.get('statistics', {})
-                video_id = item['id']
+            for item in data.get("items", []):
+                snippet = item["snippet"]
+                stats = item.get("statistics", {})
+                video_id = item["id"]
 
-                trends.append(TrendItem(
-                    termo=snippet['title'][:300],
-                    fonte='youtube',
-                    payload={
-                        'video_id': video_id,
-                        'channel_title': snippet['channelTitle'],
-                        'view_count': stats.get('viewCount', 0),
-                        'like_count': stats.get('likeCount', 0),
-                        'comment_count': stats.get('commentCount', 0),
-                        'category_id': snippet.get('categoryId'),
-                        'published_at': snippet['publishedAt'],
-                        'thumbnail': snippet['thumbnails'].get('default', {}).get('url'),
-                        'url': f"https://www.youtube.com/watch?v={video_id}",
-                        'mode': 'popular'
-                    }
-                ))
+                trends.append(
+                    TrendItem(
+                        termo=snippet["title"][:300],
+                        fonte="youtube",
+                        payload={
+                            "video_id": video_id,
+                            "channel_title": snippet["channelTitle"],
+                            "view_count": stats.get("viewCount", 0),
+                            "like_count": stats.get("likeCount", 0),
+                            "comment_count": stats.get("commentCount", 0),
+                            "category_id": snippet.get("categoryId"),
+                            "published_at": snippet["publishedAt"],
+                            "thumbnail": snippet["thumbnails"]
+                            .get("default", {})
+                            .get("url"),
+                            "url": f"https://www.youtube.com/watch?v={video_id}",
+                            "mode": "popular",
+                        },
+                    )
+                )
 
             return trends
 
-        except Exception as e:
-            print(f"Erro ao buscar YouTube populares: {e}")
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            logger.warning(
+                "trend_source_failure",
+                source="youtube",
+                operation="popular",
+                error_type=type(exc).__name__,
+            )
             return []
 
 

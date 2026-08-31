@@ -3,22 +3,34 @@ Configuração de retry para chamadas externas (LLM, Tavily, APIs).
 
 Usa tenacity para implementar retry com backoff exponencial.
 """
-import functools
-from typing import Callable, TypeVar, ParamSpec
 
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar
+
+import httpx
+import structlog
 from tenacity import (
+    after_log,
+    before_sleep_log,
     retry,
+    retry_if_exception,
+    retry_if_exception_type,
     stop_after_attempt,
     stop_after_delay,
     wait_exponential,
-    retry_if_exception_type,
-    before_sleep_log,
-    after_log
 )
-import httpx
-import structlog
 
 logger = structlog.get_logger("retry")
+
+
+def is_retryable_http_exception(exc: BaseException) -> bool:
+    """Retry transport failures and explicitly transient HTTP statuses only."""
+
+    if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
+        return True
+    return isinstance(exc, httpx.HTTPStatusError) and (
+        exc.response.status_code in {408, 429} or exc.response.status_code >= 500
+    )
 
 
 # Configuração padrão de retry
@@ -43,25 +55,16 @@ def retry_llm(
     - Rate limits (429)
     """
     return retry(
-        stop=(
-            stop_after_attempt(max_attempts) |
-            stop_after_delay(max_delay_seconds)
-        ),
+        stop=(stop_after_attempt(max_attempts) | stop_after_delay(max_delay_seconds)),
         wait=wait_exponential(
             multiplier=DEFAULT_WAIT_MULTIPLIER,
             min=DEFAULT_WAIT_MIN,
-            max=DEFAULT_WAIT_MAX
+            max=DEFAULT_WAIT_MAX,
         ),
-        retry=(
-            retry_if_exception_type(httpx.ConnectError) |
-            retry_if_exception_type(httpx.TimeoutException) |
-            retry_if_exception_type(httpx.ReadTimeout) |
-            retry_if_exception_type(httpx.ConnectTimeout) |
-            retry_if_exception_type(httpx.HTTPStatusError)
-        ),
+        retry=retry_if_exception(is_retryable_http_exception),
         before_sleep=before_sleep_log(logger, log_level=20),  # INFO
         after=after_log(logger, log_level=20),  # INFO
-        reraise=True
+        reraise=True,
     )
 
 
@@ -78,24 +81,21 @@ def retry_tavily(
     - Rate limits
     """
     return retry(
-        stop=(
-            stop_after_attempt(max_attempts) |
-            stop_after_delay(max_delay_seconds)
-        ),
+        stop=(stop_after_attempt(max_attempts) | stop_after_delay(max_delay_seconds)),
         wait=wait_exponential(
             multiplier=DEFAULT_WAIT_MULTIPLIER,
             min=DEFAULT_WAIT_MIN,
-            max=DEFAULT_WAIT_MAX
+            max=DEFAULT_WAIT_MAX,
         ),
         retry=(
-            retry_if_exception_type(httpx.ConnectError) |
-            retry_if_exception_type(httpx.TimeoutException) |
-            retry_if_exception_type(httpx.ReadTimeout) |
-            retry_if_exception_type(httpx.ConnectTimeout)
+            retry_if_exception_type(httpx.ConnectError)
+            | retry_if_exception_type(httpx.TimeoutException)
+            | retry_if_exception_type(httpx.ReadTimeout)
+            | retry_if_exception_type(httpx.ConnectTimeout)
         ),
         before_sleep=before_sleep_log(logger, log_level=20),
         after=after_log(logger, log_level=20),
-        reraise=True
+        reraise=True,
     )
 
 
@@ -112,36 +112,27 @@ def retry_api(
     - Erros HTTP transitórios
     """
     return retry(
-        stop=(
-            stop_after_attempt(max_attempts) |
-            stop_after_delay(max_delay_seconds)
-        ),
+        stop=(stop_after_attempt(max_attempts) | stop_after_delay(max_delay_seconds)),
         wait=wait_exponential(
             multiplier=DEFAULT_WAIT_MULTIPLIER,
             min=DEFAULT_WAIT_MIN,
-            max=DEFAULT_WAIT_MAX
+            max=DEFAULT_WAIT_MAX,
         ),
-        retry=(
-            retry_if_exception_type(httpx.ConnectError) |
-            retry_if_exception_type(httpx.TimeoutException) |
-            retry_if_exception_type(httpx.ReadTimeout) |
-            retry_if_exception_type(httpx.ConnectTimeout) |
-            retry_if_exception_type(httpx.HTTPStatusError)
-        ),
+        retry=retry_if_exception(is_retryable_http_exception),
         before_sleep=before_sleep_log(logger, log_level=20),
         after=after_log(logger, log_level=20),
-        reraise=True
+        reraise=True,
     )
 
 
 # Type hints para decorators
-P = ParamSpec('P')
-T = TypeVar('T')
+P = ParamSpec("P")
+T = TypeVar("T")
 
 
 def with_retry(
     retry_config: Callable[..., Callable[[Callable[P, T]], Callable[P, T]]] = retry_api,
-    **retry_kwargs
+    **retry_kwargs,
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
     """
     Decorator genérico com configuração de retry customizável.

@@ -1,6 +1,7 @@
 """
 Repositório assíncrono para a entidade Roteiro.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -96,7 +97,9 @@ class RoteiroRepository:
 
         from app.models.ideia import Ideia
 
-        await self.session.execute(select(Ideia.id).where(Ideia.id == ideia_id).with_for_update())
+        await self.session.execute(
+            select(Ideia.id).where(Ideia.id == ideia_id).with_for_update()
+        )
         result = await self.session.execute(
             select(Roteiro.versao)
             .where(Roteiro.ideia_id == ideia_id)

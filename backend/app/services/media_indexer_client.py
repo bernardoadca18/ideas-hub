@@ -3,7 +3,9 @@
 This client communicates with the Media Indexer public APIs over HTTP.
 It does NOT access the Media Indexer database, filesystem, or internal services directly.
 """
+
 import time
+from typing import Any, cast
 from uuid import UUID
 
 import httpx
@@ -11,7 +13,6 @@ import httpx
 from app.core.config import settings
 from app.core.logging import roteirista_logger
 from app.schemas.media_indexer import (
-    GameAnalysisMediaContext,
     MediaIndexerAlignment,
     MediaIndexerNote,
     MediaIndexerSearchResult,
@@ -23,22 +24,18 @@ from app.schemas.media_indexer import (
 
 class MediaIndexerError(Exception):
     """Base exception for Media Indexer client errors."""
-    pass
 
 
 class MediaIndexerUnavailableError(MediaIndexerError):
     """Media Indexer service is unavailable."""
-    pass
 
 
 class MediaIndexerNotFoundError(MediaIndexerError):
     """Resource not found in Media Indexer."""
-    pass
 
 
 class MediaIndexerConflictError(MediaIndexerError):
     """Conflict in Media Indexer (e.g., no suitable temporal index)."""
-    pass
 
 
 class MediaIndexerClient:
@@ -71,7 +68,7 @@ class MediaIndexerClient:
         method: str,
         path: str,
         **kwargs,
-    ) -> dict:
+    ) -> Any:
         """Make an HTTP request to Media Indexer."""
         url = f"{self.base_url}{path}"
         start_time = time.time()
@@ -159,7 +156,12 @@ class MediaIndexerClient:
 
     async def list_temporal_indexes(self, session_id: UUID) -> list[dict]:
         """List temporal indexes for a session."""
-        return await self._request("GET", f"/sessions/{session_id}/temporal-indexes")
+        data = await self._request("GET", f"/sessions/{session_id}/temporal-indexes")
+        if not isinstance(data, list) or not all(
+            isinstance(item, dict) for item in data
+        ):
+            raise MediaIndexerError("Media Indexer returned malformed temporal indexes")
+        return cast(list[dict], data)
 
     async def list_alignment_runs(
         self,
@@ -173,11 +175,16 @@ class MediaIndexerClient:
         params = {}
         if status:
             params["status"] = status
-        return await self._request(
+        data = await self._request(
             "GET",
             f"/sessions/{session_id}/alignment-runs",
             params=params if params else None,
         )
+        if not isinstance(data, list) or not all(
+            isinstance(item, dict) for item in data
+        ):
+            raise MediaIndexerError("Media Indexer returned malformed alignment runs")
+        return cast(list[dict], data)
 
     # =========================================================================
     # Semantic Timeline endpoint
@@ -245,7 +252,9 @@ class MediaIndexerClient:
                     confidence=align_data["confidence"],
                     anchors=align_data.get("anchors", []),
                     reasoning_summary=align_data.get("reasoning_summary"),
-                    timestamp_resolution_seconds=align_data.get("timestamp_resolution_seconds"),
+                    timestamp_resolution_seconds=align_data.get(
+                        "timestamp_resolution_seconds"
+                    ),
                 )
 
             notes.append(MediaIndexerTimelineNote(note=note, alignment=alignment))

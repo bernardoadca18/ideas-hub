@@ -3,6 +3,7 @@ Configuração central via variáveis de ambiente (pydantic-settings).
 Todos os parâmetros que precisam ser ajustados empiricamente (threshold de
 similaridade, quantidade de ideias por trend etc.) ficam aqui, lidos do .env.
 """
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,7 +11,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # Banco
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/ideas_hub"
+    database_url: str = (
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/ideas_hub"
+    )
 
     # API
     api_port: int = 8000
@@ -18,7 +21,19 @@ class Settings(BaseSettings):
 
     # LLM / Agentes
     llm_model: str = ""  # Modelo a ser usado via LiteLLM Proxy (ex: gpt-4o, gemini-pro)
+    llm_fast_model: str = ""
+    llm_standard_model: str = ""
+    llm_strong_model: str = ""
+    llm_connect_timeout_seconds: float = 10.0
+    llm_read_timeout_seconds: float = 180.0
+    llm_max_attempts: int = 3
+    llm_max_input_chars: int = 120_000
     tavily_api_key: str = ""
+    tavily_connect_timeout_seconds: float = 5.0
+    tavily_read_timeout_seconds: float = 20.0
+    tavily_max_attempts: int = 2
+    generation_research_max_queries: int = 4
+    generation_research_results_per_query: int = 5
 
     # Embeddings
     embedding_provider: str = "openai"
@@ -26,13 +41,17 @@ class Settings(BaseSettings):
     embedding_dim: int = 1024
 
     # LiteLLM Proxy
-    litellm_base_url: str = "http://172.20.0.1:4000"  # Endpoint do proxy local (gateway Docker)
+    litellm_base_url: str = (
+        "http://172.20.0.1:4000"  # Endpoint do proxy local (gateway Docker)
+    )
     litellm_master_key: str = ""  # Chave mestra do proxy
 
     # Media Indexer (audiovisual memory service)
     media_indexer_base_url: str = "http://localhost:8012"
     media_indexer_timeout_seconds: int = 30
-    media_indexer_api_key: str = ""  # Optional, if Media Indexer requires authentication
+    media_indexer_api_key: str = (
+        ""  # Optional, if Media Indexer requires authentication
+    )
 
     # Game Analysis media context budget
     game_analysis_media_context_max_chars: int = 50000
@@ -44,6 +63,29 @@ class Settings(BaseSettings):
     duration_fallback_words_per_minute: float = 145.0
     duration_fallback_chars_per_second: float = 14.5
     duration_revision_max_iterations: int = 2
+
+    # Editorial generation. Thresholds are policy, not model/provider names.
+    generation_single_pass_max_seconds: int = 480
+    generation_staged_max_seconds: int = 2_700
+    generation_section_target_seconds: int = 300
+    generation_chapter_target_seconds: int = 1_800
+    generation_max_sections: int = 120
+    generation_max_calls: int = 180
+    generation_max_revisions_per_section: int = 2
+    generation_stale_after_seconds: int = 300
+    generation_worker_poll_seconds: float = 2.0
+
+    @property
+    def resolved_llm_fast_model(self) -> str:
+        return self.llm_fast_model or self.llm_model
+
+    @property
+    def resolved_llm_standard_model(self) -> str:
+        return self.llm_standard_model or self.llm_model
+
+    @property
+    def resolved_llm_strong_model(self) -> str:
+        return self.llm_strong_model or self.resolved_llm_standard_model
 
     # Parâmetros ajustáveis
     ideia_similarity_threshold: float = 0.85

@@ -3,12 +3,12 @@ Tests for AnaliseJogosService with Media Indexer integration.
 
 Tests the game analysis workflow with optional media context.
 """
+
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-
 from app.agents.analise_jogos import (
     AnaliseJogosService,
     format_media_context_for_prompt,
@@ -193,6 +193,7 @@ class TestAnaliseJogosServiceMediaContext:
         """Test script generation without media context (legacy workflow)."""
         with patch("httpx.AsyncClient") as mock_client:
             client_instance = AsyncMock()
+            mock_client.return_value = client_instance
             mock_client.return_value.__aenter__.return_value = client_instance
 
             # Mock LLM response
@@ -248,6 +249,7 @@ class TestAnaliseJogosServiceMediaContext:
 
         with patch("httpx.AsyncClient") as mock_client:
             client_instance = AsyncMock()
+            mock_client.return_value = client_instance
             mock_client.return_value.__aenter__.return_value = client_instance
 
             # Mock LLM response
@@ -299,6 +301,7 @@ class TestAnaliseJogosServiceMediaContext:
         # Mock media context provider that fails
         mock_provider = AsyncMock()
         from app.services.media_indexer_client import MediaIndexerUnavailableError
+
         mock_provider.get_context.side_effect = MediaIndexerUnavailableError(
             "Connection refused"
         )
@@ -306,6 +309,7 @@ class TestAnaliseJogosServiceMediaContext:
 
         with patch("httpx.AsyncClient") as mock_client:
             client_instance = AsyncMock()
+            mock_client.return_value = client_instance
             mock_client.return_value.__aenter__.return_value = client_instance
 
             # Mock LLM response
@@ -360,16 +364,21 @@ class TestAnaliseJogosServiceMediaContext:
 
         with patch("httpx.AsyncClient") as mock_client:
             client_instance = AsyncMock()
+            mock_client.return_value = client_instance
             mock_client.return_value.__aenter__.return_value = client_instance
 
             roteiro_json = {
                 "titulo": "Session Specific Analysis",
                 "duracao_total_segundos": 400,
-                "blocos": [{
-                    "tipo": "desenvolvimento", "duracao_segundos": 400,
-                    "conteudo": "Session-specific analysis", "dicas_visual": None,
-                    "dicas_audio": None,
-                }],
+                "blocos": [
+                    {
+                        "tipo": "desenvolvimento",
+                        "duracao_segundos": 400,
+                        "conteudo": "Session-specific analysis",
+                        "dicas_visual": None,
+                        "dicas_audio": None,
+                    }
+                ],
                 "tags": [],
                 "referencias": None,
                 "justificativa": "Test",
@@ -413,6 +422,7 @@ class TestAnaliseJogosServiceMediaContext:
 
         with patch("httpx.AsyncClient") as mock_client:
             client_instance = AsyncMock()
+            mock_client.return_value = client_instance
             mock_client.return_value.__aenter__.return_value = client_instance
 
             # Mock Tavily response (grounding)
@@ -428,11 +438,15 @@ class TestAnaliseJogosServiceMediaContext:
             roteiro_json = {
                 "titulo": "Sekiro Analysis with Context",
                 "duracao_total_segundos": 800,
-                "blocos": [{
-                    "tipo": "desenvolvimento", "duracao_segundos": 800,
-                    "conteudo": "Combined analysis", "dicas_visual": None,
-                    "dicas_audio": None,
-                }],
+                "blocos": [
+                    {
+                        "tipo": "desenvolvimento",
+                        "duracao_segundos": 800,
+                        "conteudo": "Combined analysis",
+                        "dicas_visual": None,
+                        "dicas_audio": None,
+                    }
+                ],
                 "tags": ["sekiro"],
                 "referencias": ["FromSoftware info"],
                 "justificativa": "Combined grounding and media evidence",
@@ -475,6 +489,7 @@ class TestAnaliseJogosServiceLazyInit:
             mock_settings.game_analysis_media_context_max_chars = 50000
 
             from app.services.media_context_provider import FakeMediaContextProvider
+
             service = AnaliseJogosService()
             provider = service.media_context_provider
 
@@ -491,6 +506,7 @@ class TestAnaliseJogosServiceLazyInit:
             from app.services.media_indexer_context_provider import (
                 MediaIndexerContextProvider,
             )
+
             service = AnaliseJogosService()
             provider = service.media_context_provider
 

@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-
 from app.agents.curador import IdeiaBruta, IdeiaRefinada
 from app.repositories.ideia_repository import SimilarIdeaMatch
 from app.services.trends.gerador_ideias import TrendIdeiasGenerator

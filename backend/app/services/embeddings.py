@@ -1,6 +1,7 @@
 """
 Serviço de embeddings para geração de vetores de similaridade.
 """
+
 import httpx
 
 from app.core.config import settings
@@ -41,7 +42,9 @@ class EmbeddingService:
             data = response.json()
             return data["data"][0]["embedding"]
 
-    async def generate_for_ideia(self, titulo: str, descricao: str | None = None) -> list[float]:
+    async def generate_for_ideia(
+        self, titulo: str, descricao: str | None = None
+    ) -> list[float]:
         """
         Gera embedding combinando título e descrição de uma ideia.
 

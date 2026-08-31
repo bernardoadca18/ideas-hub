@@ -39,9 +39,13 @@ def extract_json_object(raw: str) -> dict[str, Any]:
     try:
         decoded = json.loads(text.strip())
     except json.JSONDecodeError as exc:
-        raise LLMOutputError("malformed_json", "O provedor retornou JSON inválido.") from exc
+        raise LLMOutputError(
+            "malformed_json", "O provedor retornou JSON inválido."
+        ) from exc
     if not isinstance(decoded, dict):
-        raise LLMOutputError("contract_validation", "A resposta do provedor não é um objeto JSON.")
+        raise LLMOutputError(
+            "contract_validation", "A resposta do provedor não é um objeto JSON."
+        )
     return decoded
 
 
@@ -188,7 +192,9 @@ class ScriptLLMOutput(StrictModel):
     def duration_is_coherent(self) -> ScriptLLMOutput:
         block_duration = sum(item.duracao_segundos for item in self.blocos)
         if self.duracao_total_segundos < block_duration:
-            raise ValueError("duracao_total_segundos cannot be shorter than the block sum")
+            raise ValueError(
+                "duracao_total_segundos cannot be shorter than the block sum"
+            )
         return self
 
 

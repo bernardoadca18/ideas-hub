@@ -8,6 +8,7 @@ Fluxo:
 4. Refina título/descrição usando o prompt composto (base + qualidade + perfil + nicho)
 5. Retorna ideia estruturada com sinalização de duplicidade/continuação
 """
+
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -16,7 +17,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.logging import curador_logger
-from app.core.retry import retry_llm, retry_tavily
+from app.core.retry import retry_tavily
 from app.production_profiles import get_profile
 from app.prompts.builder import PromptBuilder
 from app.prompts.workflows import IDEACAO_BRUTA, REFINAMENTO_IDEIA
@@ -25,11 +26,13 @@ from app.schemas.llm_outputs import (
     RawIdeaOutput,
     validate_model_output,
 )
+from app.services.llm_gateway import LLMTaskRole, llm_gateway
 
 
 @dataclass
 class IdeiaBruta:
     """Ideia crua recebida para curadoria."""
+
     titulo: str
     descricao: str | None = None
     nicho_id: str | None = None
@@ -39,6 +42,7 @@ class IdeiaBruta:
 @dataclass
 class IdeiaRefinada:
     """Ideia após processo de curadoria."""
+
     titulo: str
     descricao_breve: str
     eh_duplicada: bool = False
@@ -58,51 +62,23 @@ class CuradorService:
         self.litellm_base_url = settings.litellm_base_url
         self.litellm_api_key = settings.litellm_master_key or "dummy-key"
         self.tavily_api_key = settings.tavily_api_key
-        self.llm_model = settings.llm_model
         self.similarity_threshold = settings.ideia_similarity_threshold
 
-    @retry_llm()
     async def _call_llm(self, messages: list[dict], temperature: float = 0.7) -> str:
         """Faz chamada para o LLM via LiteLLM Proxy."""
-        start_time = time.time()
-        tokens_used = None
-
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{self.litellm_base_url}/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.litellm_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": self.llm_model,
-                        "messages": messages,
-                        "temperature": temperature,
-                        "max_tokens": 1000,
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-
-                usage = data.get("usage", {})
-                tokens_used = usage.get("total_tokens")
-
-                duration = time.time() - start_time
-                curador_logger.log_llm_call(
-                    model=self.llm_model, tokens_used=tokens_used,
-                    duration=round(duration, 3), success=True,
-                )
-
-                return data["choices"][0]["message"]["content"]
-
-        except Exception as e:
-            duration = time.time() - start_time
-            curador_logger.log_llm_call(
-                model=self.llm_model, tokens_used=tokens_used,
-                duration=round(duration, 3), success=False, error=str(e),
-            )
-            raise
+        result = await llm_gateway.complete(
+            messages=messages,
+            role=LLMTaskRole.FAST,
+            temperature=temperature,
+            max_tokens=1000,
+        )
+        curador_logger.log_llm_call(
+            model=result.model_alias,
+            tokens_used=result.total_tokens,
+            duration=result.latency_seconds,
+            success=True,
+        )
+        return result.content
 
     @retry_tavily()
     async def _search_tavily(self, query: str, max_results: int = 5) -> str:
@@ -136,12 +112,16 @@ class CuradorService:
 
                 if data.get("results"):
                     for r in data["results"][:3]:
-                        parts.append(f"- {r.get('title', '')}: {r.get('content', '')[:200]}")
+                        parts.append(
+                            f"- {r.get('title', '')}: {r.get('content', '')[:200]}"
+                        )
 
                 duration = time.time() - start_time
                 curador_logger.log_tavily_call(
-                    query=query, results_count=len(data.get("results", [])),
-                    duration=round(duration, 3), success=True,
+                    query=query,
+                    results_count=len(data.get("results", [])),
+                    duration=round(duration, 3),
+                    success=True,
                 )
 
                 return "\n".join(parts) if parts else ""
@@ -149,8 +129,11 @@ class CuradorService:
         except Exception as e:  # noqa: BLE001 - optional external-grounding boundary
             duration = time.time() - start_time
             curador_logger.log_tavily_call(
-                query=query, results_count=None,
-                duration=round(duration, 3), success=False, error=str(e),
+                query=query,
+                results_count=None,
+                duration=round(duration, 3),
+                success=False,
+                error=str(e),
             )
             return ""
 
@@ -173,7 +156,9 @@ class CuradorService:
         Returns:
             IdeiaRefinada com título e descrição refinados
         """
-        metrics = curador_logger.start_operation(operation="processar_ideia", nicho_id=ideia_bruta.nicho_id)
+        metrics = curador_logger.start_operation(
+            operation="processar_ideia", nicho_id=ideia_bruta.nicho_id
+        )
 
         try:
             profile = get_profile(perfil_id)
@@ -204,8 +189,10 @@ class CuradorService:
                     eh_continuacao = True
 
                 curador_logger.log_similarity_check(
-                    similarity_score=similaridade, is_duplicate=eh_duplicada,
-                    is_continuation=eh_continuacao, similar_ideia_id=ideia_similar_id,
+                    similarity_score=similaridade,
+                    is_duplicate=eh_duplicada,
+                    is_continuation=eh_continuacao,
+                    similar_ideia_id=ideia_similar_id,
                 )
 
             usuario_parts = [f"Ideia original:\nTítulo: {ideia_bruta.titulo}"]
@@ -215,7 +202,9 @@ class CuradorService:
             if ideias_similares:
                 usuario_parts.append("\nIdeias similares encontradas:")
                 for sim in ideias_similares[:3]:
-                    usuario_parts.append(f"- '{sim['titulo']}' (similaridade: {sim['similaridade']:.2%})")
+                    usuario_parts.append(
+                        f"- '{sim['titulo']}' (similaridade: {sim['similaridade']:.2%})"
+                    )
 
             usuario_message = "\n".join(usuario_parts)
 
@@ -226,10 +215,12 @@ class CuradorService:
                 .build(task_context=usuario_message)
             )
 
-            resposta_llm = await self._call_llm([
-                {"role": "system", "content": composed.system},
-                {"role": "user", "content": composed.user},
-            ])
+            resposta_llm = await self._call_llm(
+                [
+                    {"role": "system", "content": composed.system},
+                    {"role": "user", "content": composed.user},
+                ]
+            )
             parsed = validate_model_output(IdeaRefinementOutput, resposta_llm)
             assert isinstance(parsed, IdeaRefinementOutput)
             titulo_refinado = parsed.titulo
@@ -250,8 +241,11 @@ class CuradorService:
             )
 
             curador_logger.end_operation(
-                metrics=metrics, success=True, similarity_score=similaridade,
-                is_duplicate=eh_duplicada, is_continuation=eh_continuacao,
+                metrics=metrics,
+                success=True,
+                similarity_score=similaridade,
+                is_duplicate=eh_duplicada,
+                is_continuation=eh_continuacao,
                 grounding_used=grounding_used,
             )
 
@@ -284,7 +278,9 @@ class CuradorService:
         usuario_parts = [f"Trend/Tópico: {termo_trend}"]
         if contexto_fonte:
             usuario_parts.append(contexto_fonte)
-        usuario_parts.append(f"\nGere a ideia {indice} de {total} para esta rodada. Varie a abordagem em relação às outras.")
+        usuario_parts.append(
+            f"\nGere a ideia {indice} de {total} para esta rodada. Varie a abordagem em relação às outras."
+        )
         usuario_message = "\n".join(usuario_parts)
 
         composed = (

@@ -5,6 +5,7 @@ muda entre "gerar ideia bruta", "refinar ideia", "gerar roteiro padrão" e "tran
 anotações de gameplay em roteiro de análise" — o resto do prompt (base, qualidade
 editorial, perfil, nicho) é compartilhado.
 """
+
 from dataclasses import dataclass
 
 
@@ -225,7 +226,8 @@ CONSULTAS VISUAIS ESTRUTURADAS (visual_queries):
 )
 
 _WORKFLOWS: dict[str, WorkflowSpec] = {
-    w.id: w for w in [IDEACAO_BRUTA, REFINAMENTO_IDEIA, ROTEIRO_PADRAO, ROTEIRO_ANALISE_JOGOS]
+    w.id: w
+    for w in [IDEACAO_BRUTA, REFINAMENTO_IDEIA, ROTEIRO_PADRAO, ROTEIRO_ANALISE_JOGOS]
 }
 
 

@@ -4,22 +4,23 @@ Tests for MediaIndexerClient HTTP client.
 Tests cover HTTP operations, error handling, and response parsing.
 Uses mocks for HTTP operations - never makes real network calls.
 """
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
-import httpx
 
-from app.services.media_indexer_client import (
-    MediaIndexerClient,
-    MediaIndexerError,
-    MediaIndexerUnavailableError,
-    MediaIndexerNotFoundError,
-    MediaIndexerConflictError,
-)
+import httpx
+import pytest
 from app.schemas.media_indexer import (
+    MediaIndexerSearchResult,
     MediaIndexerSession,
     MediaIndexerTimelineSession,
-    MediaIndexerSearchResult,
+)
+from app.services.media_indexer_client import (
+    MediaIndexerClient,
+    MediaIndexerConflictError,
+    MediaIndexerError,
+    MediaIndexerNotFoundError,
+    MediaIndexerUnavailableError,
 )
 
 
@@ -350,7 +351,9 @@ class TestMediaIndexerClientErrorHandling:
         with patch("httpx.AsyncClient") as mock_client:
             client_instance = AsyncMock()
             mock_client.return_value.__aenter__.return_value = client_instance
-            client_instance.request.side_effect = httpx.ConnectError("Connection refused")
+            client_instance.request.side_effect = httpx.ConnectError(
+                "Connection refused"
+            )
 
             with pytest.raises(MediaIndexerUnavailableError):
                 await client.get_project(project_id)

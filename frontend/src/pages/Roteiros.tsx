@@ -203,13 +203,18 @@ export default function Roteiros() {
                 </div>
                 <div className="blocos-list">
                   {selected.estrutura.blocos.map((block, index) => (
-                    <div key={index} className="bloco-card">
-                      <div className="bloco-header"><h4>{block.tipo}</h4><span>{formatDuration(block.duracao_segundos)}</span></div>
+                    <details key={index} className="bloco-card" open={selected.estrutura.blocos.length <= 10 || index === 0}>
+                      <summary className="bloco-header"><h4>{block.tipo}</h4><span>{formatDuration(block.duracao_segundos)}</span></summary>
+                      {block.purpose && <div className="bloco-dica"><strong>Propósito:</strong> {block.purpose}</div>}
+                      {selected.estrutura.duration_contract?.sections[index] && <div className="bloco-dica">
+                        <strong>Contrato:</strong> target {selected.estrutura.duration_contract.sections[index].target_words || '—'} palavras · atual {selected.estrutura.duration_contract.sections[index].actual_words} · predicted {formatDuration(Math.round(selected.estrutura.duration_contract.sections[index].predicted_duration_seconds))} · {selected.estrutura.duration_contract.sections[index].status}
+                      </div>}
+                      {(block.beats?.length || 0) > 0 && <details><summary>Beats editoriais ({block.beats?.length})</summary><pre>{JSON.stringify(block.beats, null, 2)}</pre></details>}
                       <div className="bloco-conteudo"><p>{block.conteudo}</p></div>
                       {block.dicas_visual && <div className="bloco-dica"><strong>Visual:</strong> {block.dicas_visual}</div>}
                       {block.dicas_audio && <div className="bloco-dica"><strong>Áudio:</strong> {block.dicas_audio}</div>}
                       {(block.visual_queries?.length || 0) > 0 && <div className="bloco-dica"><strong>VisualQueries:</strong> {block.visual_queries?.length} preservadas com provenance.</div>}
-                    </div>
+                    </details>
                   ))}
                 </div>
                 <div className="revision-actions">

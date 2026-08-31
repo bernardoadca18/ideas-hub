@@ -1,12 +1,13 @@
 """
 Repositório assíncrono para a entidade Nicho.
 """
+
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select, and_
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.nicho import Nicho
@@ -20,20 +21,16 @@ class NichoRepository:
     async def create(self, nicho_data: NichoCreate) -> Nicho:
         nicho = Nicho(**nicho_data.model_dump())
         self.session.add(nicho)
-        await self.session.commit()
+        await self.session.flush()
         await self.session.refresh(nicho)
         return nicho
 
     async def get_by_id(self, nicho_id: UUID) -> Nicho | None:
-        result = await self.session.execute(
-            select(Nicho).where(Nicho.id == nicho_id)
-        )
+        result = await self.session.execute(select(Nicho).where(Nicho.id == nicho_id))
         return result.scalar_one_or_none()
 
     async def get_by_slug(self, slug: str) -> Nicho | None:
-        result = await self.session.execute(
-            select(Nicho).where(Nicho.slug == slug)
-        )
+        result = await self.session.execute(select(Nicho).where(Nicho.slug == slug))
         return result.scalar_one_or_none()
 
     async def list(
@@ -60,7 +57,7 @@ class NichoRepository:
         for field, value in update_data.items():
             setattr(nicho, field, value)
 
-        await self.session.commit()
+        await self.session.flush()
         await self.session.refresh(nicho)
         return nicho
 
@@ -70,5 +67,5 @@ class NichoRepository:
             return False
 
         await self.session.delete(nicho)
-        await self.session.commit()
+        await self.session.flush()
         return True

@@ -1,12 +1,13 @@
 """
 Repositório assíncrono para a entidade FonteTrendNicho.
 """
+
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select, and_
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.fonte_trend_nicho import FonteTrendNicho
@@ -20,7 +21,7 @@ class FonteTrendNichoRepository:
     async def create(self, fonte_data: FonteTrendNichoCreate) -> FonteTrendNicho:
         fonte = FonteTrendNicho(**fonte_data.model_dump())
         self.session.add(fonte)
-        await self.session.commit()
+        await self.session.flush()
         await self.session.refresh(fonte)
         return fonte
 
@@ -51,7 +52,9 @@ class FonteTrendNichoRepository:
         if filters:
             query = query.where(and_(*filters))
 
-        query = query.offset(skip).limit(limit).order_by(FonteTrendNicho.criado_em.desc())
+        query = (
+            query.offset(skip).limit(limit).order_by(FonteTrendNicho.criado_em.desc())
+        )
         result = await self.session.execute(query)
         return result.scalars().all()
 
@@ -66,7 +69,7 @@ class FonteTrendNichoRepository:
         for field, value in update_data.items():
             setattr(fonte, field, value)
 
-        await self.session.commit()
+        await self.session.flush()
         await self.session.refresh(fonte)
         return fonte
 
@@ -76,13 +79,11 @@ class FonteTrendNichoRepository:
             return False
 
         await self.session.delete(fonte)
-        await self.session.commit()
+        await self.session.flush()
         return True
 
     async def list_by_nicho(
-        self,
-        nicho_id: UUID,
-        ativo: bool | None = None
+        self, nicho_id: UUID, ativo: bool | None = None
     ) -> Sequence[FonteTrendNicho]:
         """Lista todas as fontes de um nicho específico."""
         return await self.list(nicho_id=nicho_id, ativo=ativo, limit=1000)

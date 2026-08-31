@@ -1,6 +1,7 @@
 """
 Router CRUD para a entidade Ideia.
 """
+
 from typing import Annotated
 from uuid import UUID
 
@@ -10,33 +11,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.curador import IdeiaBruta, curador_service
 from app.core.database import get_db
+from app.production_profiles import get_profile
 from app.repositories.ideia_repository import IdeiaRepository
 from app.repositories.nicho_repository import NichoRepository
 from app.schemas.ideia import IdeiaCreate, IdeiaResponse, IdeiaUpdate
 from app.schemas.llm_outputs import LLMOutputError
+from app.services.editorial_generation import DurationMode, resolve_duration_intent
 from app.services.embeddings import embedding_service
 
 router = APIRouter(prefix="/ideias", tags=["ideias"])
 
 
-def get_ideia_repo(
-    db: Annotated[AsyncSession, Depends(get_db)]
-) -> IdeiaRepository:
+def get_ideia_repo(db: Annotated[AsyncSession, Depends(get_db)]) -> IdeiaRepository:
     return IdeiaRepository(db)
 
 
-def get_nicho_repo(
-    db: Annotated[AsyncSession, Depends(get_db)]
-) -> NichoRepository:
+def get_nicho_repo(db: Annotated[AsyncSession, Depends(get_db)]) -> NichoRepository:
     return NichoRepository(db)
 
 
 class IdeiaBrutaInput(BaseModel):
     """Schema para entrada de ideia bruta manual."""
+
     titulo: str = Field(..., max_length=300, description="Título da ideia")
-    descricao: str | None = Field(None, description="Descrição opcional da ideia")
+    descricao: str | None = Field(
+        None, max_length=20_000, description="Descrição opcional da ideia"
+    )
     author_briefing: str | None = Field(
         None,
+        max_length=20_000,
         description="Contexto editorial opcional fornecido pelo autor; não é refinado pelo Curador",
     )
     target_duration_seconds: int | None = Field(
@@ -45,11 +48,16 @@ class IdeiaBrutaInput(BaseModel):
         le=28_800,
         description="Duração editorial alvo; distinta da duração prevista/real",
     )
+    duration_mode: DurationMode = Field(
+        default=DurationMode.PROFILE_DEFAULT,
+        description="Intenção explícita: target do usuário, default do perfil ou content-driven",
+    )
     nicho_id: UUID | None = Field(None, description="ID do nicho (opcional)")
 
 
 class IdeiaRefinadaResponse(IdeiaResponse):
     """Response com informações de curadoria."""
+
     eh_duplicada: bool = False
     eh_continuacao: bool = False
     ideia_similar_id: UUID | None = None
@@ -102,37 +110,51 @@ async def create_ideia(
             prompt_nicho = nicho.prompt_ideacao
             perfil_id = nicho.perfil_producao
 
+    profile = get_profile(perfil_id)
+    try:
+        duration_intent = resolve_duration_intent(
+            mode=ideia_data.duration_mode,
+            requested_target_seconds=ideia_data.target_duration_seconds,
+            profile=profile,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     # 2. Gera embedding para busca de similaridade
     embedding = await embedding_service.generate_for_ideia(
-        ideia_data.titulo,
-        ideia_data.descricao
+        ideia_data.titulo, ideia_data.descricao
     )
 
     # 3. Busca ideias similares
     from app.core.config import settings
+
     similares = await ideia_repo.find_similar(
         embedding=embedding,
         threshold=settings.ideia_similarity_threshold,
         exclude_id=None,  # Nova ideia, nada a excluir
-        limit=3
+        limit=3,
     )
 
     # Converte para formato esperado pelo curador
-    ideias_similares = [
-        {
-            "id": str(match.idea.id),
-            "titulo": match.idea.titulo,
-            "similaridade": match.similarity,
-        }
-        for match in similares
-    ] if similares else None
+    ideias_similares = (
+        [
+            {
+                "id": str(match.idea.id),
+                "titulo": match.idea.titulo,
+                "similaridade": match.similarity,
+            }
+            for match in similares
+        ]
+        if similares
+        else None
+    )
 
     # 4. Processa via Agente Curador
     ideia_bruta = IdeiaBruta(
         titulo=ideia_data.titulo,
         descricao=ideia_data.descricao,
         nicho_id=str(ideia_data.nicho_id) if ideia_data.nicho_id else None,
-        origem="manual"
+        origem="manual",
     )
 
     try:
@@ -165,7 +187,9 @@ async def create_ideia(
         titulo=ideia_refinada.titulo,
         descricao_breve=ideia_refinada.descricao_breve,
         author_briefing=ideia_data.author_briefing,
-        target_duration_seconds=ideia_data.target_duration_seconds,
+        target_duration_seconds=duration_intent.target_seconds,
+        duration_mode=duration_intent.mode,
+        duration_target_source=duration_intent.source,
         status="rascunho",
         eh_continuacao_de=None,  # Definido manualmente pelo usuário
         numero_parte=None,  # Definido manualmente pelo usuário
@@ -190,7 +214,13 @@ async def create_ideia(
         descricao_breve=ideia_recarregada.descricao_breve,
         author_briefing=ideia_recarregada.author_briefing,
         author_briefing_identity=ideia_recarregada.author_briefing_identity,
-        target_duration_seconds=getattr(ideia_recarregada, "target_duration_seconds", None),
+        target_duration_seconds=getattr(
+            ideia_recarregada, "target_duration_seconds", None
+        ),
+        duration_mode=getattr(ideia_recarregada, "duration_mode", None),
+        duration_target_source=getattr(
+            ideia_recarregada, "duration_target_source", None
+        ),
         perfil_producao=ideia_recarregada.perfil_producao,
         status=ideia_recarregada.status,
         eh_continuacao_de=ideia_recarregada.eh_continuacao_de,
@@ -201,7 +231,9 @@ async def create_ideia(
         atualizado_em=ideia_recarregada.atualizado_em,
         eh_duplicada=ideia_refinada.eh_duplicada,
         eh_continuacao=ideia_refinada.eh_continuacao,
-        ideia_similar_id=UUID(ideia_refinada.ideia_similar_id) if ideia_refinada.ideia_similar_id else None,
+        ideia_similar_id=UUID(ideia_refinada.ideia_similar_id)
+        if ideia_refinada.ideia_similar_id
+        else None,
         ideia_similar_titulo=ideia_refinada.ideia_similar_titulo,
         similaridade=ideia_refinada.similaridade,
     )
@@ -226,11 +258,42 @@ async def update_ideia(
     ideia_id: UUID,
     ideia_data: IdeiaUpdate,
     repo: Annotated[IdeiaRepository, Depends(get_ideia_repo)],
+    nicho_repo: Annotated[NichoRepository, Depends(get_nicho_repo)],
 ):
     """Atualiza uma ideia existente."""
-    ideia = await repo.update(ideia_id, ideia_data)
-    if not ideia:
+    current = await repo.get_by_id(ideia_id)
+    if not current:
         raise HTTPException(status_code=404, detail="Ideia não encontrada")
+    supplied = ideia_data.model_fields_set
+    if {"duration_mode", "target_duration_seconds"} & supplied:
+        effective_niche_id = (
+            ideia_data.nicho_id if "nicho_id" in supplied else current.nicho_id
+        )
+        profile_id = None
+        if effective_niche_id:
+            niche = await nicho_repo.get_by_id(effective_niche_id)
+            profile_id = niche.perfil_producao if niche else None
+        try:
+            intent = resolve_duration_intent(
+                mode=ideia_data.duration_mode
+                if "duration_mode" in supplied
+                else current.duration_mode,
+                requested_target_seconds=ideia_data.target_duration_seconds
+                if "target_duration_seconds" in supplied
+                else current.target_duration_seconds,
+                profile=get_profile(profile_id),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        payload = ideia_data.model_dump(exclude_unset=True)
+        payload.update(
+            target_duration_seconds=intent.target_seconds,
+            duration_mode=intent.mode,
+        )
+        ideia_data = IdeiaUpdate.model_validate(payload)
+        current.duration_target_source = intent.source.value
+    ideia = await repo.update(ideia_id, ideia_data)
+    await repo.session.flush()
     return ideia
 
 
@@ -262,10 +325,11 @@ async def aprovar_ideia(
     if ideia.status != "rascunho":
         raise HTTPException(
             status_code=400,
-            detail=f"Ideia não está em rascunho (status: {ideia.status})"
+            detail=f"Ideia não está em rascunho (status: {ideia.status})",
         )
 
     from app.schemas.ideia import IdeiaUpdate
+
     ideia_atualizada = await repo.update(ideia_id, IdeiaUpdate(status="aprovada"))
     return ideia_atualizada
 
@@ -287,16 +351,18 @@ async def rejeitar_ideia(
     if ideia.status != "rascunho":
         raise HTTPException(
             status_code=400,
-            detail=f"Ideia não está em rascunho (status: {ideia.status})"
+            detail=f"Ideia não está em rascunho (status: {ideia.status})",
         )
 
     from app.schemas.ideia import IdeiaUpdate
+
     ideia_atualizada = await repo.update(ideia_id, IdeiaUpdate(status="rejeitada"))
     return ideia_atualizada
 
 
 class GerarRoteiroResponse(BaseModel):
     """Response da geração de roteiro."""
+
     ideia_id: str
     roteiro_id: str
     versao: int
@@ -306,7 +372,9 @@ class GerarRoteiroResponse(BaseModel):
     status: str
 
 
-@router.post("/{ideia_id}/roteiro", response_model=GerarRoteiroResponse, status_code=201)
+@router.post(
+    "/{ideia_id}/roteiro", response_model=GerarRoteiroResponse, status_code=201
+)
 async def gerar_roteiro(
     ideia_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],

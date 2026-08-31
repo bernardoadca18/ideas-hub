@@ -3,6 +3,7 @@
 This module provides the real implementation of MediaContextProvider
 that communicates with the Media Indexer service to retrieve audiovisual context.
 """
+
 from uuid import UUID
 
 from app.core.config import settings
@@ -11,7 +12,6 @@ from app.schemas.media_indexer import (
     GameAnalysisMediaContext,
     MediaIndexerTimelineSession,
 )
-from app.services.media_context_provider import MediaContextProvider
 from app.services.media_indexer_client import (
     MediaIndexerClient,
     MediaIndexerConflictError,
@@ -29,7 +29,9 @@ class MediaIndexerContextProvider:
     game analysis workflow.
     """
 
-    def __init__(self, client: MediaIndexerClient | None = None, max_chars: int | None = None):
+    def __init__(
+        self, client: MediaIndexerClient | None = None, max_chars: int | None = None
+    ):
         self._client = client or MediaIndexerClient()
         self._max_chars = max_chars or settings.game_analysis_media_context_max_chars
 
@@ -117,7 +119,9 @@ class MediaIndexerContextProvider:
 
                 try:
                     # Get semantic timeline for this session
-                    timeline = await self._get_session_timeline(session.id, session.label)
+                    timeline = await self._get_session_timeline(
+                        session.id, session.label
+                    )
 
                     if timeline:
                         # Calculate character contribution
@@ -132,12 +136,18 @@ class MediaIndexerContextProvider:
                                 timeline_sessions.append(partial_timeline)
                                 total_notes += len(partial_timeline.notes)
                                 matched_notes += sum(
-                                    1 for n in partial_timeline.notes if n.alignment is not None
+                                    1
+                                    for n in partial_timeline.notes
+                                    if n.alignment is not None
                                 )
                                 unmatched_notes += sum(
-                                    1 for n in partial_timeline.notes if n.alignment is None
+                                    1
+                                    for n in partial_timeline.notes
+                                    if n.alignment is None
                                 )
-                                current_chars += self._estimate_session_chars(partial_timeline)
+                                current_chars += self._estimate_session_chars(
+                                    partial_timeline
+                                )
                             warnings.append(
                                 f"Session '{session.label}' truncated to fit context budget"
                             )
@@ -147,7 +157,9 @@ class MediaIndexerContextProvider:
                             matched_notes += sum(
                                 1 for n in timeline.notes if n.alignment is not None
                             )
-                            unmatched_notes += sum(1 for n in timeline.notes if n.alignment is None)
+                            unmatched_notes += sum(
+                                1 for n in timeline.notes if n.alignment is None
+                            )
                             current_chars += session_chars
 
                 except MediaIndexerConflictError:
@@ -155,7 +167,7 @@ class MediaIndexerContextProvider:
                         f"Session '{session.label}' has no suitable temporal index"
                     )
                 except MediaIndexerError as e:
-                    warnings.append(f"Session '{session.label}' error: {str(e)}")
+                    warnings.append(f"Session '{session.label}' error: {e!s}")
 
             roteirista_logger.logger.info(
                 "media_context_retrieved",
@@ -208,7 +220,7 @@ class MediaIndexerContextProvider:
                 matched_notes=0,
                 unmatched_notes=0,
                 total_chars=0,
-                warnings=[f"Media Indexer unavailable: {str(e)}"],
+                warnings=[f"Media Indexer unavailable: {e!s}"],
                 available=False,
                 error=str(e),
             )
@@ -226,7 +238,7 @@ class MediaIndexerContextProvider:
                 matched_notes=0,
                 unmatched_notes=0,
                 total_chars=0,
-                warnings=[f"Media Indexer error: {str(e)}"],
+                warnings=[f"Media Indexer error: {e!s}"],
                 available=False,
                 error=str(e),
             )
@@ -412,7 +424,9 @@ class MediaIndexerContextProvider:
                 start_sec = int(note.alignment.start_seconds % 60)
                 end_min = int(note.alignment.end_seconds // 60)
                 end_sec = int(note.alignment.end_seconds % 60)
-                note_line += f" @ {start_min:02d}:{start_sec:02d}-{end_min:02d}:{end_sec:02d}"
+                note_line += (
+                    f" @ {start_min:02d}:{start_sec:02d}-{end_min:02d}:{end_sec:02d}"
+                )
                 note_line += f" (confidence: {note.alignment.confidence:.2f})"
             # Each note is preceded by a newline separator, then the note content
             total += 1 + len(note_line)
@@ -441,7 +455,9 @@ class MediaIndexerContextProvider:
                 start_sec = int(note.alignment.start_seconds % 60)
                 end_min = int(note.alignment.end_seconds // 60)
                 end_sec = int(note.alignment.end_seconds % 60)
-                note_line += f" @ {start_min:02d}:{start_sec:02d}-{end_min:02d}:{end_sec:02d}"
+                note_line += (
+                    f" @ {start_min:02d}:{start_sec:02d}-{end_min:02d}:{end_sec:02d}"
+                )
                 note_line += f" (confidence: {note.alignment.confidence:.2f})"
             # Each note is preceded by a newline separator, then the note content
             note_chars = 1 + len(note_line)

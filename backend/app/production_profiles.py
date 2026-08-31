@@ -21,6 +21,8 @@ class DurationPolicy:
     min_seconds: int | None
     target_min_seconds: int | None
     target_max_seconds: int | None
+    default_target_seconds: int | None = None
+    content_driven_allowed: bool = False
     hard_minimum: bool = (
         False  # se True, o serviço aplica um piso técnico (evitar micro-vídeos)
     )
@@ -28,12 +30,6 @@ class DurationPolicy:
     guidance: str = ""  # texto extra para o prompt sobre como tratar duração
     excellent_tolerance_ratio: float = 0.08
     acceptable_tolerance_ratio: float = 0.15
-
-    @property
-    def default_target_seconds(self) -> int | None:
-        if self.target_min_seconds is None or self.target_max_seconds is None:
-            return None
-        return round((self.target_min_seconds + self.target_max_seconds) / 2)
 
     def as_prompt_text(self) -> str:
         if self.target_min_seconds is None and self.target_max_seconds is None:
@@ -72,6 +68,11 @@ class ProductionProfile:
         "roteiro_padrao"  # id do WorkflowSpec usado para gerar roteiro
     )
     permite_grounding_automatico: bool = True
+    generation_strategy: str = "auto"
+    research_strategy: str = "query_decomposition"
+    model_routing_policy: str = "standard"
+    long_form_supported: bool = True
+    max_practical_duration_seconds: int = 14_400
 
 
 FACELESS_POP_CULTURE_LISTS = ProductionProfile(
@@ -86,6 +87,8 @@ FACELESS_POP_CULTURE_LISTS = ProductionProfile(
         min_seconds=None,
         target_min_seconds=600,
         target_max_seconds=900,
+        default_target_seconds=720,
+        content_driven_allowed=True,
         hard_minimum=False,
         guidance=(
             "Assuntos com lore extensa (ex.: 'todas as Joias do Infinito explicadas') podem "
@@ -128,6 +131,8 @@ FACELESS_INFORMATIONAL = ProductionProfile(
         min_seconds=None,
         target_min_seconds=600,
         target_max_seconds=900,
+        default_target_seconds=720,
+        content_driven_allowed=True,
         guidance="Timelines históricas ou comparações técnicas complexas podem justificar mais tempo.",
     ),
     estrutura_guidance=(
@@ -162,6 +167,8 @@ FACELESS_GENERAL = ProductionProfile(
         min_seconds=None,
         target_min_seconds=600,
         target_max_seconds=900,
+        default_target_seconds=720,
+        content_driven_allowed=True,
         guidance="Este perfil tem a maior liberdade de formato do conjunto faceless.",
     ),
     estrutura_guidance=(
@@ -191,6 +198,8 @@ FACELESS_POP_CULTURE = ProductionProfile(
         min_seconds=None,
         target_min_seconds=600,
         target_max_seconds=1200,
+        default_target_seconds=900,
+        content_driven_allowed=True,
         guidance="Retrospectivas de franquia ou análises de universo extenso podem passar de 15 min.",
     ),
     estrutura_guidance=(
@@ -221,6 +230,8 @@ GAME_ANALYSIS = ProductionProfile(
         min_seconds=None,
         target_min_seconds=None,
         target_max_seconds=None,
+        default_target_seconds=None,
+        content_driven_allowed=True,
         allow_extended=True,
         guidance=(
             "A duração é inteiramente derivada da profundidade das anotações fornecidas e da "
@@ -256,6 +267,7 @@ GAME_ANALYSIS = ProductionProfile(
     ],
     workflow_roteiro="roteiro_analise_jogos",
     permite_grounding_automatico=False,
+    max_practical_duration_seconds=28_800,
 )
 
 _REGISTRY: dict[str, ProductionProfile] = {

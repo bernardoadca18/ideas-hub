@@ -1,12 +1,14 @@
 """
 Repositório assíncrono para a entidade TrendColetada.
 """
+
 from __future__ import annotations
 
-from typing import Sequence
+import builtins
+from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select, and_
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.trend_coletada import TrendColetada
@@ -20,7 +22,7 @@ class TrendColetadaRepository:
     async def create(self, trend_data: TrendColetadaCreate) -> TrendColetada:
         trend = TrendColetada(**trend_data.model_dump())
         self.session.add(trend)
-        await self.session.commit()
+        await self.session.flush()
         await self.session.refresh(trend)
         return trend
 
@@ -51,7 +53,9 @@ class TrendColetadaRepository:
         if filters:
             query = query.where(and_(*filters))
 
-        query = query.offset(skip).limit(limit).order_by(TrendColetada.coletado_em.desc())
+        query = (
+            query.offset(skip).limit(limit).order_by(TrendColetada.coletado_em.desc())
+        )
         result = await self.session.execute(query)
         return result.scalars().all()
 
@@ -66,7 +70,7 @@ class TrendColetadaRepository:
         for field, value in update_data.items():
             setattr(trend, field, value)
 
-        await self.session.commit()
+        await self.session.flush()
         await self.session.refresh(trend)
         return trend
 
@@ -76,13 +80,15 @@ class TrendColetadaRepository:
             return False
 
         await self.session.delete(trend)
-        await self.session.commit()
+        await self.session.flush()
         return True
 
-    async def create_batch(self, trends_data: list[TrendColetadaCreate]) -> list[TrendColetada]:
+    async def create_batch(
+        self, trends_data: builtins.list[TrendColetadaCreate]
+    ) -> builtins.list[TrendColetada]:
         trends = [TrendColetada(**data.model_dump()) for data in trends_data]
         self.session.add_all(trends)
-        await self.session.commit()
+        await self.session.flush()
         for trend in trends:
             await self.session.refresh(trend)
         return trends

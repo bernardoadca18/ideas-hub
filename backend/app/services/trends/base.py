@@ -1,6 +1,7 @@
 """
 Classe base para coletadores de trends.
 """
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 @dataclass
 class TrendColetada:
     """Trend coletada de uma fonte."""
+
     termo: str
     fonte: str
     payload: dict[str, Any]
@@ -33,4 +35,3 @@ class BaseTrendCollector(ABC):
         Returns:
             Lista de trends coletadas
         """
-        pass

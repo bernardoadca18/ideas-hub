@@ -6,8 +6,8 @@ fornecido diretamente pelo autor (anotações de sessões de jogo), não pesquis
 automática. Reaproveita as mesmas dataclasses de roteiro (RoteiroEstruturado,
 BlocoNarrativo) para não exigir nenhuma mudança de schema de Roteiro.
 """
+
 import json
-import time
 from uuid import UUID
 
 import httpx
@@ -15,13 +15,14 @@ import httpx
 from app.agents.roteirista import BlocoNarrativo, RoteiroEstruturado
 from app.core.config import settings
 from app.core.logging import roteirista_logger
-from app.core.retry import retry_llm, retry_tavily
+from app.core.retry import retry_tavily
 from app.production_profiles import GAME_ANALYSIS, get_profile
 from app.prompts.builder import PromptBuilder
 from app.prompts.workflows import get_workflow
 from app.schemas.llm_outputs import ScriptLLMOutput, validate_model_output
 from app.schemas.media_indexer import GameAnalysisMediaContext
 from app.schemas.visual_query import VisualQuery
+from app.services.llm_gateway import LLMTaskRole, llm_gateway
 from app.services.media_context_provider import MediaContextProvider
 from app.services.media_indexer_context_provider import MediaIndexerContextProvider
 
@@ -57,7 +58,9 @@ def format_media_context_for_prompt(media_context: GameAnalysisMediaContext) -> 
                 start_sec = int(note.alignment.start_seconds % 60)
                 end_min = int(note.alignment.end_seconds // 60)
                 end_sec = int(note.alignment.end_seconds % 60)
-                note_text += f" @ {start_min:02d}:{start_sec:02d}-{end_min:02d}:{end_sec:02d}"
+                note_text += (
+                    f" @ {start_min:02d}:{start_sec:02d}-{end_min:02d}:{end_sec:02d}"
+                )
                 note_text += f" (confidence: {note.alignment.confidence:.2f})"
 
             parts.append(note_text)
@@ -80,7 +83,6 @@ class AnaliseJogosService:
         self.litellm_base_url = settings.litellm_base_url
         self.litellm_api_key = settings.litellm_master_key or "dummy-key"
         self.tavily_api_key = settings.tavily_api_key
-        self.llm_model = settings.llm_model
         self._media_context_provider = media_context_provider
 
     @property
@@ -93,6 +95,7 @@ class AnaliseJogosService:
             else:
                 # Use fake provider that returns empty context
                 from app.services.media_context_provider import FakeMediaContextProvider
+
                 self._media_context_provider = FakeMediaContextProvider()
         return self._media_context_provider
 
@@ -191,42 +194,23 @@ class AnaliseJogosService:
 
         return queries
 
-    @retry_llm()
-    async def _call_llm(self, messages: list[dict], temperature: float = 0.7, max_tokens: int = 16000) -> str:
-        start_time = time.time()
-        tokens_used = None
-        try:
-            async with httpx.AsyncClient(timeout=180.0) as client:
-                response = await client.post(
-                    f"{self.litellm_base_url}/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.litellm_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": self.llm_model,
-                        "messages": messages,
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-                usage = data.get("usage", {})
-                tokens_used = usage.get("total_tokens")
-                duration = time.time() - start_time
-                roteirista_logger.log_llm_call(
-                    model=self.llm_model, tokens_used=tokens_used,
-                    duration=round(duration, 3), success=True,
-                )
-                return data["choices"][0]["message"]["content"]
-        except Exception as e:
-            duration = time.time() - start_time
-            roteirista_logger.log_llm_call(
-                model=self.llm_model, tokens_used=tokens_used,
-                duration=round(duration, 3), success=False, error=str(e),
-            )
-            raise
+    async def _call_llm(
+        self, messages: list[dict], temperature: float = 0.7, max_tokens: int = 16000
+    ) -> str:
+        result = await llm_gateway.complete(
+            messages=messages,
+            role=LLMTaskRole.WRITING,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_schema=ScriptLLMOutput.model_json_schema(),
+        )
+        roteirista_logger.log_llm_call(
+            model=result.model_alias,
+            tokens_used=result.total_tokens,
+            duration=result.latency_seconds,
+            success=True,
+        )
+        return result.content
 
     @retry_tavily()
     async def _search_tavily(self, query: str, max_results: int = 5) -> str:
@@ -241,8 +225,10 @@ class AnaliseJogosService:
                         "Content-Type": "application/json",
                     },
                     json={
-                        "query": query, "max_results": max_results,
-                        "include_answer": True, "include_raw_content": False,
+                        "query": query,
+                        "max_results": max_results,
+                        "include_answer": True,
+                        "include_raw_content": False,
                     },
                 )
                 response.raise_for_status()
@@ -251,7 +237,9 @@ class AnaliseJogosService:
                 if data.get("answer"):
                     parts.append(f"Resumo: {data['answer']}")
                 for r in data.get("results", [])[:3]:
-                    parts.append(f"- {r.get('title', '')}: {r.get('content', '')[:200]}")
+                    parts.append(
+                        f"- {r.get('title', '')}: {r.get('content', '')[:200]}"
+                    )
                 return "\n".join(parts) if parts else ""
         except Exception:  # noqa: BLE001 - optional external-grounding boundary
             return ""
@@ -289,7 +277,9 @@ class AnaliseJogosService:
         # Retrieve grounding context (optional)
         contexto_grounding = ""
         if usar_grounding and nome_jogo:
-            contexto_grounding = await self._search_tavily(f"{nome_jogo} data de lançamento estúdio desenvolvedor")
+            contexto_grounding = await self._search_tavily(
+                f"{nome_jogo} data de lançamento estúdio desenvolvedor"
+            )
 
         # Retrieve media context (optional, fail-open)
         media_context = None
@@ -328,7 +318,9 @@ class AnaliseJogosService:
         usuario_parts = [f"Título provisório do vídeo: {titulo_provisorio}"]
         if nome_jogo:
             usuario_parts.append(f"Jogo analisado: {nome_jogo}")
-        usuario_parts.append("\nAnotações brutas do autor (fonte primária, prioridade máxima):\n")
+        usuario_parts.append(
+            "\nAnotações brutas do autor (fonte primária, prioridade máxima):\n"
+        )
         usuario_parts.append(anotacoes)
         if revision_source is not None and revision_feedback is not None:
             usuario_parts.append(
@@ -337,8 +329,7 @@ class AnaliseJogosService:
             )
             usuario_parts.append(f"Feedback determinístico:\n{revision_feedback}")
             usuario_parts.append(
-                "Rascunho anterior:\n"
-                + json.dumps(revision_source, ensure_ascii=False)
+                "Rascunho anterior:\n" + json.dumps(revision_source, ensure_ascii=False)
             )
         usuario_message = "\n".join(usuario_parts)
 
@@ -351,7 +342,7 @@ class AnaliseJogosService:
             .with_duration_contract(duration_contract_prompt)
             .build(task_context=usuario_message)
         )
-        composed.trace["model"] = self.llm_model
+        composed.trace["model"] = llm_gateway.model_for(LLMTaskRole.WRITING)
         composed.trace["provider"] = "litellm_openai_compatible"
 
         resposta_llm = await self._call_llm(
@@ -375,25 +366,28 @@ class AnaliseJogosService:
 
             # Parse visual queries with provenance canonicalization
             visual_queries = self._parse_visual_queries(
-                [item.model_dump(mode="json") for item in bloco.visual_queries], note_lookup
+                [item.model_dump(mode="json") for item in bloco.visual_queries],
+                note_lookup,
             )
 
-            blocos.append(BlocoNarrativo(
-                tipo=bloco.tipo,
-                duracao_segundos=duracao_bloco,
-                conteudo=bloco.conteudo,
-                dicas_visual=bloco.dicas_visual,
-                dicas_audio=bloco.dicas_audio,
-                visual_queries=visual_queries,
-                purpose=bloco.purpose,
-                beats=[item.model_dump(mode="json") for item in bloco.beats],
-                claims=[item.model_dump(mode="json") for item in bloco.claims],
-                audio_intent=(
-                    bloco.audio_intent.model_dump(mode="json")
-                    if bloco.audio_intent is not None
-                    else None
-                ),
-            ))
+            blocos.append(
+                BlocoNarrativo(
+                    tipo=bloco.tipo,
+                    duracao_segundos=duracao_bloco,
+                    conteudo=bloco.conteudo,
+                    dicas_visual=bloco.dicas_visual,
+                    dicas_audio=bloco.dicas_audio,
+                    visual_queries=visual_queries,
+                    purpose=bloco.purpose,
+                    beats=[item.model_dump(mode="json") for item in bloco.beats],
+                    claims=[item.model_dump(mode="json") for item in bloco.claims],
+                    audio_intent=(
+                        bloco.audio_intent.model_dump(mode="json")
+                        if bloco.audio_intent is not None
+                        else None
+                    ),
+                )
+            )
             duracao_total += duracao_bloco
 
         duracao_final = max(dados.duracao_total_segundos, duracao_total, 60)
@@ -408,7 +402,9 @@ class AnaliseJogosService:
             prompt_trace=composed.trace,
             media_context=(
                 {
-                    "media_project_id": str(media_project_id) if media_project_id else None,
+                    "media_project_id": str(media_project_id)
+                    if media_project_id
+                    else None,
                     "media_session_ids": [str(item) for item in media_session_ids]
                     if media_session_ids
                     else None,
@@ -425,7 +421,7 @@ class AnaliseJogosService:
             target_max=None,
             profile_id=profile.id,
             dentro_do_esperado=True,  # Sempre True pois não há target para game_analysis
-            warning=f"Duração gerada: {duracao_final}s ({duracao_final//60}min {duracao_final%60}s) - derivada das anotações fornecidas"
+            warning=f"Duração gerada: {duracao_final}s ({duracao_final // 60}min {duracao_final % 60}s) - derivada das anotações fornecidas",
         )
 
         return resultado

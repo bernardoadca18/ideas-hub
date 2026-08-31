@@ -1,11 +1,22 @@
 """
 Fixtures para testes do ideas-hub.
 """
+
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from app.services.llm_gateway import llm_gateway
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+@pytest.fixture(autouse=True)
+def reset_shared_llm_client():
+    """Keep the production pool reusable while isolating mocked clients per test."""
+
+    llm_gateway._client = None
+    yield
+    llm_gateway._client = None
 
 
 @pytest.fixture
@@ -58,13 +69,20 @@ def mock_httpx_client():
     """Mock do cliente HTTP."""
     with patch("httpx.AsyncClient") as mock_client:
         client_instance = AsyncMock()
+        mock_client.return_value = client_instance
         mock_client.return_value.__aenter__.return_value = client_instance
 
         response = MagicMock()
         response.status_code = 200
         response.json.return_value = {
-            "choices": [{"message": {"content": '{"titulo": "Teste", "descricao": "Descricao teste"}'}}],
-            "usage": {"total_tokens": 100}
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"titulo": "Teste", "descricao": "Descricao teste"}'
+                    }
+                }
+            ],
+            "usage": {"total_tokens": 100},
         }
         response.raise_for_status = MagicMock()
         client_instance.post = AsyncMock(return_value=response)
@@ -80,7 +98,7 @@ def mock_tavily_response():
         "results": [
             {"title": "Resultado 1", "content": "Conteúdo do resultado 1"},
             {"title": "Resultado 2", "content": "Conteúdo do resultado 2"},
-        ]
+        ],
     }
 
 
@@ -88,11 +106,12 @@ def mock_tavily_response():
 def sample_ideia_bruta():
     """Ideia bruta de exemplo."""
     from app.agents.curador import IdeiaBruta
+
     return IdeiaBruta(
         titulo="Como usar IA para criar vídeos",
         descricao="Tutorial prático para iniciantes",
         nicho_id=str(uuid4()),
-        origem="manual"
+        origem="manual",
     )
 
 

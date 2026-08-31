@@ -1,6 +1,7 @@
 """
 Schemas Pydantic para a entidade Nicho.
 """
+
 from datetime import datetime
 from uuid import UUID
 

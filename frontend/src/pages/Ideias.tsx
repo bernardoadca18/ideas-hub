@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
-import { api, Ideia, Nicho } from '../api/client';
+import { useEffect, useRef, useState } from 'react';
+import { api, DurationMode, GenerationPreview, GenerationRun, Ideia, Nicho, ProductionProfile } from '../api/client';
 
 export default function Ideias() {
   const [ideias, setIdeias] = useState<Ideia[]>([]);
   const [nichos, setNichos] = useState<Nicho[]>([]);
+  const [profiles, setProfiles] = useState<ProductionProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -13,9 +14,13 @@ export default function Ideias() {
   const [descricao, setDescricao] = useState('');
   const [authorBriefing, setAuthorBriefing] = useState('');
   const [targetMinutes, setTargetMinutes] = useState('');
+  const [durationMode, setDurationMode] = useState<DurationMode>('profile_default');
   const [nichoId, setNichoId] = useState('');
   const [editingBriefing, setEditingBriefing] = useState<Ideia | null>(null);
   const [briefingDraft, setBriefingDraft] = useState('');
+  const [generationRuns, setGenerationRuns] = useState<Record<string, GenerationRun>>({});
+  const [generationPreview, setGenerationPreview] = useState<GenerationPreview | null>(null);
+  const pollControllers = useRef(new Map<string, AbortController>());
 
   // Filter state
   const [statusFilter, setStatusFilter] = useState<string>('');
@@ -30,15 +35,32 @@ export default function Ideias() {
     loadData();
   }, [statusFilter]);
 
+  useEffect(() => () => {
+    pollControllers.current.forEach((controller) => controller.abort());
+  }, []);
+
   async function loadData() {
     try {
       setLoading(true);
-      const [ideiasData, nichosData] = await Promise.all([
+      const [ideiasData, nichosData, profilesData, recentRuns] = await Promise.all([
         api.getIdeias(statusFilter ? { status: statusFilter } : undefined),
         api.getNichos(),
+        api.getProductionProfiles(),
+        api.getGenerationRuns(),
       ]);
       setIdeias(ideiasData);
       setNichos(nichosData);
+      setProfiles(profilesData);
+      const latestByIdea: Record<string, GenerationRun> = {};
+      recentRuns.forEach((run) => {
+        if (!latestByIdea[run.ideia_id]) latestByIdea[run.ideia_id] = run;
+      });
+      setGenerationRuns(latestByIdea);
+      Object.values(latestByIdea).forEach((run) => {
+        if (!['completed', 'failed', 'cancelled'].includes(run.status) && !pollControllers.current.has(run.id)) {
+          void pollGeneration(run.ideia_id, run.id);
+        }
+      });
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao carregar dados');
@@ -54,18 +76,35 @@ export default function Ideias() {
         titulo,
         descricao: descricao || undefined,
         author_briefing: authorBriefing || undefined,
-        target_duration_seconds: targetMinutes ? Math.round(Number(targetMinutes) * 60) : undefined,
+        duration_mode: durationMode,
+        target_duration_seconds: durationMode === 'explicit_target' ? Math.round(Number(targetMinutes) * 60) : undefined,
         nicho_id: nichoId || undefined,
       });
       setTitulo('');
       setDescricao('');
       setAuthorBriefing('');
       setTargetMinutes('');
+      setDurationMode('profile_default');
       setNichoId('');
       setShowForm(false);
       loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao criar ideia');
+    }
+  }
+
+  async function previewPlan() {
+    if (!selectedProfile) return;
+    try {
+      setGenerationPreview(await api.getGenerationPreview({
+        production_profile: selectedProfile.id,
+        duration_mode: durationMode,
+        target_duration_seconds: durationMode === 'explicit_target' ? Math.round(Number(targetMinutes) * 60) : undefined,
+        evidence_chars: descricao.length + authorBriefing.length,
+      }));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Não foi possível calcular o plano editorial');
     }
   }
 
@@ -104,13 +143,41 @@ export default function Ideias() {
 
   async function handleGerarRoteiro(id: string) {
     try {
-      await api.gerarRoteiro(id);
-      alert('Roteiro gerado com sucesso!');
-      loadData();
+      const run = await api.startGenerationRun(id, crypto.randomUUID());
+      setGenerationRuns((current) => ({ ...current, [id]: run }));
+      void pollGeneration(id, run.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao gerar roteiro');
     }
   }
+
+  async function pollGeneration(ideaId: string, runId: string) {
+    const previous = pollControllers.current.get(runId);
+    previous?.abort();
+    const controller = new AbortController();
+    pollControllers.current.set(runId, controller);
+    let delayMs = 1500;
+    while (!controller.signal.aborted) {
+      try {
+        const run = await api.getGenerationRun(runId, controller.signal);
+        setGenerationRuns((current) => ({ ...current, [ideaId]: run }));
+        if (['completed', 'failed', 'cancelled'].includes(run.status)) {
+          pollControllers.current.delete(runId);
+          await loadData();
+          return;
+        }
+        delayMs = 1500;
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        delayMs = Math.min(delayMs * 2, 10000);
+        setError(err instanceof Error ? err.message : 'Falha ao consultar progresso da geração');
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+    }
+  }
+
+  const selectedNiche = nichos.find((item) => item.id === nichoId);
+  const selectedProfile = profiles.find((item) => item.id === (selectedNiche?.perfil_producao || 'faceless_general'));
 
   async function handleColetarTrends(e: React.FormEvent) {
     e.preventDefault();
@@ -212,21 +279,40 @@ export default function Ideias() {
                   <small>Este texto não é a descrição e não será reescrito pelo Curador.</small>
                 </div>
                 <div className="form-group">
-                  <label>Duração editorial alvo (minutos)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="480"
-                    step="0.5"
-                    value={targetMinutes}
-                    onChange={(e) => setTargetMinutes(e.target.value)}
-                  />
-                  <small>É um contrato de conteúdo; não altera velocidade, pausas ou TTS.</small>
+                  <label>Modo de duração</label>
+                  <select value={durationMode} onChange={(e) => setDurationMode(e.target.value as DurationMode)}>
+                    <option value="profile_default">Padrão do perfil{selectedProfile?.duration_policy.default_target_seconds ? ` (${selectedProfile.duration_policy.default_target_seconds / 60} min)` : ''}</option>
+                    <option value="explicit_target">Duração escolhida</option>
+                    {selectedProfile?.duration_policy.content_driven_allowed && <option value="content_driven">Content-driven (sem target fixo)</option>}
+                  </select>
+                  <small>Content-driven é uma escolha explícita; ausência de target não o ativa silenciosamente.</small>
                 </div>
+                {durationMode === 'explicit_target' && <div className="form-group">
+                  <label>Duração editorial alvo (minutos)</label>
+                  <input type="number" min="1" max="480" step="1" list="duration-presets" value={targetMinutes} onChange={(e) => setTargetMinutes(e.target.value)} required />
+                  <datalist id="duration-presets">{[5, 8, 10, 12, 15, 20, 30, 45, 60, 90, 120, 180].map((minutes) => <option key={minutes} value={minutes} />)}</datalist>
+                  <small>Contrato de conteúdo; nunca altera velocidade, pausas ou TTS.</small>
+                </div>}
+                <button type="button" className="btn btn-secondary" onClick={() => void previewPlan()} disabled={durationMode === 'explicit_target' && !targetMinutes}>
+                  Pré-visualizar plano
+                </button>
+                {generationPreview && <div className="script-provenance">
+                  <strong>Estratégia: {generationPreview.strategy}</strong>
+                  <p>{generationPreview.target_words ?? 'sem budget fixo'} palavras · {generationPreview.chapter_count} capítulos · {generationPreview.section_count} seções · ~{generationPreview.estimated_llm_calls} chamadas</p>
+                  {generationPreview.content_capacity.status === 'probably_insufficient' && <p className="context-changed">Evidência atual provavelmente insuficiente para sustentar o target sem filler. Amplie a pesquisa/contexto antes da geração.</p>}
+                  <small>Estimativa determinística; nenhuma chamada editorial ao LLM foi feita.</small>
+                </div>}
               </details>
               <div className="form-group">
                 <label>Nicho</label>
-                <select value={nichoId} onChange={(e) => setNichoId(e.target.value)}>
+                <select value={nichoId} onChange={(e) => {
+                  const nextNicheId = e.target.value;
+                  const nextNiche = nichos.find((item) => item.id === nextNicheId);
+                  const nextProfile = profiles.find((item) => item.id === (nextNiche?.perfil_producao || 'faceless_general'));
+                  setNichoId(nextNicheId);
+                  setDurationMode(nextProfile?.duration_policy.default_target_seconds ? 'profile_default' : 'content_driven');
+                  setTargetMinutes('');
+                }}>
                   <option value="">Selecione um nicho</option>
                   {nichos.map((nicho) => (
                     <option key={nicho.id} value={nicho.id}>
@@ -342,8 +428,15 @@ export default function Ideias() {
               )}
               <div className="card-meta">
                 <span>Origem: {ideia.origem}</span>
+                <span>Duração: {ideia.duration_mode === 'content_driven' ? 'content-driven' : ideia.target_duration_seconds ? `${Math.round(ideia.target_duration_seconds / 60)} min` : 'histórico não resolvido'}</span>
+                {ideia.duration_target_source && <span>Fonte: {ideia.duration_target_source}</span>}
                 <span>Criado: {new Date(ideia.criado_em).toLocaleDateString()}</span>
               </div>
+              {generationRuns[ideia.id] && <div className="script-provenance">
+                <strong>Geração: {generationRuns[ideia.id].phase}</strong>
+                <p>{generationRuns[ideia.id].completed_sections} / {generationRuns[ideia.id].total_sections} seções · estratégia {generationRuns[ideia.id].generation_strategy}</p>
+                {generationRuns[ideia.id].error_message && <span className="context-changed">{generationRuns[ideia.id].error_message}</span>}
+              </div>}
               <div className="card-actions">
                 <button
                   onClick={() => { setEditingBriefing(ideia); setBriefingDraft(ideia.author_briefing || ''); }}
@@ -368,7 +461,7 @@ export default function Ideias() {
                   </>
                 )}
                 {ideia.status === 'aprovada' && (
-                  <button onClick={() => handleGerarRoteiro(ideia.id)} className="btn btn-sm btn-primary">
+                  <button disabled={Boolean(generationRuns[ideia.id] && !['completed', 'failed', 'cancelled'].includes(generationRuns[ideia.id].status))} onClick={() => handleGerarRoteiro(ideia.id)} className="btn btn-sm btn-primary">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M12 19l7-7 3 3-7 7-3-3z"></path>
                       <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"></path>

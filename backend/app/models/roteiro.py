@@ -1,6 +1,7 @@
 """
 Model SQLAlchemy para a tabela roteiros.
 """
+
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -20,7 +21,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin
 
 # Enum nativo do PostgreSQL
-StatusRoteiro = Enum("rascunho", "aprovado", "rejeitado", name="status_roteiro", create_type=False)
+StatusRoteiro = Enum(
+    "rascunho", "aprovado", "rejeitado", name="status_roteiro", create_type=False
+)
 
 if TYPE_CHECKING:
     from app.models.ideia import Ideia
@@ -28,21 +31,25 @@ if TYPE_CHECKING:
 
 class Roteiro(Base, TimestampMixin):
     __tablename__ = "roteiros"
-    __table_args__ = (
-        UniqueConstraint("ideia_id", "versao", name="uq_roteiro_versao"),
-    )
+    __table_args__ = (UniqueConstraint("ideia_id", "versao", name="uq_roteiro_versao"),)
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
     ideia_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("ideias.id", ondelete="CASCADE"),
-        nullable=False
+        nullable=False,
     )
     versao: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     estrutura: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    status: Mapped[str] = mapped_column(StatusRoteiro, nullable=False, default="rascunho")
+    status: Mapped[str] = mapped_column(
+        StatusRoteiro, nullable=False, default="rascunho"
+    )
     author_briefing_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
-    author_briefing_identity: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    author_briefing_identity: Mapped[str | None] = mapped_column(
+        String(96), nullable=True
+    )
     parent_roteiro_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("roteiros.id", ondelete="SET NULL"),

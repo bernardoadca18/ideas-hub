@@ -44,5 +44,10 @@ humana não permite trocar IDs, timestamps ou provenance das `visual_queries`; a
 permitida para o draft mais recente. Roteiros históricos sem briefing ou VisualQueries continuam
 válidos.
 
+Novas gerações resolvem uma intenção de duração explícita (`explicit_target`, `profile_default`
+ou `content_driven`) e podem executar como jobs duráveis por seção. Planejamento hierárquico,
+retomada, routing de modelos e disciplina de evidência estão documentados em
+[`docs/EDITORIAL_GENERATION_V3.md`](docs/EDITORIAL_GENERATION_V3.md).
+
 O schema é evoluído pela revisão Alembic `0003_author_briefing`. Ela apenas acrescenta colunas
 nullable/compatíveis e classifica roteiros históricos como `legacy`; não requer recriar o banco.

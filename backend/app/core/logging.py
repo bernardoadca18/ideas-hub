@@ -4,19 +4,18 @@ Sistema de logging estruturado para os agentes.
 Registra tempo de resposta, tokens usados, resultados de checagem de duplicidade
 e outras métricas importantes em formato JSON estruturado.
 """
-import json
+
 import time
-from datetime import datetime
-from typing import Any
-from functools import wraps
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from enum import Enum
+from typing import Any
 
 import structlog
 
 
 class AgentType(str, Enum):
     """Tipos de agentes no sistema."""
+
     CURADOR = "curador"
     ROTEIRISTA = "roteirista"
     GERADOR_IDEIAS = "gerador_ideias"
@@ -25,6 +24,7 @@ class AgentType(str, Enum):
 @dataclass
 class AgentMetrics:
     """Métricas coletadas durante execução do agente."""
+
     agent_type: str
     operation: str
     start_time: float
@@ -71,7 +71,7 @@ def setup_logging():
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer()
+            structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
         context_class=dict,
@@ -93,14 +93,14 @@ class AgentLogger:
             agent_type=self.agent_type.value,
             operation=operation,
             start_time=time.time(),
-            **context
+            **context,
         )
 
         self.logger.info(
             f"{operation}_started",
             agent_type=self.agent_type.value,
             operation=operation,
-            **context
+            **context,
         )
 
         return metrics
@@ -110,7 +110,7 @@ class AgentLogger:
         metrics: AgentMetrics,
         success: bool = True,
         error: str | None = None,
-        **additional_metrics
+        **additional_metrics,
     ) -> AgentMetrics:
         """Finaliza uma operação e registra métricas."""
         metrics.end_time = time.time()
@@ -127,15 +127,9 @@ class AgentLogger:
         log_data = metrics.to_dict()
 
         if success:
-            self.logger.info(
-                f"{metrics.operation}_completed",
-                **log_data
-            )
+            self.logger.info(f"{metrics.operation}_completed", **log_data)
         else:
-            self.logger.error(
-                f"{metrics.operation}_failed",
-                **log_data
-            )
+            self.logger.error(f"{metrics.operation}_failed", **log_data)
 
         return metrics
 
@@ -145,7 +139,7 @@ class AgentLogger:
         tokens_used: int | None = None,
         duration: float | None = None,
         success: bool = True,
-        error: str | None = None
+        error: str | None = None,
     ):
         """Registra chamada para LLM."""
         self.logger.info(
@@ -155,7 +149,7 @@ class AgentLogger:
             tokens_used=tokens_used,
             duration_seconds=duration,
             success=success,
-            error=error
+            error=error,
         )
 
     def log_tavily_call(
@@ -164,7 +158,7 @@ class AgentLogger:
         results_count: int | None = None,
         duration: float | None = None,
         success: bool = True,
-        error: str | None = None
+        error: str | None = None,
     ):
         """Registra chamada para Tavily."""
         self.logger.info(
@@ -174,7 +168,7 @@ class AgentLogger:
             results_count=results_count,
             duration_seconds=duration,
             success=success,
-            error=error
+            error=error,
         )
 
     def log_similarity_check(
@@ -182,7 +176,7 @@ class AgentLogger:
         similarity_score: float,
         is_duplicate: bool,
         is_continuation: bool,
-        similar_ideia_id: str | None = None
+        similar_ideia_id: str | None = None,
     ):
         """Registra resultado da checagem de similaridade."""
         self.logger.info(
@@ -191,7 +185,7 @@ class AgentLogger:
             similarity_score=round(similarity_score, 4),
             is_duplicate=is_duplicate,
             is_continuation=is_continuation,
-            similar_ideia_id=similar_ideia_id
+            similar_ideia_id=similar_ideia_id,
         )
 
     def log_duration_check(
@@ -201,7 +195,7 @@ class AgentLogger:
         target_max: int | None,
         profile_id: str,
         dentro_do_esperado: bool,
-        warning: str | None = None
+        warning: str | None = None,
     ):
         """Registra verificação de duração do roteiro."""
         self.logger.info(
@@ -212,7 +206,7 @@ class AgentLogger:
             target_max_segundos=target_max,
             profile_id=profile_id,
             dentro_do_esperado=dentro_do_esperado,
-            warning=warning
+            warning=warning,
         )
 
 

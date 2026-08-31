@@ -1,6 +1,7 @@
 """
 Router CRUD para a entidade FonteTrendNicho.
 """
+
 from typing import Annotated
 from uuid import UUID
 
@@ -11,16 +12,15 @@ from app.core.database import get_db
 from app.repositories.fonte_trend_nicho_repository import FonteTrendNichoRepository
 from app.schemas.fonte_trend_nicho import (
     FonteTrendNichoCreate,
-    FonteTrendNichoUpdate,
     FonteTrendNichoResponse,
+    FonteTrendNichoUpdate,
 )
-
 
 router = APIRouter(prefix="/fontes-trend", tags=["fontes-trend"])
 
 
 def get_fonte_repo(
-    db: Annotated[AsyncSession, Depends(get_db)]
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> FonteTrendNichoRepository:
     return FonteTrendNichoRepository(db)
 

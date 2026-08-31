@@ -19,7 +19,9 @@ def canonicalize_author_briefing(value: str | None) -> bytes:
 
     if value is None:
         return b"null"
-    normalized = unicodedata.normalize("NFC", value).replace("\r\n", "\n").replace("\r", "\n")
+    normalized = (
+        unicodedata.normalize("NFC", value).replace("\r\n", "\n").replace("\r", "\n")
+    )
     return b"text\x00" + normalized.encode("utf-8")
 
 

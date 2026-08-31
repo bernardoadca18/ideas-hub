@@ -9,6 +9,7 @@ Fluxo:
 5. Gera estrutura em blocos narrativos
 6. Retorna roteiro estruturado para revisão
 """
+
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,17 +18,19 @@ import httpx
 
 from app.core.config import settings
 from app.core.logging import roteirista_logger
-from app.core.retry import retry_llm, retry_tavily
+from app.core.retry import retry_tavily
 from app.production_profiles import ProductionProfile, get_profile
 from app.prompts.builder import PromptBuilder
 from app.prompts.workflows import get_workflow
 from app.schemas.llm_outputs import ScriptLLMOutput, validate_model_output
 from app.schemas.visual_query import VisualQuery
+from app.services.llm_gateway import LLMTaskRole, llm_gateway
 
 
 @dataclass
 class BlocoNarrativo:
     """Bloco narrativo do roteiro."""
+
     tipo: str  # rótulo descritivo do papel do bloco (varia por perfil/assunto)
     duracao_segundos: int
     conteudo: str
@@ -43,13 +46,16 @@ class BlocoNarrativo:
 @dataclass
 class RoteiroEstruturado:
     """Roteiro completo com estrutura em blocos."""
+
     titulo: str
     duracao_total_segundos: int
     blocos: list[BlocoNarrativo]
     tags: list[str]
     referencias: list[str] | None = None
     justificativa_llm: str | None = None
-    prompt_trace: dict | None = None  # observabilidade: perfil/workflow/componentes usados
+    prompt_trace: dict | None = (
+        None  # observabilidade: perfil/workflow/componentes usados
+    )
     media_context: dict[str, Any] | None = None
     duration_contract: dict[str, Any] | None = None
     editorial_quality: dict[str, Any] | None = None
@@ -67,55 +73,32 @@ class RoteiristaService:
         self.litellm_base_url = settings.litellm_base_url
         self.litellm_api_key = settings.litellm_master_key or "dummy-key"
         self.tavily_api_key = settings.tavily_api_key
-        self.llm_model = settings.llm_model
 
-    @retry_llm()
-    async def _call_llm(self, messages: list[dict], temperature: float = 0.7, max_tokens: int = 8000) -> str:
+    async def _call_llm(
+        self,
+        messages: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 8000,
+        *,
+        role: LLMTaskRole = LLMTaskRole.WRITING,
+        prompt_identity: str | None = None,
+    ) -> str:
         """Faz chamada para o LLM via LiteLLM Proxy."""
-        start_time = time.time()
-        tokens_used = None
-
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{self.litellm_base_url}/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.litellm_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": self.llm_model,
-                        "messages": messages,
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-
-                usage = data.get("usage", {})
-                tokens_used = usage.get("total_tokens")
-
-                duration = time.time() - start_time
-                roteirista_logger.log_llm_call(
-                    model=self.llm_model,
-                    tokens_used=tokens_used,
-                    duration=round(duration, 3),
-                    success=True
-                )
-
-                return data["choices"][0]["message"]["content"]
-
-        except Exception as e:
-            duration = time.time() - start_time
-            roteirista_logger.log_llm_call(
-                model=self.llm_model,
-                tokens_used=tokens_used,
-                duration=round(duration, 3),
-                success=False,
-                error=str(e)
-            )
-            raise
+        result = await llm_gateway.complete(
+            messages=messages,
+            role=role,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            prompt_identity=prompt_identity,
+            response_schema=ScriptLLMOutput.model_json_schema(),
+        )
+        roteirista_logger.log_llm_call(
+            model=result.model_alias,
+            tokens_used=result.total_tokens,
+            duration=result.latency_seconds,
+            success=True,
+        )
+        return result.content
 
     @retry_tavily()
     async def _search_tavily(self, query: str, max_results: int = 7) -> str:
@@ -149,14 +132,16 @@ class RoteiristaService:
 
                 if data.get("results"):
                     for r in data["results"][:5]:
-                        parts.append(f"- {r.get('title', '')}: {r.get('content', '')[:300]}")
+                        parts.append(
+                            f"- {r.get('title', '')}: {r.get('content', '')[:300]}"
+                        )
 
                 duration = time.time() - start_time
                 roteirista_logger.log_tavily_call(
                     query=query,
                     results_count=len(data.get("results", [])),
                     duration=round(duration, 3),
-                    success=True
+                    success=True,
                 )
 
                 return "\n".join(parts) if parts else ""
@@ -168,7 +153,7 @@ class RoteiristaService:
                 results_count=None,
                 duration=round(duration, 3),
                 success=False,
-                error=str(e)
+                error=str(e),
             )
             return ""
 
@@ -206,7 +191,9 @@ class RoteiristaService:
         Returns:
             RoteiroEstruturado com blocos narrativos
         """
-        metrics = roteirista_logger.start_operation(operation="gerar_roteiro", ideia_id=ideia_id)
+        metrics = roteirista_logger.start_operation(
+            operation="gerar_roteiro", ideia_id=ideia_id
+        )
 
         try:
             profile: ProductionProfile = get_profile(perfil_id)
@@ -228,17 +215,27 @@ class RoteiristaService:
                 estrutura_ant = roteiro_anterior.get("estrutura", {})
                 blocos_ant = estrutura_ant.get("blocos", [])
                 if blocos_ant:
-                    usuario_parts.append(f"Título anterior: {estrutura_ant.get('titulo', 'N/A')}")
-                    usuario_parts.append(f"Duração anterior: {estrutura_ant.get('duracao_total_segundos', 'N/A')}s")
-                    usuario_parts.append(f"Número de blocos anteriores: {len(blocos_ant)}")
+                    usuario_parts.append(
+                        f"Título anterior: {estrutura_ant.get('titulo', 'N/A')}"
+                    )
+                    usuario_parts.append(
+                        f"Duração anterior: {estrutura_ant.get('duracao_total_segundos', 'N/A')}s"
+                    )
+                    usuario_parts.append(
+                        f"Número de blocos anteriores: {len(blocos_ant)}"
+                    )
                     ultimo_bloco = blocos_ant[-1]
-                    usuario_parts.append(f"Último bloco anterior: {ultimo_bloco.get('conteudo', '')[:150]}...")
+                    usuario_parts.append(
+                        f"Último bloco anterior: {ultimo_bloco.get('conteudo', '')[:150]}..."
+                    )
 
             if revision_source is not None and revision_feedback is not None:
                 import json
 
                 usuario_parts.append("\n=== REGENERAÇÃO VERSIONADA ===")
-                usuario_parts.append(f"Feedback editorial do operador:\n{revision_feedback}")
+                usuario_parts.append(
+                    f"Feedback editorial do operador:\n{revision_feedback}"
+                )
                 usuario_parts.append(
                     "Versão anterior a revisar (preserve os pontos que o feedback não pede para mudar):\n"
                     + json.dumps(revision_source, ensure_ascii=False)
@@ -254,7 +251,7 @@ class RoteiristaService:
                 .with_duration_contract(duration_contract_prompt)
                 .build(task_context=usuario_message)
             )
-            composed.trace["model"] = self.llm_model
+            composed.trace["model"] = llm_gateway.model_for(LLMTaskRole.WRITING)
             composed.trace["provider"] = "litellm_openai_compatible"
 
             resposta_llm = await self._call_llm(
@@ -263,6 +260,7 @@ class RoteiristaService:
                     {"role": "user", "content": composed.user},
                 ],
                 temperature=0.8,
+                prompt_identity=composed.trace.get("identity"),
             )
             dados = validate_model_output(ScriptLLMOutput, resposta_llm)
             assert isinstance(dados, ScriptLLMOutput)
@@ -285,22 +283,24 @@ class RoteiristaService:
                         )
                         for index, query in enumerate(bloco.visual_queries)
                     ]
-                blocos.append(BlocoNarrativo(
-                    tipo=bloco.tipo,
-                    duracao_segundos=bloco.duracao_segundos,
-                    conteudo=bloco.conteudo,
-                    dicas_visual=bloco.dicas_visual,
-                    dicas_audio=bloco.dicas_audio,
-                    visual_queries=visual_queries,
-                    purpose=bloco.purpose,
-                    beats=[item.model_dump(mode="json") for item in bloco.beats],
-                    claims=[item.model_dump(mode="json") for item in bloco.claims],
-                    audio_intent=(
-                        bloco.audio_intent.model_dump(mode="json")
-                        if bloco.audio_intent is not None
-                        else None
-                    ),
-                ))
+                blocos.append(
+                    BlocoNarrativo(
+                        tipo=bloco.tipo,
+                        duracao_segundos=bloco.duracao_segundos,
+                        conteudo=bloco.conteudo,
+                        dicas_visual=bloco.dicas_visual,
+                        dicas_audio=bloco.dicas_audio,
+                        visual_queries=visual_queries,
+                        purpose=bloco.purpose,
+                        beats=[item.model_dump(mode="json") for item in bloco.beats],
+                        claims=[item.model_dump(mode="json") for item in bloco.claims],
+                        audio_intent=(
+                            bloco.audio_intent.model_dump(mode="json")
+                            if bloco.audio_intent is not None
+                            else None
+                        ),
+                    )
+                )
                 duracao_total_calculada += bloco.duracao_segundos
 
             # Duração final: o que o modelo produziu de fato, respeitando só um piso
@@ -334,7 +334,11 @@ class RoteiristaService:
                     f"Roteiro gerado com {duracao_final}s, abaixo do mínimo esperado ({target_min}s) "
                     f"para o perfil '{profile.id}'. Verifique se o conteúdo de entrada é suficiente."
                 )
-            elif target_max is not None and duracao_final > target_max and not duracao_policy.allow_extended:
+            elif (
+                target_max is not None
+                and duracao_final > target_max
+                and not duracao_policy.allow_extended
+            ):
                 dentro_do_esperado = False
                 warning_msg = (
                     f"Roteiro gerado com {duracao_final}s, acima do máximo ({target_max}s) "
@@ -347,18 +351,22 @@ class RoteiristaService:
                 target_max=target_max,
                 profile_id=profile.id,
                 dentro_do_esperado=dentro_do_esperado,
-                warning=warning_msg
+                warning=warning_msg,
             )
 
             roteirista_logger.end_operation(
-                metrics=metrics, success=True, num_blocos=len(blocos),
+                metrics=metrics,
+                success=True,
+                num_blocos=len(blocos),
                 duracao_total_segundos=resultado.duracao_total_segundos,
             )
 
             return resultado
 
         except Exception as e:
-            roteirista_logger.end_operation(metrics=metrics, success=False, error=str(e))
+            roteirista_logger.end_operation(
+                metrics=metrics, success=False, error=str(e)
+            )
             raise
 
     def to_dict(self, roteiro: RoteiroEstruturado) -> dict:

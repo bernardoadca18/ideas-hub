@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-
 from app.agents.roteirista import BlocoNarrativo, RoteiroEstruturado
 from app.schemas.analise_jogo import AnaliseJogoRequest
 from app.schemas.llm_outputs import LLMOutputError
@@ -307,7 +306,9 @@ async def test_duration_revision_loop_is_bounded_and_persists_diagnostics() -> N
             id=uuid4(), ideia_id=current.id, versao=1, status="rascunho"
         )
     )
-    llm = AsyncMock(side_effect=[generated_script(), generated_script(), generated_script()])
+    llm = AsyncMock(
+        side_effect=[generated_script(), generated_script(), generated_script()]
+    )
     calibration = DurationCalibration.fallback_for(
         production_profile="faceless_general"
     )

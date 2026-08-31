@@ -3,30 +3,28 @@ Tests for MediaContextProvider implementations.
 
 Tests the abstraction layer and both fake and real implementations.
 """
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
+from app.schemas.media_indexer import (
+    GameAnalysisMediaContext,
+    MediaIndexerAlignment,
+    MediaIndexerNote,
+    MediaIndexerSession,
+    MediaIndexerTimelineNote,
+    MediaIndexerTimelineSession,
+)
 from app.services.media_context_provider import (
-    MediaContextProvider,
     FakeMediaContextProvider,
 )
-from app.services.media_indexer_context_provider import MediaIndexerContextProvider
 from app.services.media_indexer_client import (
     MediaIndexerClient,
     MediaIndexerNotFoundError,
     MediaIndexerUnavailableError,
-    MediaIndexerConflictError,
-    MediaIndexerError,
 )
-from app.schemas.media_indexer import (
-    GameAnalysisMediaContext,
-    MediaIndexerSession,
-    MediaIndexerTimelineSession,
-    MediaIndexerTimelineNote,
-    MediaIndexerNote,
-    MediaIndexerAlignment,
-)
+from app.services.media_indexer_context_provider import MediaIndexerContextProvider
 
 
 @pytest.fixture
@@ -129,7 +127,9 @@ class TestMediaIndexerContextProvider:
         )
 
     @pytest.mark.asyncio
-    async def test_get_context_success(self, provider, mock_client, project_id, session_id):
+    async def test_get_context_success(
+        self, provider, mock_client, project_id, session_id
+    ):
         """Test successful context retrieval."""
         session = self._make_session(session_id)
         timeline = self._make_timeline(session_id, num_notes=3)
@@ -137,7 +137,11 @@ class TestMediaIndexerContextProvider:
         mock_client.get_project.return_value = {"id": str(project_id), "name": "Test"}
         mock_client.list_sessions.return_value = [session]
         mock_client.list_temporal_indexes.return_value = [
-            {"id": str(uuid4()), "status": "completed", "created_at": "2024-01-15T10:00:00Z"}
+            {
+                "id": str(uuid4()),
+                "status": "completed",
+                "created_at": "2024-01-15T10:00:00Z",
+            }
         ]
         mock_client.get_semantic_timeline.return_value = timeline
 
@@ -160,10 +164,6 @@ class TestMediaIndexerContextProvider:
         self, provider, mock_client, project_id, session_id
     ):
         """Test that session filters are applied."""
-        other_session_id = uuid4()
-        session1 = self._make_session(session_id)
-        session2 = self._make_session(other_session_id)
-
         # When using media_session_ids, sessions are resolved individually
         mock_client.get_project.return_value = {"id": str(project_id), "name": "Test"}
         mock_client.get_session.return_value = {
@@ -174,7 +174,11 @@ class TestMediaIndexerContextProvider:
         }
         timeline = self._make_timeline(session_id, num_notes=1)
         mock_client.list_temporal_indexes.return_value = [
-            {"id": str(uuid4()), "status": "completed", "created_at": "2024-01-15T10:00:00Z"}
+            {
+                "id": str(uuid4()),
+                "status": "completed",
+                "created_at": "2024-01-15T10:00:00Z",
+            }
         ]
         mock_client.get_semantic_timeline.return_value = timeline
 
@@ -190,7 +194,9 @@ class TestMediaIndexerContextProvider:
         mock_client.list_sessions.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_get_context_project_not_found(self, provider, mock_client, project_id):
+    async def test_get_context_project_not_found(
+        self, provider, mock_client, project_id
+    ):
         """Test handling of project not found."""
         mock_client.get_project.side_effect = MediaIndexerNotFoundError("Not found")
 
@@ -271,7 +277,11 @@ class TestMediaIndexerContextProvider:
         mock_client.get_project.return_value = {"id": str(project_id), "name": "Test"}
         mock_client.list_sessions.return_value = [session]
         mock_client.list_temporal_indexes.return_value = [
-            {"id": str(uuid4()), "status": "completed", "created_at": "2024-01-15T10:00:00Z"}
+            {
+                "id": str(uuid4()),
+                "status": "completed",
+                "created_at": "2024-01-15T10:00:00Z",
+            }
         ]
         mock_client.get_semantic_timeline.return_value = timeline
 
@@ -293,7 +303,9 @@ class TestMediaIndexerContextProvider:
         self, provider, mock_client, project_id
     ):
         """Test that provider fails open when Media Indexer is unavailable."""
-        mock_client.get_project.side_effect = MediaIndexerUnavailableError("Connection refused")
+        mock_client.get_project.side_effect = MediaIndexerUnavailableError(
+            "Connection refused"
+        )
 
         result = await provider.get_context(
             media_project_id=project_id,
@@ -316,7 +328,11 @@ class TestMediaIndexerContextProvider:
         mock_client.get_project.return_value = {"id": str(project_id), "name": "Test"}
         mock_client.list_sessions.return_value = [ready_session, processing_session]
         mock_client.list_temporal_indexes.return_value = [
-            {"id": str(uuid4()), "status": "completed", "created_at": "2024-01-15T10:00:00Z"}
+            {
+                "id": str(uuid4()),
+                "status": "completed",
+                "created_at": "2024-01-15T10:00:00Z",
+            }
         ]
         mock_client.list_alignment_runs.return_value = []
         mock_client.get_semantic_timeline.return_value = timeline
@@ -342,7 +358,11 @@ class TestMediaIndexerContextProvider:
         mock_client.get_project.return_value = {"id": str(project_id), "name": "Test"}
         mock_client.list_sessions.return_value = [session]
         mock_client.list_temporal_indexes.return_value = [
-            {"id": str(uuid4()), "status": "completed", "created_at": "2024-01-15T10:00:00Z"}
+            {
+                "id": str(uuid4()),
+                "status": "completed",
+                "created_at": "2024-01-15T10:00:00Z",
+            }
         ]
         mock_client.list_alignment_runs.return_value = [
             {"id": str(alignment_run_id), "status": "completed"}
@@ -420,7 +440,11 @@ class TestMediaIndexerContextProvider:
         mock_client.get_project.return_value = {"id": str(project_id), "name": "Test"}
         mock_client.list_sessions.return_value = [session]
         mock_client.list_temporal_indexes.return_value = [
-            {"id": str(uuid4()), "status": "completed", "created_at": "2024-01-15T10:00:00Z"}
+            {
+                "id": str(uuid4()),
+                "status": "completed",
+                "created_at": "2024-01-15T10:00:00Z",
+            }
         ]
         mock_client.list_alignment_runs.return_value = []
 
@@ -474,7 +498,11 @@ class TestMediaIndexerContextProvider:
         mock_client.get_project.return_value = {"id": str(project_id), "name": "Test"}
         mock_client.list_sessions.return_value = [session]
         mock_client.list_temporal_indexes.return_value = [
-            {"id": str(uuid4()), "status": "completed", "created_at": "2024-01-15T10:00:00Z"}
+            {
+                "id": str(uuid4()),
+                "status": "completed",
+                "created_at": "2024-01-15T10:00:00Z",
+            }
         ]
         mock_client.list_alignment_runs.return_value = []
 

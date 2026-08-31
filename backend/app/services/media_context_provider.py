@@ -3,6 +3,7 @@
 This module defines the abstraction for retrieving audiovisual context
 from the Media Indexer service, with a real implementation and a fake for testing.
 """
+
 from typing import Protocol
 from uuid import UUID
 

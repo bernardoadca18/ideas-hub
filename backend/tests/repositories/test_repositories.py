@@ -3,11 +3,11 @@ Testes para os repositórios.
 
 Testa operações CRUD com banco de dados mockado.
 """
+
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-
 from app.repositories.ideia_repository import IdeiaRepository
 from app.repositories.nicho_repository import NichoRepository
 from app.repositories.roteiro_repository import RoteiroRepository
@@ -31,7 +31,7 @@ class TestIdeiaRepository:
             origem="manual",
             titulo="Ideia de teste",
             descricao_breve="Descrição da ideia",
-            status="rascunho"
+            status="rascunho",
         )
 
         # Mock do resultado
@@ -44,7 +44,7 @@ class TestIdeiaRepository:
         mock_session.commit = AsyncMock()
         mock_session.refresh = AsyncMock()
 
-        with patch.object(repo, 'create', AsyncMock(return_value=ideia_mock)):
+        with patch.object(repo, "create", AsyncMock(return_value=ideia_mock)):
             result = await repo.create(ideia_data)
             assert result.titulo == ideia_data.titulo
 
@@ -56,7 +56,7 @@ class TestIdeiaRepository:
         ideia_mock.id = ideia_id
         ideia_mock.titulo = "Ideia encontrada"
 
-        with patch.object(repo, 'get_by_id', AsyncMock(return_value=ideia_mock)):
+        with patch.object(repo, "get_by_id", AsyncMock(return_value=ideia_mock)):
             result = await repo.get_by_id(ideia_id)
             assert result.id == ideia_id
             assert result.titulo == "Ideia encontrada"
@@ -71,8 +71,12 @@ class TestIdeiaRepository:
         ideia_similar.titulo = "Ideia Similar"
         ideia_similar.titulo = 0.95
 
-        with patch.object(repo, 'find_similar', AsyncMock(return_value=[ideia_similar])):
-            result = await repo.find_similar(embedding=embedding, threshold=0.85, limit=5)
+        with patch.object(
+            repo, "find_similar", AsyncMock(return_value=[ideia_similar])
+        ):
+            result = await repo.find_similar(
+                embedding=embedding, threshold=0.85, limit=5
+            )
             assert len(result) == 1
 
     @pytest.mark.asyncio
@@ -87,7 +91,7 @@ class TestIdeiaRepository:
         ideia_atualizada.id = ideia_id
         ideia_atualizada.status = "aprovada"
 
-        with patch.object(repo, 'update', AsyncMock(return_value=ideia_atualizada)):
+        with patch.object(repo, "update", AsyncMock(return_value=ideia_atualizada)):
             result = await repo.update(ideia_id, update_data)
             assert result.status == "aprovada"
 
@@ -107,7 +111,7 @@ class TestNichoRepository:
         nicho_mock.slug = "tecnologia"
         nicho_mock.nome = "Tecnologia"
 
-        with patch.object(repo, 'get_by_slug', AsyncMock(return_value=nicho_mock)):
+        with patch.object(repo, "get_by_slug", AsyncMock(return_value=nicho_mock)):
             result = await repo.get_by_slug("tecnologia")
             assert result.slug == "tecnologia"
 
@@ -119,7 +123,7 @@ class TestNichoRepository:
             MagicMock(id=uuid4(), slug="games", nome="Games"),
         ]
 
-        with patch.object(repo, 'list', AsyncMock(return_value=nichos)):
+        with patch.object(repo, "list", AsyncMock(return_value=nichos)):
             result = await repo.list()
             assert len(result) == 2
 
@@ -142,20 +146,22 @@ class TestRoteiroRepository:
             estrutura={
                 "titulo": "Roteiro Teste",
                 "duracao_total_segundos": 180,
-                "blocos": [{
-                    "tipo": "desenvolvimento",
-                    "duracao_segundos": 180,
-                    "conteudo": "Conteúdo válido",
-                }]
+                "blocos": [
+                    {
+                        "tipo": "desenvolvimento",
+                        "duracao_segundos": 180,
+                        "conteudo": "Conteúdo válido",
+                    }
+                ],
             },
-            status="rascunho"
+            status="rascunho",
         )
 
         roteiro_mock = MagicMock()
         roteiro_mock.id = uuid4()
         roteiro_mock.versao = 1
 
-        with patch.object(repo, 'create', AsyncMock(return_value=roteiro_mock)):
+        with patch.object(repo, "create", AsyncMock(return_value=roteiro_mock)):
             result = await repo.create(roteiro_data)
             assert result.versao == 1
 
@@ -167,7 +173,9 @@ class TestRoteiroRepository:
         roteiro_mock = MagicMock()
         roteiro_mock.versao = 3
 
-        with patch.object(repo, 'get_latest_version_by_ideia', AsyncMock(return_value=roteiro_mock)):
+        with patch.object(
+            repo, "get_latest_version_by_ideia", AsyncMock(return_value=roteiro_mock)
+        ):
             result = await repo.get_latest_version_by_ideia(ideia_id)
             assert result.versao == 3
 
@@ -188,14 +196,14 @@ class TestTrendColetadaRepository:
             nicho_id=uuid4(),
             fonte="google_trends",
             termo_bruto="Trend Teste",
-            status="pendente"
+            status="pendente",
         )
 
         trend_mock = MagicMock()
         trend_mock.id = uuid4()
         trend_mock.termo_bruto = "Trend Teste"
 
-        with patch.object(repo, 'create', AsyncMock(return_value=trend_mock)):
+        with patch.object(repo, "create", AsyncMock(return_value=trend_mock)):
             result = await repo.create(trend_data)
             assert result.termo_bruto == "Trend Teste"
 
@@ -207,7 +215,7 @@ class TestTrendColetadaRepository:
             MagicMock(id=uuid4(), termo_bruto="Trend 2", status="pendente"),
         ]
 
-        with patch.object(repo, 'list', AsyncMock(return_value=trends)):
+        with patch.object(repo, "list", AsyncMock(return_value=trends)):
             result = await repo.list(status="pendente")
             assert len(result) == 2
             assert all(t.status == "pendente" for t in result)
@@ -218,8 +226,18 @@ class TestTrendColetadaRepository:
         from app.schemas.trend_coletada import TrendColetadaCreate
 
         trends_data = [
-            TrendColetadaCreate(nicho_id=uuid4(), fonte="google_trends", termo_bruto="Trend 1", status="pendente"),
-            TrendColetadaCreate(nicho_id=uuid4(), fonte="google_trends", termo_bruto="Trend 2", status="pendente"),
+            TrendColetadaCreate(
+                nicho_id=uuid4(),
+                fonte="google_trends",
+                termo_bruto="Trend 1",
+                status="pendente",
+            ),
+            TrendColetadaCreate(
+                nicho_id=uuid4(),
+                fonte="google_trends",
+                termo_bruto="Trend 2",
+                status="pendente",
+            ),
         ]
 
         trends_mock = [
@@ -227,6 +245,6 @@ class TestTrendColetadaRepository:
             MagicMock(id=uuid4(), termo_bruto="Trend 2"),
         ]
 
-        with patch.object(repo, 'create_batch', AsyncMock(return_value=trends_mock)):
+        with patch.object(repo, "create_batch", AsyncMock(return_value=trends_mock)):
             result = await repo.create_batch(trends_data)
             assert len(result) == 2

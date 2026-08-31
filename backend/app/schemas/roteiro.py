@@ -36,7 +36,9 @@ class PersistedNarrativeBlock(BaseModel):
     conteudo: str = Field(min_length=1, max_length=100_000)
     dicas_visual: str | None = None
     dicas_audio: str | None = None
-    visual_queries: list[PersistedVisualQuery] = Field(default_factory=list, max_length=5)
+    visual_queries: list[PersistedVisualQuery] = Field(
+        default_factory=list, max_length=5
+    )
     purpose: str | None = None
     beats: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
     claims: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
@@ -76,8 +78,12 @@ class RoteiroEstrutura(BaseModel):
 
     @model_validator(mode="after")
     def duration_is_coherent(self) -> RoteiroEstrutura:
-        if self.duracao_total_segundos < sum(item.duracao_segundos for item in self.blocos):
-            raise ValueError("duracao_total_segundos cannot be shorter than the block sum")
+        if self.duracao_total_segundos < sum(
+            item.duracao_segundos for item in self.blocos
+        ):
+            raise ValueError(
+                "duracao_total_segundos cannot be shorter than the block sum"
+            )
         return self
 
 

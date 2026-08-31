@@ -1,9 +1,8 @@
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
-
 from app.schemas.roteiro import RoteiroCreate
+from pydantic import ValidationError
 
 
 def test_persisted_script_rejects_empty_blocks() -> None:

@@ -1,13 +1,15 @@
 """
 Coletador de trends do Reddit via JSON público (sem API key).
 """
-import asyncio
-from typing import Any
 
 import httpx
+import structlog
 
-from app.services.trends.base import BaseTrendCollector, TrendColetada as TrendItem
 from app.core.config import settings
+from app.services.trends.base import BaseTrendCollector
+from app.services.trends.base import TrendColetada as TrendItem
+
+logger = structlog.get_logger("services.trends.reddit")
 
 
 class RedditPublicoCollector(BaseTrendCollector):
@@ -35,13 +37,10 @@ class RedditPublicoCollector(BaseTrendCollector):
         timeframe = kwargs.get("timeframe", "day")
 
         trends = await self._fetch_posts(subreddit, sorting, timeframe)
-        return trends[:self.max_results]
+        return trends[: self.max_results]
 
     async def _fetch_posts(
-        self,
-        subreddit: str,
-        sorting: str = "hot",
-        timeframe: str = "day"
+        self, subreddit: str, sorting: str = "hot", timeframe: str = "day"
     ) -> list[TrendItem]:
         """Busca posts de um subreddit."""
         url = f"{self.base_url}/r/{subreddit}/{sorting}.json?t={timeframe}&limit={self.max_results}"
@@ -60,32 +59,41 @@ class RedditPublicoCollector(BaseTrendCollector):
                 data = response.json()
 
             trends = []
-            for child in data['data']['children']:
-                post = child['data']
+            for child in data["data"]["children"]:
+                post = child["data"]
 
                 # Usa título do post como termo
-                trends.append(TrendItem(
-                    termo=post['title'][:300],  # Limite do campo
-                    fonte='reddit_publico',
-                    payload={
-                        'subreddit': post['subreddit'],
-                        'score': post['score'],
-                        'num_comments': post['num_comments'],
-                        'author': post.get('author', '[deleted]'),
-                        'permalink': post['permalink'],
-                        'url': f"https://reddit.com{post['permalink']}",
-                        'created_utc': post['created_utc'],
-                        'sorting': sorting,
-                        'timeframe': timeframe
-                    }
-                ))
+                trends.append(
+                    TrendItem(
+                        termo=post["title"][:300],  # Limite do campo
+                        fonte="reddit_publico",
+                        payload={
+                            "subreddit": post["subreddit"],
+                            "score": post["score"],
+                            "num_comments": post["num_comments"],
+                            "author": post.get("author", "[deleted]"),
+                            "permalink": post["permalink"],
+                            "url": f"https://reddit.com{post['permalink']}",
+                            "created_utc": post["created_utc"],
+                            "sorting": sorting,
+                            "timeframe": timeframe,
+                        },
+                    )
+                )
 
             return trends
 
-        except Exception as e:
-            print(f"Erro ao buscar Reddit r/{subreddit}: {e}")
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            logger.warning(
+                "trend_source_failure",
+                source="reddit_publico",
+                subreddit=subreddit,
+                error_type=type(exc).__name__,
+            )
             return []
 
 
 # Instância global
-reddit_publico_collector = RedditPublicoCollector(max_results=settings.trends_max_por_fonte)
+reddit_publico_collector = RedditPublicoCollector(
+    max_results=settings.trends_max_por_fonte
+)

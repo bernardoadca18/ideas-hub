@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
 import Ideias from './pages/Ideias';
 import Trends from './pages/Trends';
 import Roteiros from './pages/Roteiros';
+import GameAnalysis from './pages/GameAnalysis';
 
 export default function App() {
   return (
@@ -17,6 +18,9 @@ export default function App() {
           <NavLink to="/roteiros" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             Roteiros
           </NavLink>
+          <NavLink to="/game-analysis" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            Game Analysis
+          </NavLink>
         </nav>
         <main className="main">
           <Routes>
@@ -24,6 +28,7 @@ export default function App() {
             <Route path="/ideias" element={<Ideias />} />
             <Route path="/trends" element={<Trends />} />
             <Route path="/roteiros" element={<Roteiros />} />
+            <Route path="/game-analysis" element={<GameAnalysis />} />
           </Routes>
         </main>
       </div>

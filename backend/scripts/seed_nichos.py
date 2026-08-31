@@ -7,13 +7,12 @@ Cada nicho é criado ou atualizado pelo slug, permitindo rodar múltiplas vezes
 sem duplicação. Os prompts são específicos de cada nicho e complementam (não
 repetem) as orientações já presentes nos ProductionProfiles.
 """
+
 import asyncio
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
 from app.repositories import NichoRepository
 from app.schemas import NichoCreate, NichoUpdate
-
 
 # Dados dos nichos a criar/atualizar
 # Cada entrada contém slug, nome, descricao, perfil_producao, categoria_google_trends,

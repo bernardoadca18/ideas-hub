@@ -1,6 +1,7 @@
 """
 Router CRUD para a entidade Roteiro.
 """
+
 from typing import Annotated
 from uuid import UUID
 
@@ -20,9 +21,7 @@ from app.schemas.roteiro import (
 router = APIRouter(prefix="/roteiros", tags=["roteiros"])
 
 
-def get_roteiro_repo(
-    db: Annotated[AsyncSession, Depends(get_db)]
-) -> RoteiroRepository:
+def get_roteiro_repo(db: Annotated[AsyncSession, Depends(get_db)]) -> RoteiroRepository:
     return RoteiroRepository(db)
 
 
@@ -99,8 +98,7 @@ async def get_latest_roteiro_by_ideia(
     roteiro = await repo.get_latest_version_by_ideia(ideia_id)
     if not roteiro:
         raise HTTPException(
-            status_code=404,
-            detail="Nenhum roteiro encontrado para esta ideia"
+            status_code=404, detail="Nenhum roteiro encontrado para esta ideia"
         )
     return roteiro
 
@@ -125,7 +123,9 @@ async def delete_roteiro(
     roteiro_id: UUID,
 ):
     """Scripts form an audit history and are not physically deleted through the API."""
-    raise HTTPException(status_code=409, detail="O histórico de versões de roteiro é imutável.")
+    raise HTTPException(
+        status_code=409, detail="O histórico de versões de roteiro é imutável."
+    )
 
 
 @router.post(

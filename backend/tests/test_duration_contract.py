@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-
 from app.production_profiles import get_profile
 from app.schemas.llm_outputs import EvidenceTier, ScriptLLMOutput
 from app.services.duration_contract import (
@@ -155,7 +154,9 @@ def test_duration_prompt_forbids_filler_and_identifies_calibration() -> None:
     assert "Never fill" in prompt
 
 
-def test_claim_tiers_and_music_intent_remain_structured_non_speakable_metadata() -> None:
+def test_claim_tiers_and_music_intent_remain_structured_non_speakable_metadata() -> (
+    None
+):
     output = ScriptLLMOutput.model_validate(
         {
             "titulo": "Observação não é confirmação",
