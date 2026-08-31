@@ -100,13 +100,7 @@ class EvidenceFragmentOutput(BaseModel):
 
 
 class WrittenSectionOutput(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1, max_length=100_000)
-    transition_out: str | None = Field(default=None, max_length=1000)
-    claims_used: list[str] = Field(default_factory=list, max_length=100)
-    beats_covered: list[str] = Field(min_length=1, max_length=20)
-    visual_intent: str | None = Field(default=None, max_length=5000)
-    audio_intent: dict[str, Any] | None = None
 
     @field_validator("content")
     @classmethod

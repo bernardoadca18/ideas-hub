@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -73,6 +74,12 @@ REPAIR_OUTPUT_TOKEN_CEILING = 6000
 PLANNING_SECTION_BATCH_SIZE = 4
 GLOBAL_PLANNING_MAX_TOKENS = 2500
 FRAGMENTED_PLANNING_VERSION = "fragmented_editorial_planning_v1"
+WRITING_OUTPUT_TOKEN_FLOOR = 5000
+WRITING_OUTPUT_TOKENS_PER_TARGET_WORD = 3.2
+WRITING_OUTPUT_SAFETY_HEADROOM = 0.5
+WRITING_OUTPUT_STRUCTURED_OVERHEAD = 600
+WRITING_OUTPUT_REASONING_HEADROOM = 4096
+WRITING_OUTPUT_TOKEN_CEILING = 10000
 
 
 class GenerationFailureCategory(StrEnum):
@@ -928,7 +935,6 @@ class ScriptGenerationJobService:
         evidence = self._evidence_for_section(run, section)
         feedback: str | None = None
         for attempt in range(1, self.config.generation_max_revisions_per_section + 2):
-            section.attempt_count = attempt
             prompt = (
                 "Write ONLY this script section as natural spoken PT-BR. Return JSON only. Do not include headings in content. "
                 "Meet the word budget through evidence, examples, contrast, causality, technical explanation and implications; never recap/filler. "
@@ -945,45 +951,105 @@ class ScriptGenerationJobService:
                 != self.config.resolved_llm_standard_model
                 and run.model_policy.get("strategy") != "flash_only"
             )
-            result = await self._complete(
-                run,
-                role=LLMTaskRole.WRITING,
-                prompt=prompt,
-                schema=WrittenSectionOutput.model_json_schema(),
-                max_tokens=min(
-                    5000, max(1200, int((plan.get("max_words") or 500) * 2.2))
-                ),
-                escalation_reason="repeated_section_budget_failure"
-                if use_escalation
-                else None,
+            initial_capacity = _writing_max_tokens(
+                int(plan.get("target_words") or plan.get("max_words") or 500)
             )
+            result: LLMCallResult | None = None
+            for capacity_attempt, max_tokens in enumerate(
+                (initial_capacity, WRITING_OUTPUT_TOKEN_CEILING), start=1
+            ):
+                if capacity_attempt == 2 and initial_capacity >= max_tokens:
+                    break
+                await self._checkpoint_writing_call(
+                    run,
+                    section,
+                    editorial_attempt=attempt,
+                    capacity_attempt=capacity_attempt,
+                    max_tokens=max_tokens,
+                    outcome="started",
+                )
+                result = await self._complete(
+                    run,
+                    role=LLMTaskRole.WRITING,
+                    prompt=prompt,
+                    schema=WrittenSectionOutput.model_json_schema(),
+                    max_tokens=max_tokens,
+                    escalation_reason="repeated_section_budget_failure"
+                    if use_escalation
+                    else None,
+                )
+                truncated = _is_truncated_structured_output(result)
+                await self._checkpoint_writing_call(
+                    run,
+                    section,
+                    editorial_attempt=attempt,
+                    capacity_attempt=capacity_attempt,
+                    max_tokens=max_tokens,
+                    outcome="truncated" if truncated else "completed",
+                    result=result,
+                )
+                if not truncated:
+                    break
+                logger.warning(
+                    "section_writing_capacity_exhausted",
+                    run_id=str(run.id),
+                    section_key=section.section_key,
+                    editorial_attempt=attempt,
+                    capacity_attempt=capacity_attempt,
+                    completion_tokens=result.completion_tokens,
+                    max_tokens=max_tokens,
+                    output_capacity_retry=capacity_attempt == 1,
+                )
+                if capacity_attempt == 2 or max_tokens >= WRITING_OUTPUT_TOKEN_CEILING:
+                    _raise_for_truncated_structured_output(result)
+            assert result is not None
             written, section_provenance = await self._parse_or_repair(
                 run, result, WrittenSectionOutput
             )
-            self._validate_claim_refs(run, written.claims_used)
+            claims_used = self._claim_ids_for_section(run, plan)
+            self._validate_claim_refs(run, claims_used)
+            transition_out = plan.get("transition_target")
+            beats_covered = list(plan.get("beats") or [])
             validation = validate_section_words(
                 count_words(written.content), _section_budget_from_mapping(plan)
             )
-            section.output = written.model_dump(mode="json")
             section.local_validation = validation
-            section.prompt_provenance = section_provenance
-            section.output_identity = hashlib.sha256(
-                json.dumps(section.output, sort_keys=True, ensure_ascii=False).encode()
-            ).hexdigest()
+            provenance = dict(section.prompt_provenance or {})
+            provenance["accepted_result"] = section_provenance
+            provenance["editorial_revision_count"] = attempt - 1
+            provenance["capacity_retry_count"] = sum(
+                int(item.get("capacity_attempt", 1)) > 1
+                for item in provenance.get("writing_calls", [])
+                if item.get("outcome") != "started"
+            )
+            section.prompt_provenance = provenance
             if not validation["revision_required"]:
+                section.output = {
+                    **written.model_dump(mode="json"),
+                    "transition_out": transition_out,
+                    "claims_used": claims_used,
+                    "beats_covered": beats_covered,
+                    "visual_intent": None,
+                    "audio_intent": None,
+                }
+                section.output_identity = hashlib.sha256(
+                    json.dumps(
+                        section.output, sort_keys=True, ensure_ascii=False
+                    ).encode()
+                ).hexdigest()
                 section.status = "completed"
                 state = dict(run.continuity_state)
                 introduced = list(state.get("introduced_claims") or [])
                 state["introduced_claims"] = list(
-                    dict.fromkeys([*introduced, *written.claims_used])
+                    dict.fromkeys([*introduced, *claims_used])
                 )
-                state["last_transition"] = written.transition_out
+                state["last_transition"] = transition_out
                 state["completed_sections"] = [
                     *list(state.get("completed_sections") or []),
                     {
                         "section_key": section.section_key,
-                        "beats_covered": written.beats_covered,
-                        "transition_out": written.transition_out,
+                        "beats_covered": beats_covered,
+                        "transition_out": transition_out,
                     },
                 ][-8:]
                 run.continuity_state = state
@@ -995,6 +1061,9 @@ class ScriptGenerationJobService:
                     word_status=validation["status"],
                 )
                 return
+            section.output = None
+            section.output_identity = None
+            await self.session.commit()
             feedback = (
                 f"Targeted section revision: actual={validation['actual_words']} target={validation['target_words']} status={validation['status']}. "
                 "Address missing must-cover beats with supported substance; do not paraphrase existing sentences or add generic suspense."
@@ -1011,6 +1080,66 @@ class ScriptGenerationJobService:
             GenerationFailureCategory.EDITORIAL,
             f"section {section.section_key} remained outside its word budget",
         )
+
+    async def _checkpoint_writing_call(
+        self,
+        run: ScriptGenerationRun,
+        section: ScriptGenerationSection,
+        *,
+        editorial_attempt: int,
+        capacity_attempt: int,
+        max_tokens: int,
+        outcome: str,
+        result: LLMCallResult | None = None,
+    ) -> None:
+        provenance = dict(section.prompt_provenance or {})
+        calls = [dict(item) for item in provenance.get("writing_calls", [])]
+        call_identity = (editorial_attempt, capacity_attempt)
+        entry: dict[str, Any] = {
+            "editorial_attempt": editorial_attempt,
+            "capacity_attempt": capacity_attempt,
+            "reason": "output_capacity_retry" if capacity_attempt > 1 else "initial",
+            "max_tokens": max_tokens,
+            "outcome": outcome,
+        }
+        if result is not None:
+            entry["result"] = result.provenance()
+        replaced = False
+        for index, current in enumerate(calls):
+            if (
+                current.get("editorial_attempt"),
+                current.get("capacity_attempt"),
+            ) == call_identity:
+                calls[index] = entry
+                replaced = True
+                break
+        if not replaced:
+            calls.append(entry)
+        provenance["writing_calls"] = calls[-20:]
+        provenance["capacity_retry_count"] = sum(
+            int(item.get("capacity_attempt", 1)) > 1
+            for item in calls
+            if item.get("outcome") != "started"
+        )
+        provenance["editorial_revision_count"] = editorial_attempt - 1
+        section.prompt_provenance = provenance
+        section.status = "writing"
+        section.attempt_count = editorial_attempt
+        run.heartbeat_at = datetime.now(UTC)
+        await self.session.commit()
+
+    @staticmethod
+    def _claim_ids_for_section(
+        run: ScriptGenerationRun, plan: dict[str, Any]
+    ) -> list[str]:
+        evidence_refs = set(plan.get("evidence_refs") or [])
+        if not evidence_refs:
+            return []
+        return [
+            str(claim["id"])
+            for claim in run.plan["editorial"].get("claim_ledger", [])
+            if evidence_refs.intersection(claim.get("source_refs") or [])
+        ]
 
     @staticmethod
     def _evidence_for_section(
@@ -1352,6 +1481,23 @@ def _repair_max_tokens(result: LLMCallResult) -> int:
     return min(
         REPAIR_OUTPUT_TOKEN_CEILING,
         max(REPAIR_OUTPUT_TOKEN_FLOOR, expected_tokens),
+    )
+
+
+def _writing_max_tokens(target_words: int) -> int:
+    if target_words < 1:
+        raise ValueError("section writing requires a positive target word count")
+    narration_tokens = math.ceil(target_words * WRITING_OUTPUT_TOKENS_PER_TARGET_WORD)
+    safety_headroom = math.ceil(narration_tokens * WRITING_OUTPUT_SAFETY_HEADROOM)
+    expected_capacity = (
+        narration_tokens
+        + safety_headroom
+        + WRITING_OUTPUT_STRUCTURED_OVERHEAD
+        + WRITING_OUTPUT_REASONING_HEADROOM
+    )
+    return min(
+        WRITING_OUTPUT_TOKEN_CEILING,
+        max(WRITING_OUTPUT_TOKEN_FLOOR, expected_capacity),
     )
 
 

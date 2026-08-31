@@ -12,6 +12,7 @@ from app.schemas.generation import (
     EditorialPlanOutput,
     GlobalEditorialPlanOutput,
     PlannedSectionBatchOutput,
+    WrittenSectionOutput,
 )
 from app.services.llm_gateway import (
     LLMCallResult,
@@ -29,6 +30,7 @@ from app.services.script_generation_jobs import (
     _section_batch_output_contract,
     _section_batches,
     _temperature_for_role,
+    _writing_max_tokens,
 )
 
 
@@ -118,6 +120,75 @@ def _section_dict(key: str) -> dict[str, object]:
 
 def _batch_json(keys: list[str]) -> str:
     return json.dumps({"sections": [_section_dict(key) for key in keys]})
+
+
+def _written_json(word_count: int, *, marker: str = "palavra") -> str:
+    return json.dumps(
+        {
+            "content": " ".join([marker] * word_count),
+            "transition_out": "Conexão com a próxima seção.",
+            "claims_used": [],
+            "beats_covered": ["Apresentar o ponto central"],
+            "visual_intent": None,
+            "audio_intent": None,
+        }
+    )
+
+
+def _writing_fixture() -> tuple[
+    ScriptGenerationJobService, AsyncMock, SimpleNamespace, SimpleNamespace
+]:
+    session = AsyncMock()
+    section = SimpleNamespace(
+        section_key="section-001",
+        section_order=0,
+        status="pending",
+        attempt_count=0,
+        section_plan={
+            "key": "section-001",
+            "order": 0,
+            "chapter_order": 0,
+            "target_duration_seconds": 240,
+            "target_words": 580,
+            "min_words": 493,
+            "max_words": 667,
+            "title": "Seção controlada",
+            "purpose": "Desenvolver o argumento.",
+            "narrative_role": "desenvolvimento",
+            "beats": ["Apresentar o ponto central"],
+            "evidence_refs": [],
+            "must_cover": ["O ponto central"],
+            "must_not_repeat": [],
+            "transition_target": None,
+        },
+        output=None,
+        local_validation=None,
+        prompt_provenance={"planning": {"persisted": True}},
+        output_identity=None,
+        error_category=None,
+        error_message=None,
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        sections=[section],
+        plan={
+            "editorial": {
+                "thesis": "Tese global.",
+                "claim_ledger": [],
+            }
+        },
+        evidence_dossier={"fragments": []},
+        continuity_state={
+            "introduced_claims": [],
+            "completed_sections": [],
+        },
+        model_policy={"strategy": "standard"},
+        call_usage={"calls": 0, "total_tokens": 0},
+        strategy_identity="writing-test",
+        heartbeat_at=None,
+    )
+    service = ScriptGenerationJobService(session, gateway=AsyncMock(), config=_config())
+    return service, session, run, section
 
 
 def _planning_fixture(
@@ -534,6 +605,172 @@ def test_planning_and_repair_token_budgets_remain_bounded() -> None:
     )
 
 
+def test_writing_capacity_uses_headroom_and_remains_bounded() -> None:
+    assert _writing_max_tokens(580) == 7480
+    assert _writing_max_tokens(580) > 1467
+    assert _writing_max_tokens(700) > _writing_max_tokens(580)
+    assert _writing_max_tokens(10_000) == 10_000
+    with pytest.raises(ValueError, match="positive"):
+        _writing_max_tokens(0)
+
+
+def test_writer_schema_does_not_echo_host_owned_section_metadata() -> None:
+    properties = WrittenSectionOutput.model_json_schema()["properties"]
+    assert set(properties) == {"content"}
+
+
+def test_section_claim_ids_are_derived_from_approved_evidence_refs() -> None:
+    run = SimpleNamespace(
+        plan={
+            "editorial": {
+                "claim_ledger": [
+                    {"id": "claim-1", "source_refs": ["source-a"]},
+                    {"id": "claim-2", "source_refs": ["source-b"]},
+                ]
+            }
+        }
+    )
+    claims = ScriptGenerationJobService._claim_ids_for_section(
+        run, {"evidence_refs": ["source-b"]}
+    )
+    assert claims == ["claim-2"]
+
+
+@pytest.mark.asyncio
+async def test_writing_stop_does_not_use_capacity_retry() -> None:
+    service, _, run, section = _writing_fixture()
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(
+            _written_json(580),
+            role=LLMTaskRole.WRITING,
+            max_tokens=7480,
+            completion_tokens=1700,
+        )
+    )
+
+    await service._write_section(run, section)
+
+    service._complete.assert_awaited_once()
+    assert service._complete.await_args.kwargs["max_tokens"] == 7480
+    assert section.status == "completed"
+    assert section.attempt_count == 1
+    assert section.local_validation["actual_words"] == 580
+    assert section.prompt_provenance["capacity_retry_count"] == 0
+    assert section.prompt_provenance["editorial_revision_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_writing_truncation_regenerates_once_at_hard_ceiling() -> None:
+    service, _, run, section = _writing_fixture()
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(
+                '{"content":"partial',
+                role=LLMTaskRole.WRITING,
+                finish_reason="length",
+                max_tokens=7480,
+                completion_tokens=7470,
+            ),
+            _result(
+                _written_json(580, marker="accepted"),
+                role=LLMTaskRole.WRITING,
+                max_tokens=10_000,
+                completion_tokens=1800,
+            ),
+        ]
+    )
+
+    await service._write_section(run, section)
+
+    assert service._complete.await_count == 2
+    assert [
+        call.kwargs["max_tokens"] for call in service._complete.await_args_list
+    ] == [7480, 10_000]
+    assert section.status == "completed"
+    assert section.attempt_count == 1
+    assert section.output["content"].startswith("accepted")
+    assert "partial" not in section.output["content"]
+    assert section.prompt_provenance["capacity_retry_count"] == 1
+    assert section.prompt_provenance["editorial_revision_count"] == 0
+    calls = section.prompt_provenance["writing_calls"]
+    assert [item["outcome"] for item in calls] == ["truncated", "completed"]
+    assert calls[1]["reason"] == "output_capacity_retry"
+
+
+@pytest.mark.asyncio
+async def test_second_writing_truncation_is_terminal_and_diagnostic() -> None:
+    service, session, run, section = _writing_fixture()
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(
+                "{",
+                role=LLMTaskRole.WRITING,
+                finish_reason="length",
+                max_tokens=7480,
+                completion_tokens=7470,
+            ),
+            _result(
+                "{",
+                role=LLMTaskRole.WRITING,
+                finish_reason="max_output_tokens",
+                max_tokens=10_000,
+                completion_tokens=9990,
+            ),
+        ]
+    )
+
+    with pytest.raises(LLMGatewayError) as captured:
+        await service._write_section(run, section)
+
+    assert captured.value.category is LLMFailureCategory.FORMAT
+    assert service._complete.await_count == 2
+    assert section.status == "writing"
+    assert section.attempt_count == 1
+    assert section.output is None
+    assert section.prompt_provenance["capacity_retry_count"] == 1
+    assert [
+        item["result"]["finish_reason"]
+        for item in section.prompt_provenance["writing_calls"]
+    ] == ["length", "max_output_tokens"]
+    assert session.commit.await_count == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_word_count", [200, 800], ids=["under", "over"])
+async def test_stopped_output_outside_word_budget_uses_editorial_revision(
+    first_word_count: int,
+) -> None:
+    service, _, run, section = _writing_fixture()
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(
+                _written_json(first_word_count),
+                role=LLMTaskRole.WRITING,
+                max_tokens=7480,
+                completion_tokens=1000,
+            ),
+            _result(
+                _written_json(580),
+                role=LLMTaskRole.WRITING,
+                max_tokens=7480,
+                completion_tokens=1700,
+            ),
+        ]
+    )
+
+    await service._write_section(run, section)
+
+    assert service._complete.await_count == 2
+    assert [
+        call.kwargs["max_tokens"] for call in service._complete.await_args_list
+    ] == [7480, 7480]
+    assert section.status == "completed"
+    assert section.attempt_count == 2
+    assert section.local_validation["actual_words"] == 580
+    assert section.prompt_provenance["capacity_retry_count"] == 0
+    assert section.prompt_provenance["editorial_revision_count"] == 1
+
+
 def test_task_temperature_policy_keeps_repair_deterministic() -> None:
     assert _temperature_for_role(LLMTaskRole.REPAIR) == 0.0
     assert _temperature_for_role(LLMTaskRole.PLANNING) == 0.5
@@ -590,6 +827,45 @@ async def test_process_refreshes_new_planning_rows_before_writing() -> None:
         call.kwargs.get("attribute_names") == ["sections"]
         for call in session.refresh.await_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_process_with_persisted_plan_resumes_at_pending_section() -> None:
+    section = SimpleNamespace(status="pending")
+    run = SimpleNamespace(
+        id=uuid4(),
+        status="running",
+        phase="writing",
+        sections=[section],
+        plan={
+            "editorial": {},
+            "planning_state": {
+                "version": "fragmented_editorial_planning_v1",
+                "status": "completed",
+            },
+        },
+        evidence_dossier={"research_complete": True},
+        completed_sections=0,
+        heartbeat_at=None,
+        completed_at=None,
+        roteiro_id=None,
+    )
+    session = AsyncMock()
+    service = ScriptGenerationJobService(session, gateway=AsyncMock(), config=_config())
+    service.get = AsyncMock(return_value=run)  # type: ignore[method-assign]
+
+    async def write_section(_run, target):
+        target.status = "completed"
+
+    service._plan = AsyncMock()  # type: ignore[method-assign]
+    service._write_section = AsyncMock(side_effect=write_section)  # type: ignore[method-assign]
+    service._assemble = AsyncMock()  # type: ignore[method-assign]
+
+    result = await service.process(run.id)
+
+    assert result.status == "completed"
+    service._plan.assert_not_awaited()
+    service._write_section.assert_awaited_once_with(run, section)
 
 
 @pytest.mark.asyncio

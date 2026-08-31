@@ -65,6 +65,8 @@ class LLMCallResult:
     finish_reason: str | None = None
     fallback_reason: str | None = None
     escalation_reason: str | None = None
+    reasoning_tokens: int | None = None
+    visible_output_characters: int | None = None
 
     def provenance(self) -> dict[str, Any]:
         return {
@@ -78,8 +80,10 @@ class LLMCallResult:
             "usage": {
                 "prompt_tokens": self.prompt_tokens,
                 "completion_tokens": self.completion_tokens,
+                "reasoning_tokens": self.reasoning_tokens,
                 "total_tokens": self.total_tokens,
             },
+            "visible_output_characters": self.visible_output_characters,
             "latency_seconds": self.latency_seconds,
             "attempt_count": self.attempt_count,
             "finish_reason": self.finish_reason,
@@ -243,6 +247,7 @@ class LLMGateway:
                         LLMFailureCategory.FORMAT, "LLM returned empty content"
                     )
                 usage = data.get("usage") or {}
+                completion_details = usage.get("completion_tokens_details") or {}
                 raw_finish_reason = choice_data.get("finish_reason")
                 result = LLMCallResult(
                     content=choice,
@@ -263,6 +268,8 @@ class LLMGateway:
                     else None,
                     fallback_reason=fallback_reason,
                     escalation_reason=escalation_reason,
+                    reasoning_tokens=completion_details.get("reasoning_tokens"),
+                    visible_output_characters=len(choice),
                 )
                 logger.info("llm_call_completed", **result.provenance())
                 return result

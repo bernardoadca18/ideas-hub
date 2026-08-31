@@ -34,7 +34,12 @@ def _success(*, finish_reason: str = "stop") -> httpx.Response:
                     "finish_reason": finish_reason,
                 }
             ],
-            "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+            "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "completion_tokens_details": {"reasoning_tokens": 1},
+                "total_tokens": 5,
+            },
         },
         request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
     )
@@ -106,6 +111,23 @@ async def test_finish_reason_is_exposed_in_result_and_provenance() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reasoning_usage_and_visible_size_are_recorded() -> None:
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = _success()
+
+    result = await LLMGateway(_settings(), client=client).complete(
+        messages=[{"role": "user", "content": "test"}],
+        role=LLMTaskRole.WRITING,
+        temperature=0.7,
+        max_tokens=3000,
+    )
+
+    assert result.reasoning_tokens == 1
+    assert result.visible_output_characters == len('{"ok":true}')
+    assert result.provenance()["usage"]["reasoning_tokens"] == 1
+
+
+@pytest.mark.asyncio
 async def test_timeout_is_bounded_and_classified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -160,7 +182,10 @@ async def test_json_schema_fallback_for_gemini_invalid_argument() -> None:
         role=LLMTaskRole.PLANNING,
         temperature=0.5,
         max_tokens=1000,
-        response_schema={"type": "object", "properties": {"thesis": {"type": "string"}}},
+        response_schema={
+            "type": "object",
+            "properties": {"thesis": {"type": "string"}},
+        },
     )
     assert result.fallback_reason == "provider_json_schema_unsupported"
     assert result.content == '{"ok":true}'
