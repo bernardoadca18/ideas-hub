@@ -21,6 +21,7 @@ from app.services.script_generation_jobs import (
     GenerationFailureCategory,
     GenerationJobError,
     ScriptGenerationJobService,
+    _planning_max_tokens,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,13 +80,18 @@ def _editorial_plan_json(*, section_keys: list[str] | None = None) -> str:
     )
 
 
-def _gateway_response(content: str) -> httpx.Response:
+def _gateway_response(content: str, *, finish_reason: str = "stop") -> httpx.Response:
     return httpx.Response(
         200,
         json={
             "model": "provider/model",
             "provider": "test",
-            "choices": [{"message": {"content": content}}],
+            "choices": [
+                {
+                    "message": {"content": content},
+                    "finish_reason": finish_reason,
+                }
+            ],
             "usage": {
                 "prompt_tokens": 10,
                 "completion_tokens": 20,
@@ -94,6 +100,21 @@ def _gateway_response(content: str) -> httpx.Response:
         },
         request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
     )
+
+
+def _problematic_run_budgets() -> list[dict[str, int | str]]:
+    return [
+        {
+            "key": f"section-{index:03d}",
+            "order": index - 1,
+            "chapter_order": 0,
+            "target_duration_seconds": 240,
+            "target_words": 596,
+            "min_words": 507,
+            "max_words": 685,
+        }
+        for index in range(1, 4)
+    ]
 
 
 @pytest.mark.asyncio
@@ -240,6 +261,109 @@ async def test_parse_or_repair_fails_after_one_invalid_repair(
     service._complete.assert_awaited_once()
 
 
+def test_planning_output_token_budget_scales_and_remains_bounded() -> None:
+    assert _planning_max_tokens(1) == 3000
+    assert _planning_max_tokens(3) == 4000
+    assert _planning_max_tokens(4) == 5000
+    assert _planning_max_tokens(5) == 6000
+    assert _planning_max_tokens(120) == 6000
+    with pytest.raises(ValueError, match="at least one"):
+        _planning_max_tokens(0)
+
+
+def _execute_plan_with_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    section_keys: list[str],
+    *,
+    finish_reason: str = "stop",
+):
+    session = AsyncMock(spec=AsyncSession)
+    service = ScriptGenerationJobService(session, gateway=AsyncMock(), config=_config())
+    planning_result = _result(LLMTaskRole.PLANNING, "standard-route")
+    planning_result = LLMCallResult(
+        **{
+            **planning_result.__dict__,
+            "content": _editorial_plan_json(section_keys=section_keys),
+            "finish_reason": finish_reason,
+            "max_tokens": 4000,
+            "completion_tokens": 1996,
+        }
+    )
+    service._complete = AsyncMock(return_value=planning_result)  # type: ignore[method-assign]
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        phase="planning",
+        plan={"sections": _problematic_run_budgets()},
+        evidence_dossier={
+            "sources": [{"id": "idea-description"}],
+            "fragments": [],
+        },
+        call_usage={"calls": 0, "total_tokens": 0, "escalations": []},
+        model_policy={"strategy": "standard"},
+        strategy_identity="problematic-run-shape",
+    )
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                titulo="Fixture do run problemático",
+                descricao_breve="Conteúdo sintético sem fatos externos.",
+                author_briefing=None,
+            )
+        ),
+    )
+    return service, session, run
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "section_keys",
+    [
+        ["section-001", "section-002", "section-003", "section-004"],
+        ["section-001", "section-002"],
+        ["section-001", "renamed-section", "section-003"],
+        ["section-002", "section-001", "section-003"],
+    ],
+    ids=["extra", "missing", "renamed", "reordered"],
+)
+async def test_plan_rejects_section_contract_mismatch(
+    monkeypatch: pytest.MonkeyPatch, section_keys: list[str]
+) -> None:
+    service, session, run = _execute_plan_with_keys(monkeypatch, section_keys)
+
+    with pytest.raises(GenerationJobError) as captured:
+        await service._plan(run)
+
+    assert captured.value.category is GenerationFailureCategory.SCHEMA
+    assert "planner section contract mismatch" in str(captured.value)
+    assert "expected_count=3" in str(captured.value)
+    assert f"actual_count={len(section_keys)}" in str(captured.value)
+    session.add.assert_not_called()
+    service._complete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_plan_classifies_token_limit_before_section_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, session, run = _execute_plan_with_keys(
+        monkeypatch,
+        ["section-001", "section-002", "section-003", "section-004"],
+        finish_reason="length",
+    )
+
+    with pytest.raises(LLMGatewayError) as captured:
+        await service._plan(run)
+
+    assert captured.value.category is LLMFailureCategory.FORMAT
+    assert "truncated" in str(captured.value)
+    assert "finish_reason=length" in str(captured.value)
+    assert "section contract mismatch" not in str(captured.value)
+    session.add.assert_not_called()
+    service._complete.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_real_plan_uses_schema_fallback_repair_and_deterministic_budgets(
     monkeypatch: pytest.MonkeyPatch,
@@ -277,7 +401,9 @@ async def test_real_plan_uses_schema_fallback_repair_and_deterministic_budgets(
             "open_loops": [],
         }
     )
-    repaired_plan = _editorial_plan_json(section_keys=["llm-key-1", "llm-key-2"])
+    repaired_plan = _editorial_plan_json(
+        section_keys=["section-001", "section-002", "section-003"]
+    )
     client = AsyncMock(spec=httpx.AsyncClient)
     client.post.side_effect = [
         schema_rejection,
@@ -294,26 +420,7 @@ async def test_real_plan_uses_schema_fallback_repair_and_deterministic_budgets(
     )
     gateway = LLMGateway(config, client=client)
     session = AsyncMock(spec=AsyncSession)
-    requested_sections = [
-        {
-            "key": "deterministic-01",
-            "order": 0,
-            "chapter_order": 0,
-            "target_duration_seconds": 300,
-            "target_words": 725,
-            "min_words": 650,
-            "max_words": 800,
-        },
-        {
-            "key": "deterministic-02",
-            "order": 1,
-            "chapter_order": 0,
-            "target_duration_seconds": 300,
-            "target_words": 725,
-            "min_words": 650,
-            "max_words": 800,
-        },
-    ]
+    requested_sections = _problematic_run_budgets()
     run = SimpleNamespace(
         id=uuid4(),
         ideia_id=uuid4(),
@@ -348,25 +455,41 @@ async def test_real_plan_uses_schema_fallback_repair_and_deterministic_budgets(
         == "provider_json_schema_unsupported"
     )
     assert run.plan["planning_provenance"]["repair"]["task_role"] == "repair"
+    assert run.plan["planning_provenance"]["initial"]["finish_reason"] == "stop"
+    assert run.plan["planning_provenance"]["repair"]["finish_reason"] == "stop"
+    assert [section["key"] for section in run.plan["editorial"]["sections"]] == [
+        "section-001",
+        "section-002",
+        "section-003",
+    ]
     assert run.call_usage["calls"] == 2
     assert client.post.await_count == 3
     payloads = [call.kwargs["json"] for call in client.post.await_args_list]
     assert payloads[0]["response_format"]["type"] == "json_schema"
     assert payloads[1]["response_format"] == {"type": "json_object"}
     assert payloads[2]["response_format"]["type"] == "json_schema"
-    assert [payload["max_tokens"] for payload in payloads] == [2000, 2000, 2000]
+    assert [payload["max_tokens"] for payload in payloads] == [4000, 4000, 4000]
+    planning_prompt = payloads[0]["messages"][1]["content"]
+    assert "Section keys and count are immutable" in planning_prompt
+    assert (
+        "Do not add, remove, merge, split, reorder or rename sections"
+        in planning_prompt
+    )
     persisted_sections = [call.args[0] for call in session.add.call_args_list]
     assert [section.section_key for section in persisted_sections] == [
-        "deterministic-01",
-        "deterministic-02",
+        "section-001",
+        "section-002",
+        "section-003",
     ]
     assert [section.section_plan["target_words"] for section in persisted_sections] == [
-        725,
-        725,
+        596,
+        596,
+        596,
     ]
     assert [section.section_plan["key"] for section in persisted_sections] == [
-        "deterministic-01",
-        "deterministic-02",
+        "section-001",
+        "section-002",
+        "section-003",
     ]
     session.flush.assert_awaited_once()
 

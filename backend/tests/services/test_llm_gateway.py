@@ -23,12 +23,17 @@ def _settings(*, attempts: int = 3) -> Settings:
     )
 
 
-def _success() -> httpx.Response:
+def _success(*, finish_reason: str = "stop") -> httpx.Response:
     return httpx.Response(
         200,
         json={
             "model": "provider/model",
-            "choices": [{"message": {"content": '{"ok":true}'}}],
+            "choices": [
+                {
+                    "message": {"content": '{"ok":true}'},
+                    "finish_reason": finish_reason,
+                }
+            ],
             "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
         },
         request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
@@ -82,6 +87,22 @@ async def test_transient_status_is_retried(
     )
     assert result.content == '{"ok":true}'
     assert result.attempt_count == 2
+
+
+@pytest.mark.asyncio
+async def test_finish_reason_is_exposed_in_result_and_provenance() -> None:
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = _success(finish_reason="length")
+
+    result = await LLMGateway(_settings(), client=client).complete(
+        messages=[{"role": "user", "content": "test"}],
+        role=LLMTaskRole.PLANNING,
+        temperature=0.5,
+        max_tokens=100,
+    )
+
+    assert result.finish_reason == "length"
+    assert result.provenance()["finish_reason"] == "length"
 
 
 @pytest.mark.asyncio

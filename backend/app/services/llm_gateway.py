@@ -62,6 +62,7 @@ class LLMCallResult:
     total_tokens: int | None
     latency_seconds: float
     attempt_count: int
+    finish_reason: str | None = None
     fallback_reason: str | None = None
     escalation_reason: str | None = None
 
@@ -81,6 +82,7 @@ class LLMCallResult:
             },
             "latency_seconds": self.latency_seconds,
             "attempt_count": self.attempt_count,
+            "finish_reason": self.finish_reason,
             "fallback_reason": self.fallback_reason,
             "escalation_reason": self.escalation_reason,
         }
@@ -234,12 +236,14 @@ class LLMGateway:
                         )
                     response.raise_for_status()
                 data = response.json()
-                choice = data["choices"][0]["message"]["content"]
+                choice_data = data["choices"][0]
+                choice = choice_data["message"]["content"]
                 if not isinstance(choice, str) or not choice.strip():
                     raise LLMGatewayError(
                         LLMFailureCategory.FORMAT, "LLM returned empty content"
                     )
                 usage = data.get("usage") or {}
+                raw_finish_reason = choice_data.get("finish_reason")
                 result = LLMCallResult(
                     content=choice,
                     task_role=role.value,
@@ -254,6 +258,9 @@ class LLMGateway:
                     total_tokens=usage.get("total_tokens"),
                     latency_seconds=round(time.monotonic() - started, 3),
                     attempt_count=attempt,
+                    finish_reason=str(raw_finish_reason)
+                    if raw_finish_reason is not None
+                    else None,
                     fallback_reason=fallback_reason,
                     escalation_reason=escalation_reason,
                 )
