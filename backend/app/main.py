@@ -19,10 +19,12 @@ setup_logging()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     yield
+    from app.services.embedding_provider import ollama_embedding_provider
     from app.services.external_research import external_research_client
     from app.services.llm_gateway import llm_gateway
 
     await external_research_client.close()
+    await ollama_embedding_provider.close()
     await llm_gateway.close()
 
 

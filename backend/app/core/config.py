@@ -39,10 +39,13 @@ class Settings(BaseSettings):
     generation_capacity_min_ratio: float = 0.55
     generation_capacity_additional_queries: int = 1
 
-    # Embeddings
-    embedding_provider: str = "ninerouter"
-    embedding_model: str = "neovids-embedding"
+    # Direct Ollama embeddings. Chat and vision remain on 9Router.
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    embedding_model: str = "mxbai-embed-large:latest"
     embedding_dim: int = 1024
+    embedding_connect_timeout_seconds: float = 5.0
+    embedding_timeout_seconds: float = 60.0
+    embedding_max_attempts: int = 3
 
     # 9Router OpenAI-compatible boundary. This is deliberately a service base
     # URL without /v1; callers own the endpoint suffix exactly once.
@@ -96,6 +99,14 @@ class Settings(BaseSettings):
         normalized = value.rstrip("/")
         if normalized.casefold().endswith("/v1"):
             raise ValueError("NINEROUTER_BASE_URL must not include the /v1 suffix")
+        return normalized
+
+    @field_validator("ollama_base_url")
+    @classmethod
+    def validate_ollama_base_url(cls, value: str) -> str:
+        normalized = value.rstrip("/")
+        if normalized.casefold().endswith("/api"):
+            raise ValueError("OLLAMA_BASE_URL must not include the /api suffix")
         return normalized
 
     # Parâmetros ajustáveis

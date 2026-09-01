@@ -41,6 +41,7 @@ from app.schemas.generation import (
     WrittenSectionOutput,
 )
 from app.schemas.ideia import IdeiaCreate
+from app.schemas.llm_outputs import LLMOutputError, extract_json_object
 from app.schemas.roteiro import RoteiroEstrutura, script_content_identity
 from app.services.duration_contract import (
     count_words,
@@ -625,6 +626,10 @@ class ScriptGenerationJobService:
         }
         run.total_sections = len(section_plans)
         await self.session.flush()
+        # ``atualizado_em`` is populated by PostgreSQL's on-update expression and
+        # SQLAlchemy expires it after this flush. Refresh before returning the ORM
+        # object so FastAPI can serialize the 202 response without async lazy I/O.
+        await self.session.refresh(run)
         return run
 
     async def get(self, run_id: UUID) -> ScriptGenerationRun | None:
@@ -2867,8 +2872,10 @@ class ScriptGenerationJobService:
 
         _raise_for_truncated_structured_output(result)
         try:
-            return model.model_validate_json(result.content), result.provenance()
-        except (ValidationError, json.JSONDecodeError) as first_error:
+            return model.model_validate(
+                extract_json_object(result.content)
+            ), result.provenance()
+        except (ValidationError, LLMOutputError) as first_error:
             structural_contract = repair_contract or (
                 "Satisfy this JSON Schema exactly: "
                 f"{json.dumps(model.model_json_schema(), ensure_ascii=False)}"
@@ -2898,8 +2905,8 @@ class ScriptGenerationJobService:
             )
             _raise_for_truncated_structured_output(repair)
             try:
-                parsed = model.model_validate_json(repair.content)
-            except ValidationError as repair_error:
+                parsed = model.model_validate(extract_json_object(repair.content))
+            except (ValidationError, LLMOutputError) as repair_error:
                 raise LLMGatewayError(
                     LLMFailureCategory.FORMAT,
                     "structured output remained invalid after bounded repair",

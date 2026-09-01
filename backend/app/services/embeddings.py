@@ -1,16 +1,34 @@
-"""Serviço de embeddings pelo boundary compartilhado do 9Router."""
+"""Ideas Hub embedding service over the direct Ollama boundary."""
+
+from collections.abc import Sequence
 
 from app.core.config import settings
-from app.services.llm_gateway import LLMGateway, llm_gateway
+from app.services.embedding_provider import (
+    EmbeddingProvider,
+    ollama_embedding_provider,
+)
 
 
 class EmbeddingService:
     """Gera vetores com dimensão compatível com o schema persistido."""
 
-    def __init__(self, gateway: LLMGateway = llm_gateway):
-        self.gateway = gateway
-        self.model = settings.embedding_model
-        self.dimensions = settings.embedding_dim
+    def __init__(
+        self,
+        provider: EmbeddingProvider = ollama_embedding_provider,
+        *,
+        model: str = settings.embedding_model,
+        dimensions: int = settings.embedding_dim,
+    ):
+        self.provider = provider
+        self.model = model
+        self.dimensions = dimensions
+
+    async def generate_batch(self, texts: Sequence[str]) -> list[list[float]]:
+        return await self.provider.embed(
+            texts,
+            model=self.model,
+            expected_dimensions=self.dimensions,
+        )
 
     async def generate(self, text: str) -> list[float]:
         """
@@ -22,11 +40,7 @@ class EmbeddingService:
         Returns:
             Lista de floats representando o vetor de embedding
         """
-        vectors = await self.gateway.embed(
-            input=text,
-            model_alias=self.model,
-            expected_dimensions=self.dimensions,
-        )
+        vectors = await self.generate_batch([text])
         return vectors[0]
 
     async def generate_for_ideia(

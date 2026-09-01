@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -258,6 +258,53 @@ async def test_reaudit_process_never_calls_writer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_enqueue_reaudit_refreshes_run_before_response_serialization() -> None:
+    source = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        ideia=SimpleNamespace(perfil_producao="faceless_general"),
+        estrutura={
+            "titulo": "Texto editado",
+            "duracao_total_segundos": 60,
+            "blocos": [
+                {
+                    "tipo": "desenvolvimento",
+                    "duracao_segundos": 60,
+                    "conteudo": "Texto humano que precisa de uma auditoria atual.",
+                }
+            ],
+            "inherited_evidence_provenance": {
+                "claim_ledger": [],
+                "sources": [],
+            },
+        },
+    )
+    repository = AsyncMock()
+    repository.get_by_id.return_value = source
+    repository.get_latest_version_by_ideia.return_value = source
+    run = SimpleNamespace(id=uuid4(), plan={}, total_sections=0)
+    session = MagicMock()
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+    service = ScriptGenerationJobService(session, gateway=AsyncMock(), config=_config())
+    service.enqueue = AsyncMock(return_value=run)  # type: ignore[method-assign]
+
+    with patch(
+        "app.services.script_generation_jobs.RoteiroRepository",
+        return_value=repository,
+    ):
+        result = await service.enqueue_reaudit(
+            source.id,
+            idempotency_key="reaudit-response-refresh",
+        )
+
+    assert result is run
+    assert run.total_sections == 1
+    session.flush.assert_awaited_once()
+    session.refresh.assert_awaited_once_with(run)
+
+
+@pytest.mark.asyncio
 async def test_game_media_context_uses_real_ids_and_preserves_unmatched() -> None:
     project_id = uuid4()
     session_id = uuid4()
@@ -474,6 +521,23 @@ async def test_valid_global_fragment_does_not_call_repair() -> None:
     parsed, provenance = await service._parse_or_repair(
         SimpleNamespace(), result, GlobalEditorialPlanOutput
     )
+    assert parsed.thesis.startswith("Uma tese")
+    assert provenance == result.provenance()
+    service._complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_json_only_markdown_fence_is_locally_unwrapped_without_repair() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    service._complete = AsyncMock()  # type: ignore[method-assign]
+    result = _result(f"```json\n{_global_json()}\n```")
+
+    parsed, provenance = await service._parse_or_repair(
+        SimpleNamespace(), result, GlobalEditorialPlanOutput
+    )
+
     assert parsed.thesis.startswith("Uma tese")
     assert provenance == result.provenance()
     service._complete.assert_not_awaited()

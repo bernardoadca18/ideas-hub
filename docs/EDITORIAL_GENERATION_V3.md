@@ -68,12 +68,17 @@ errors, timeouts, 408, 429 and transient 5xx are retried. 400/401/403/422 are te
 repair call may repair serialization/schema shape but must preserve content and claims.
 
 Routes are semantic combos, not provider names: `neovids-fast`, `neovids-standard`,
-`neovids-strong`, `neovids-vision`, and `neovids-embedding`. Policies are:
+`neovids-strong` and `neovids-vision`. Policies are:
 
 - `flash_only`: standard route for every editorial phase;
 - `standard`: task routing without strong escalation by default;
 - `hybrid`: strong planning/critic, standard section writer;
 - `strong`: strong route throughout.
+
+Embeddings are a separate infrastructure boundary: Ideas Hub calls the configured
+Ollama `/api/embed` endpoint directly with `mxbai-embed-large:latest` and rejects
+any response that is not exactly 1024-dimensional. Embedding calls do not pass
+through `LLMGateway` or 9Router.
 
 Repeated local budget failure may deterministically escalate when a distinct strong route exists;
 the reason is persisted. Provider capability remains a property of the configured combo because decomposition,
