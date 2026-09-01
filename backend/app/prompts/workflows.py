@@ -17,6 +17,7 @@ class WorkflowSpec:
     formato_saida: str
     structured_visual_queries: bool = False
     prompt_version: str = "v1"
+    editorial_guidance: str | None = None
 
 
 IDEACAO_BRUTA = WorkflowSpec(
@@ -92,6 +93,11 @@ narrativos coerentes.
   "justificativa": "Explicação objetiva das escolhas estruturais e de ritmo, incluindo por que a duração final é adequada"
 }""",
     prompt_version="roteiro_padrao_v2",
+    editorial_guidance=(
+        "Organize a narração pelo conteúdo real, sem template rígido. Cada seção deve "
+        "avançar a tese com prosa completa, específica e oral; preserve continuidade, "
+        "evite filler e use a duração como contrato sustentado por conteúdo."
+    ),
 )
 
 ROTEIRO_ANALISE_JOGOS = WorkflowSpec(
@@ -223,6 +229,13 @@ CONSULTAS VISUAIS ESTRUTURADAS (visual_queries):
 }""",
     structured_visual_queries=True,
     prompt_version="roteiro_analise_jogos_v2",
+    editorial_guidance=(
+        "Transforme as notas reais do autor em análise temática, não em diário cronológico. "
+        "A autoridade é: (1) notas humanas para experiência/opinião, (2) evidência "
+        "audiovisual como apoio visual/temporal, (3) grounding externo apenas para fatos. "
+        "Preserve incerteza e unmatched; matched não prova interpretação. Não invente "
+        "experiência, reação, UUID ou timestamp."
+    ),
 )
 
 _WORKFLOWS: dict[str, WorkflowSpec] = {

@@ -12,7 +12,7 @@ def _settings() -> Settings:
     return Settings(
         tavily_api_key="test-key",
         tavily_max_attempts=2,
-        llm_model="test-model",
+        llm_standard_model="test-model",
     )
 
 
@@ -40,7 +40,14 @@ async def test_research_dedicated_boundary_returns_bounded_untrusted_sources() -
     assert len(sources) == 1
     assert sources[0].snippet == "observed material"
     assert sources[0].query == "GTA trailer"
+    assert sources[0].domain == "example.test"
     assert "test-key" not in sources[0].to_dict().values()
+
+    second = await ExternalResearchClient(_settings(), client=client).search(
+        "different query",
+        max_results=5,
+    )
+    assert second[0].source_id == sources[0].source_id
 
 
 @pytest.mark.asyncio

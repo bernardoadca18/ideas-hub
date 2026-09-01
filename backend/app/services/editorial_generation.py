@@ -315,14 +315,27 @@ def validate_section_words(actual_words: int, budget: SectionBudget) -> dict[str
 
 
 def content_capacity_report(
-    *, evidence_claims: int, evidence_chars: int, target_words: int | None
+    *,
+    evidence_claims: int,
+    evidence_chars: int,
+    target_words: int | None,
+    trusted_evidence_claims: int | None = None,
 ) -> dict[str, Any]:
-    capacity_words = max(evidence_claims * 140, round(evidence_chars / 5))
+    trusted = (
+        evidence_claims
+        if trusted_evidence_claims is None
+        else max(0, min(evidence_claims, trusted_evidence_claims))
+    )
+    # Snippet volume is only a weak floor. Canonical claims, weighted by trust,
+    # determine whether factual depth is actually available.
+    claim_capacity = evidence_claims * 70 + trusted * 90
+    capacity_words = max(claim_capacity, round(evidence_chars / 20))
     ratio = capacity_words / target_words if target_words else None
     return {
         "version": "content_capacity_v1",
         "evidence_claims": evidence_claims,
         "evidence_chars": evidence_chars,
+        "trusted_evidence_claims": trusted,
         "estimated_supported_words": capacity_words,
         "target_words": target_words,
         "ratio": round(ratio, 4) if ratio is not None else None,

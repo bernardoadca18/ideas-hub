@@ -39,6 +39,7 @@ class BlocoNarrativo:
     visual_queries: list[VisualQuery] = field(default_factory=list)
     purpose: str | None = None
     beats: list[dict[str, Any]] = field(default_factory=list)
+    planned_beats: list[dict[str, Any]] = field(default_factory=list)
     claims: list[dict[str, Any]] = field(default_factory=list)
     audio_intent: dict[str, Any] | None = None
 
@@ -62,7 +63,7 @@ class RoteiroEstruturado:
 
 
 class RoteiristaService:
-    """Serviço de geração de roteiros via LiteLLM Proxy."""
+    """Gerador legado isolado atrás do gateway provider-neutral."""
 
     # Piso técnico absoluto só para evitar um roteiro de poucos segundos em caso de
     # resposta degenerada do modelo. Não é a "duração-alvo" (isso é responsabilidade
@@ -70,8 +71,6 @@ class RoteiristaService:
     _PISO_TECNICO_SEGUNDOS = 60
 
     def __init__(self):
-        self.litellm_base_url = settings.litellm_base_url
-        self.litellm_api_key = settings.litellm_master_key or "dummy-key"
         self.tavily_api_key = settings.tavily_api_key
 
     async def _call_llm(
@@ -83,7 +82,7 @@ class RoteiristaService:
         role: LLMTaskRole = LLMTaskRole.WRITING,
         prompt_identity: str | None = None,
     ) -> str:
-        """Faz chamada para o LLM via LiteLLM Proxy."""
+        """Faz chamada para o LLM pelo gateway compartilhado."""
         result = await llm_gateway.complete(
             messages=messages,
             role=role,
@@ -252,7 +251,7 @@ class RoteiristaService:
                 .build(task_context=usuario_message)
             )
             composed.trace["model"] = llm_gateway.model_for(LLMTaskRole.WRITING)
-            composed.trace["provider"] = "litellm_openai_compatible"
+            composed.trace["model_gateway"] = "9router"
 
             resposta_llm = await self._call_llm(
                 messages=[

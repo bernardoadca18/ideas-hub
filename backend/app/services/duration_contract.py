@@ -17,7 +17,7 @@ from app.production_profiles import ProductionProfile
 
 DURATION_CONTRACT_VERSION = "script_duration_contract_v1"
 SPEAKABLE_TEXT_VERSION = "speakable_text_blocks_v1"
-EDITORIAL_VALIDATOR_VERSION = "editorial_validator_v1"
+EDITORIAL_VALIDATOR_VERSION = "editorial_validator_v2"
 _WORD_RE = re.compile(r"\b[\wÀ-ÿ]+(?:[-'][\wÀ-ÿ]+)*\b", re.UNICODE)
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 _GENERIC_HOOKS = (
@@ -26,6 +26,23 @@ _GENERIC_HOOKS = (
     "neste vídeo veremos",
     "neste vídeo vamos",
     "desde os primórdios",
+    "o universo de",
+    "está prestes a mudar para sempre",
+)
+_GRANDIOSITY_SIGNALS = (
+    "sem precedentes",
+    "redefine completamente",
+    "novo padrão",
+    "mudará para sempre",
+    "imersão sem precedentes",
+)
+_ROBOTIC_TRANSITION_SIGNALS = (
+    "essa transformação",
+    "essa integração",
+    "essa consolidação",
+    "consequentemente",
+    "fundamentalmente",
+    "estruturalmente",
 )
 
 
@@ -303,6 +320,22 @@ def evaluate_editorial_quality(blocks: Sequence[Any]) -> dict[str, Any]:
     first = normalize_speakable_text(text)[:250].casefold()
     sentences = [item.strip() for item in _SENTENCE_RE.split(text) if item.strip()]
     long_sentences = [count_words(item) for item in sentences if count_words(item) > 38]
+    sentence_lengths = [count_words(item) for item in sentences]
+    paragraphs = [
+        normalize_speakable_text(item)
+        for item in re.split(r"\n\s*\n", text)
+        if normalize_speakable_text(item)
+    ]
+    paragraph_openings = [
+        " ".join(_WORD_RE.findall(item.casefold())[:3]) for item in paragraphs
+    ]
+    repeated_paragraph_openings = sorted(
+        {
+            opening
+            for opening in paragraph_openings
+            if opening and paragraph_openings.count(opening) >= 2
+        }
+    )[:20]
     words = [word.casefold() for word in _WORD_RE.findall(text)]
     ngrams: dict[tuple[str, ...], int] = {}
     for index in range(max(0, len(words) - 5)):
@@ -336,12 +369,38 @@ def evaluate_editorial_quality(blocks: Sequence[Any]) -> dict[str, Any]:
         issues.append("missing_editorial_beats")
     if unverified_claims:
         issues.append("unverified_claims")
+    grandiosity = [item for item in _GRANDIOSITY_SIGNALS if item in lowered]
+    robotic_transitions = [
+        item for item in _ROBOTIC_TRANSITION_SIGNALS if item in lowered
+    ]
+    if grandiosity:
+        issues.append("grandiosity_signals")
+    if robotic_transitions:
+        issues.append("robotic_transition_signals")
+    if repeated_paragraph_openings:
+        issues.append("repeated_paragraph_openings")
     return {
         "version": EDITORIAL_VALIDATOR_VERSION,
         "generic_hook": "generic_hook" in issues,
         "repeated_ngrams": repeated,
         "long_sentence_word_counts": long_sentences,
         "sentence_count": len(sentences),
+        "sentence_length_distribution": {
+            "median": round(statistics.median(sentence_lengths), 2)
+            if sentence_lengths
+            else 0,
+            "p90": sorted(sentence_lengths)[
+                min(len(sentence_lengths) - 1, int(len(sentence_lengths) * 0.9))
+            ]
+            if sentence_lengths
+            else 0,
+            "long_sentence_ratio": round(len(long_sentences) / len(sentence_lengths), 4)
+            if sentence_lengths
+            else 0,
+        },
+        "repeated_paragraph_openings": repeated_paragraph_openings,
+        "grandiosity_signals": grandiosity,
+        "robotic_transition_signals": robotic_transitions,
         "missing_section_purpose_count": missing_purpose,
         "missing_editorial_beats_count": missing_beats,
         "unverified_claim_count": unverified_claims,

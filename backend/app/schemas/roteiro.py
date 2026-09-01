@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -41,6 +43,7 @@ class PersistedNarrativeBlock(BaseModel):
     )
     purpose: str | None = None
     beats: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    planned_beats: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
     claims: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
     audio_intent: dict[str, Any] | None = None
 
@@ -68,6 +71,14 @@ class RoteiroEstrutura(BaseModel):
     media_context: dict[str, Any] | None = None
     duration_contract: dict[str, Any] | None = None
     editorial_quality: dict[str, Any] | None = None
+    editorial_review: dict[str, Any] | None = None
+    evidence_provenance: dict[str, Any] | None = None
+    section_audits: dict[str, Any] | None = None
+    global_critic: dict[str, Any] | None = None
+    generation_run_id: str | None = None
+    audit_status: str | None = None
+    source_generation_run_id: str | None = None
+    inherited_evidence_provenance: dict[str, Any] | None = None
 
     @field_validator("titulo")
     @classmethod
@@ -85,6 +96,26 @@ class RoteiroEstrutura(BaseModel):
                 "duracao_total_segundos cannot be shorter than the block sum"
             )
         return self
+
+
+def script_content_identity(structure: RoteiroEstrutura) -> str:
+    """Hash only current narration-bearing fields; audit metadata is excluded."""
+
+    payload = {
+        "title": structure.titulo,
+        "blocks": [
+            {
+                "type": block.tipo,
+                "duration_seconds": block.duracao_segundos,
+                "content": block.conteudo,
+            }
+            for block in structure.blocos
+        ],
+    }
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class RoteiroBase(BaseModel):
@@ -146,7 +177,11 @@ class ScriptEditRevisionRequest(BaseModel):
 
 
 class ScriptRegenerationRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     feedback: str = Field(min_length=1, max_length=10_000)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
+    model_strategy: Literal["flash_only", "standard", "hybrid", "strong"] = "standard"
 
     @field_validator("feedback")
     @classmethod

@@ -154,6 +154,46 @@ def test_duration_prompt_forbids_filler_and_identifies_calibration() -> None:
     assert "Never fill" in prompt
 
 
+def test_editorial_diagnostics_flag_grandiosity_and_robotic_prose_as_signals() -> None:
+    quality = evaluate_editorial_quality(
+        [
+            {
+                "tipo": "abertura",
+                "duracao_segundos": 60,
+                "conteudo": (
+                    "O universo de testes está prestes a mudar para sempre. "
+                    "Essa transformação redefine completamente tudo. "
+                    "Consequentemente, temos um novo padrão sem precedentes."
+                ),
+                "purpose": "Abrir",
+                "beats": [{"key_point": "Ponto"}],
+            }
+        ]
+    )
+    assert quality["generic_hook"] is True
+    assert "grandiosity_signals" in quality["issues"]
+    assert "robotic_transition_signals" in quality["issues"]
+
+
+def test_supported_natural_technical_explanation_is_not_falsely_flagged() -> None:
+    quality = evaluate_editorial_quality(
+        [
+            {
+                "tipo": "corpo",
+                "duracao_segundos": 60,
+                "conteudo": (
+                    "O relatório mede a latência em milissegundos. O valor caiu de 40 para 25, "
+                    "então a resposta chegou 15 milissegundos antes no teste documentado."
+                ),
+                "purpose": "Explicar o dado",
+                "beats": [{"key_point": "Medição"}],
+            }
+        ]
+    )
+    assert "grandiosity_signals" not in quality["issues"]
+    assert "robotic_transition_signals" not in quality["issues"]
+
+
 def test_claim_tiers_and_music_intent_remain_structured_non_speakable_metadata() -> (
     None
 ):

@@ -27,6 +27,7 @@ from app.schemas.roteiro import (
     RoteiroEstrutura,
     RoteiroUpdate,
     ScriptEditRevisionRequest,
+    script_content_identity,
 )
 from app.services.author_briefing import author_briefing_identity
 from app.services.duration_contract import (
@@ -167,7 +168,7 @@ class RoteiroGenerator:
                     "editorial_validator_version": generated.editorial_quality[
                         "version"
                     ],
-                    "llm_provider": "litellm_openai_compatible",
+                    "model_gateway": "9router",
                 }
             )
 
@@ -525,6 +526,17 @@ class RoteiroGenerator:
                 "blocos": blocks,
                 "tags": request.tags,
                 "referencias": request.referencias,
+                "source_prompt_trace": source_structure.prompt_trace,
+                "prompt_trace": None,
+                "inherited_evidence_provenance": source_structure.evidence_provenance
+                or source_structure.inherited_evidence_provenance,
+                "evidence_provenance": None,
+                "source_generation_run_id": source_structure.generation_run_id
+                or source_structure.source_generation_run_id,
+                "generation_run_id": None,
+                "section_audits": None,
+                "global_critic": None,
+                "audit_status": "human_edit_unvalidated",
             }
         )
         estrutura = RoteiroEstrutura.model_validate(structure_payload)
@@ -539,6 +551,22 @@ class RoteiroGenerator:
         structure_payload["editorial_quality"] = evaluate_editorial_quality(
             estrutura.blocos
         )
+        current = RoteiroEstrutura.model_validate(structure_payload)
+        structure_payload["editorial_review"] = {
+            "version": "editorial_review_v1",
+            "audit_status": "human_edit_unvalidated",
+            "editorial_status": "human_edit_unvalidated",
+            "factuality_status": "unvalidated",
+            "approval_blocked": True,
+            "audit_content_identity": None,
+            "current_content_identity": script_content_identity(current),
+            "global_summary": (
+                "A narração foi alterada manualmente. Os audits da versão pai não "
+                "são válidos para este texto; re-audit é obrigatório."
+            ),
+            "global_issues": [],
+            "section_issues": {},
+        }
         estrutura = RoteiroEstrutura.model_validate(structure_payload)
         return await self._persist_revision(
             ideia=source.ideia,
@@ -650,13 +678,43 @@ class RoteiroGenerator:
             )
 
         estrutura = RoteiroEstrutura.model_validate(roteiro.estrutura)
+        review = estrutura.editorial_review
+        revision_kind = getattr(roteiro, "revision_kind", "legacy")
+        if not review:
+            if revision_kind == "legacy":
+                raise ValueError(
+                    "Roteiro histórico legacy/unvalidated permanece legível, mas não "
+                    "pode ser aprovado pelo fluxo V3 sem re-audit."
+                )
+            raise ValueError(
+                "Roteiros novos exigem auditoria editorial/factual atual antes da aprovação."
+            )
         contract = estrutura.duration_contract
+        if revision_kind != "legacy" and not contract:
+            raise ValueError(
+                "Roteiros novos exigem contrato de duração validado antes da aprovação."
+            )
         if contract and contract.get("revision_required"):
             target = contract.get("target_duration_seconds")
             predicted = contract.get("predicted_duration_seconds")
             raise ValueError(
                 "O contrato de duração exige revisão antes da aprovação "
                 f"(target={target}s, predicted={predicted}s, status={contract.get('status')})."
+            )
+        if review.get("audit_status") != "completed":
+            raise ValueError(
+                "A auditoria editorial/factual não foi concluída; aprovação normal bloqueada."
+            )
+        if review.get("audit_content_identity") != script_content_identity(estrutura):
+            raise ValueError(
+                "A auditoria não corresponde ao conteúdo atual; re-audit obrigatório."
+            )
+        if (
+            review.get("approval_blocked")
+            or review.get("factuality_status") == "blocking"
+        ):
+            raise ValueError(
+                "Há bloqueadores factuais não resolvidos; revise o roteiro antes da aprovação."
             )
 
         updated = await self.roteiro_repo.update(

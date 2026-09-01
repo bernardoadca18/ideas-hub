@@ -4,9 +4,15 @@ from uuid import uuid4
 
 import pytest
 from app.agents.roteirista import BlocoNarrativo, RoteiroEstruturado
+from app.api.routers.roteiros import regenerar_com_feedback
 from app.schemas.analise_jogo import AnaliseJogoRequest
 from app.schemas.llm_outputs import LLMOutputError
-from app.schemas.roteiro import RoteiroEstrutura, ScriptEditRevisionRequest
+from app.schemas.roteiro import (
+    RoteiroEstrutura,
+    ScriptEditRevisionRequest,
+    ScriptRegenerationRequest,
+    script_content_identity,
+)
 from app.services.author_briefing import author_briefing_identity
 from app.services.duration_contract import DurationCalibration
 from app.services.roteiros.gerador_roteiro import (
@@ -120,7 +126,7 @@ async def test_manual_create_uses_server_owned_revision_and_briefing_snapshot() 
     assert persisted["estrutura"].titulo == structure.titulo
     assert persisted["estrutura"].duration_contract["status"] == "estimate_only"
     assert (
-        persisted["estrutura"].editorial_quality["version"] == "editorial_validator_v1"
+        persisted["estrutura"].editorial_quality["version"] == "editorial_validator_v2"
     )
 
 
@@ -209,6 +215,14 @@ async def test_human_edit_creates_revision_and_preserves_visual_provenance() -> 
                 }
             ],
             "tags": [],
+            "editorial_review": {
+                "audit_status": "completed",
+                "approval_blocked": False,
+            },
+            "section_audits": {"section-001": {"revision_required": False}},
+            "global_critic": {"summary": "Audit antigo"},
+            "evidence_provenance": {"generation_run_id": "parent-run"},
+            "generation_run_id": "parent-run",
         },
     )
     generator.roteiro_repo = AsyncMock()
@@ -234,6 +248,15 @@ async def test_human_edit_creates_revision_and_preserves_visual_provenance() -> 
     assert persisted_query.source_note_id == note_id
     assert revision["revision_kind"] == "human_edit"
     assert revision["parent_roteiro_id"] == source.id
+    edited = revision["estrutura"]
+    assert edited.editorial_review["audit_status"] == "human_edit_unvalidated"
+    assert edited.editorial_review["approval_blocked"] is True
+    assert edited.section_audits is None
+    assert edited.global_critic is None
+    assert edited.evidence_provenance is None
+    assert edited.inherited_evidence_provenance == {"generation_run_id": "parent-run"}
+    assert edited.generation_run_id is None
+    assert edited.source_generation_run_id == "parent-run"
 
 
 @pytest.mark.asyncio
@@ -265,6 +288,155 @@ async def test_stale_draft_rejection_cannot_reset_idea_state() -> None:
 
     generator.roteiro_repo.update.assert_not_awaited()
     generator.ideia_repo.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unresolved_factual_blocker_blocks_normal_approval() -> None:
+    generator = RoteiroGenerator(AsyncMock())
+    script_id = uuid4()
+    structure = {
+        "titulo": "Auditado",
+        "duracao_total_segundos": 60,
+        "blocos": [{"tipo": "corpo", "duracao_segundos": 60, "conteudo": "Texto"}],
+        "editorial_review": {
+            "audit_status": "completed",
+            "editorial_status": "pass",
+            "factuality_status": "blocking",
+            "approval_blocked": True,
+        },
+    }
+    structure["editorial_review"]["audit_content_identity"] = script_content_identity(
+        RoteiroEstrutura.model_validate(structure)
+    )
+    script = SimpleNamespace(
+        id=script_id,
+        ideia_id=uuid4(),
+        status="rascunho",
+        estrutura=structure,
+    )
+    generator.roteiro_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = script
+    generator.roteiro_repo.get_latest_version_by_ideia.return_value = script
+
+    with pytest.raises(ValueError, match="bloqueadores factuais"):
+        await generator.aprovar_roteiro(script_id)
+
+    generator.roteiro_repo.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_style_warning_does_not_block_human_approval() -> None:
+    generator = RoteiroGenerator(AsyncMock())
+    script_id = uuid4()
+    structure = {
+        "titulo": "Auditado",
+        "duracao_total_segundos": 60,
+        "blocos": [{"tipo": "corpo", "duracao_segundos": 60, "conteudo": "Texto"}],
+        "editorial_review": {
+            "audit_status": "completed",
+            "editorial_status": "warn",
+            "factuality_status": "pass",
+            "approval_blocked": False,
+        },
+    }
+    structure["editorial_review"]["audit_content_identity"] = script_content_identity(
+        RoteiroEstrutura.model_validate(structure)
+    )
+    script = SimpleNamespace(
+        id=script_id,
+        ideia_id=uuid4(),
+        status="rascunho",
+        estrutura=structure,
+    )
+    generator.roteiro_repo = AsyncMock()
+    generator.ideia_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = script
+    generator.roteiro_repo.get_latest_version_by_ideia.return_value = script
+    generator.roteiro_repo.update.return_value = SimpleNamespace(status="aprovado")
+
+    result = await generator.aprovar_roteiro(script_id)
+
+    assert result["status"] == "aprovado"
+    generator.roteiro_repo.update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_new_v3_script_without_current_audit_cannot_be_approved() -> None:
+    generator = RoteiroGenerator(AsyncMock())
+    script = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        status="rascunho",
+        revision_kind="staged_generation",
+        estrutura={
+            "titulo": "Sem audit",
+            "duracao_total_segundos": 60,
+            "blocos": [{"tipo": "corpo", "duracao_segundos": 60, "conteudo": "Texto"}],
+            "duration_contract": {"revision_required": False},
+        },
+    )
+    generator.roteiro_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = script
+    generator.roteiro_repo.get_latest_version_by_ideia.return_value = script
+
+    with pytest.raises(ValueError, match="exigem auditoria"):
+        await generator.aprovar_roteiro(script.id)
+
+
+@pytest.mark.asyncio
+async def test_completed_audit_for_different_content_is_stale() -> None:
+    generator = RoteiroGenerator(AsyncMock())
+    script = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        status="rascunho",
+        revision_kind="human_edit",
+        estrutura={
+            "titulo": "Editado",
+            "duracao_total_segundos": 60,
+            "blocos": [{"tipo": "corpo", "duracao_segundos": 60, "conteudo": "Novo"}],
+            "duration_contract": {"revision_required": False},
+            "editorial_review": {
+                "audit_status": "completed",
+                "approval_blocked": False,
+                "factuality_status": "pass",
+                "audit_content_identity": "identity-from-parent",
+            },
+        },
+    )
+    generator.roteiro_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = script
+    generator.roteiro_repo.get_latest_version_by_ideia.return_value = script
+
+    with pytest.raises(ValueError, match="não corresponde ao conteúdo atual"):
+        await generator.aprovar_roteiro(script.id)
+
+
+@pytest.mark.asyncio
+async def test_regeneration_compatibility_route_delegates_to_v3_run() -> None:
+    db = AsyncMock()
+    expected = SimpleNamespace(id=uuid4())
+    with (
+        patch(
+            "app.services.script_generation_jobs.ScriptGenerationJobService.enqueue_revision",
+            AsyncMock(return_value=expected),
+        ) as enqueue,
+        patch(
+            "app.services.roteiros.gerador_roteiro.roteirista_service.gerar_roteiro",
+            AsyncMock(),
+        ) as legacy_writer,
+    ):
+        result = await regenerar_com_feedback(
+            uuid4(),
+            ScriptRegenerationRequest(
+                feedback="Preserve a evidência e encurte o hook."
+            ),
+            db,
+        )
+
+    assert result is expected
+    enqueue.assert_awaited_once()
+    legacy_writer.assert_not_awaited()
 
 
 def test_absent_explicit_duration_remains_estimate_only() -> None:

@@ -15,8 +15,9 @@ from app.services.llm_gateway import (
 
 def _settings(*, attempts: int = 3) -> Settings:
     return Settings(
-        litellm_base_url="http://litellm.test",
-        llm_model="standard-alias",
+        ninerouter_base_url="http://9router.test",
+        ninerouter_api_key="test-key",
+        llm_standard_model="standard-alias",
         llm_fast_model="fast-alias",
         llm_strong_model="strong-alias",
         llm_max_attempts=attempts,
@@ -41,7 +42,7 @@ def _success(*, finish_reason: str = "stop") -> httpx.Response:
                 "total_tokens": 5,
             },
         },
-        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
     )
 
 
@@ -51,7 +52,7 @@ async def test_non_transient_status_is_not_retried(status: int) -> None:
     response = httpx.Response(
         status,
         text="rejected",
-        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
     )
     client = AsyncMock(spec=httpx.AsyncClient)
     client.post.return_value = response
@@ -79,7 +80,7 @@ async def test_transient_status_is_retried(
         status,
         text="temporary",
         headers={"Retry-After": "0"},
-        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
     )
     client = AsyncMock(spec=httpx.AsyncClient)
     client.post.side_effect = [failure, _success()]
@@ -150,7 +151,7 @@ async def test_native_schema_falls_back_only_when_provider_rejects_feature() -> 
     unsupported = httpx.Response(
         400,
         text="response_format json_schema unsupported",
-        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
     )
     client = AsyncMock(spec=httpx.AsyncClient)
     client.post.side_effect = [unsupported, _success()]
@@ -169,29 +170,68 @@ async def test_native_schema_falls_back_only_when_provider_rejects_feature() -> 
 
 
 @pytest.mark.asyncio
-async def test_json_schema_fallback_for_gemini_invalid_argument() -> None:
+async def test_explicit_json_object_mode_does_not_probe_json_schema() -> None:
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = _success()
+    result = await LLMGateway(_settings(), client=client).complete(
+        messages=[{"role": "user", "content": "test"}],
+        role=LLMTaskRole.CRITIC,
+        temperature=0,
+        max_tokens=100,
+        response_schema={"type": "object"},
+        structured_mode="json_object",
+    )
+    assert result.fallback_reason is None
+    payload = client.post.await_args.kwargs["json"]
+    assert payload["response_format"] == {"type": "json_object"}
+    assert client.post.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_generic_invalid_argument_does_not_trigger_schema_fallback() -> None:
     gemini_error = httpx.Response(
         400,
-        text='{"error":{"message":"litellm.BadRequestError: VertexAIException BadRequestError - {\\"error\\": {\\"code\\": 400, \\"message\\": \\"Request contains an invalid argument.\\", \\"status\\": \\"INVALID_ARGUMENT\\"}}}\'',
-        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
+        text='{"error":{"message":"Upstream BadRequestError: {\\"error\\": {\\"code\\": 400, \\"message\\": \\"Request contains an invalid argument.\\", \\"status\\": \\"INVALID_ARGUMENT\\"}}}\'',
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
     )
     client = AsyncMock(spec=httpx.AsyncClient)
-    client.post.side_effect = [gemini_error, _success()]
+    client.post.return_value = gemini_error
+    with pytest.raises(LLMGatewayError) as captured:
+        await LLMGateway(_settings(), client=client).complete(
+            messages=[{"role": "user", "content": "test"}],
+            role=LLMTaskRole.PLANNING,
+            temperature=0.5,
+            max_tokens=1000,
+            response_schema={"type": "object"},
+        )
+    assert captured.value.category is LLMFailureCategory.REQUEST
+    assert client.post.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_structured_invalid_argument_with_parameter_falls_back() -> None:
+    rejected = httpx.Response(
+        400,
+        json={
+            "error": {
+                "status": "INVALID_ARGUMENT",
+                "param": "response_format",
+                "message": "unsupported parameter",
+            }
+        },
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
+    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.side_effect = [rejected, _success()]
     result = await LLMGateway(_settings(), client=client).complete(
         messages=[{"role": "user", "content": "test"}],
         role=LLMTaskRole.PLANNING,
         temperature=0.5,
         max_tokens=1000,
-        response_schema={
-            "type": "object",
-            "properties": {"thesis": {"type": "string"}},
-        },
+        response_schema={"type": "object"},
     )
     assert result.fallback_reason == "provider_json_schema_unsupported"
-    assert result.content == '{"ok":true}'
     assert client.post.await_count == 2
-    second_call_payload = client.post.await_args_list[1].kwargs["json"]
-    assert second_call_payload.get("response_format") == {"type": "json_object"}
 
 
 @pytest.mark.asyncio
@@ -199,7 +239,7 @@ async def test_json_schema_rejected_without_schema_returns_error() -> None:
     gemini_error = httpx.Response(
         400,
         text="Request contains an invalid argument",
-        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
     )
     client = AsyncMock(spec=httpx.AsyncClient)
     client.post.return_value = gemini_error
@@ -219,7 +259,7 @@ async def test_regular_400_with_schema_does_not_use_capability_fallback() -> Non
     rejected = httpx.Response(
         400,
         text="request rejected because the input is too large",
-        request=httpx.Request("POST", "http://litellm.test/v1/chat/completions"),
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
     )
     client = AsyncMock(spec=httpx.AsyncClient)
     client.post.return_value = rejected
@@ -232,4 +272,118 @@ async def test_regular_400_with_schema_does_not_use_capability_fallback() -> Non
             response_schema={"type": "object"},
         )
     assert captured.value.category is LLMFailureCategory.REQUEST
+    assert client.post.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"error":{"status":"PERMISSION_DENIED","message":"upstream permission denied while parsing response_format"}}',
+        '{"error":{"message":"authentication failed for json_schema request"}}',
+        '{"error":{"message":"billing quota exhausted for response_format"}}',
+        '{"error":{"message":"model not found; json_schema unavailable"}}',
+        '{"error":{"message":"unrelated malformed request"}}',
+    ],
+    ids=["permission", "auth", "quota-billing", "invalid-model", "unrelated"],
+)
+async def test_wrapped_upstream_failures_never_use_schema_fallback(body: str) -> None:
+    rejected = httpx.Response(
+        400,
+        text=body,
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
+    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = rejected
+    with pytest.raises(LLMGatewayError) as captured:
+        await LLMGateway(_settings(), client=client).complete(
+            messages=[{"role": "user", "content": "test"}],
+            role=LLMTaskRole.CRITIC,
+            temperature=0,
+            max_tokens=100,
+            response_schema={"type": "object"},
+        )
+    assert captured.value.category is LLMFailureCategory.REQUEST
+    assert client.post.await_count == 1
+
+
+def test_role_mapping_uses_semantic_routes() -> None:
+    gateway = LLMGateway(_settings())
+
+    assert gateway.model_for(LLMTaskRole.FAST) == "fast-alias"
+    assert gateway.model_for(LLMTaskRole.REPAIR) == "fast-alias"
+    assert gateway.model_for(LLMTaskRole.PLANNING) == "standard-alias"
+    assert gateway.model_for(LLMTaskRole.WRITING) == "standard-alias"
+    assert gateway.model_for(LLMTaskRole.CRITIC) == "standard-alias"
+
+
+@pytest.mark.asyncio
+async def test_chat_uses_one_v1_suffix_authorization_and_combo_name() -> None:
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = _success()
+
+    await LLMGateway(_settings(), client=client).complete(
+        messages=[{"role": "user", "content": "test"}],
+        role=LLMTaskRole.WRITING,
+        model_alias="neovids-standard",
+        temperature=0.4,
+        max_tokens=100,
+    )
+
+    call = client.post.await_args
+    assert call.args[0] == "http://9router.test/v1/chat/completions"
+    assert call.kwargs["headers"]["Authorization"] == "Bearer test-key"
+    assert call.kwargs["json"]["model"] == "neovids-standard"
+    assert call.kwargs["json"]["stream"] is False
+
+
+def test_base_url_rejects_v1_suffix() -> None:
+    with pytest.raises(ValueError, match="must not include the /v1 suffix"):
+        Settings(ninerouter_base_url="http://9router.test/v1")
+
+
+@pytest.mark.asyncio
+async def test_embedding_uses_gateway_route_and_validates_dimension() -> None:
+    response = httpx.Response(
+        200,
+        json={"data": [{"embedding": [0.1, 0.2, 0.3]}]},
+        request=httpx.Request("POST", "http://9router.test/v1/embeddings"),
+    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = response
+
+    vectors = await LLMGateway(_settings(), client=client).embed(
+        input="probe",
+        model_alias="neovids-embedding",
+        expected_dimensions=3,
+    )
+
+    assert vectors == [[0.1, 0.2, 0.3]]
+    call = client.post.await_args
+    assert call.args[0] == "http://9router.test/v1/embeddings"
+    assert call.kwargs["json"] == {
+        "model": "neovids-embedding",
+        "input": "probe",
+        "dimensions": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_embedding_dimension_mismatch_is_terminal() -> None:
+    response = httpx.Response(
+        200,
+        json={"data": [{"embedding": [0.1, 0.2]}]},
+        request=httpx.Request("POST", "http://9router.test/v1/embeddings"),
+    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = response
+
+    with pytest.raises(LLMGatewayError) as captured:
+        await LLMGateway(_settings(), client=client).embed(
+            input="probe",
+            model_alias="neovids-embedding",
+            expected_dimensions=3,
+        )
+
+    assert captured.value.category is LLMFailureCategory.FORMAT
     assert client.post.await_count == 1

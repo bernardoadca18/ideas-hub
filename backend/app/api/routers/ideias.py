@@ -14,6 +14,7 @@ from app.core.database import get_db
 from app.production_profiles import get_profile
 from app.repositories.ideia_repository import IdeiaRepository
 from app.repositories.nicho_repository import NichoRepository
+from app.schemas.generation import GenerationRunResponse
 from app.schemas.ideia import IdeiaCreate, IdeiaResponse, IdeiaUpdate
 from app.schemas.llm_outputs import LLMOutputError
 from app.services.editorial_generation import DurationMode, resolve_duration_intent
@@ -360,52 +361,22 @@ async def rejeitar_ideia(
     return ideia_atualizada
 
 
-class GerarRoteiroResponse(BaseModel):
-    """Response da geração de roteiro."""
-
-    ideia_id: str
-    roteiro_id: str
-    versao: int
-    titulo: str
-    duracao_total_segundos: int
-    num_blocos: int
-    status: str
-
-
 @router.post(
-    "/{ideia_id}/roteiro", response_model=GerarRoteiroResponse, status_code=201
+    "/{ideia_id}/roteiro", response_model=GenerationRunResponse, status_code=202
 )
 async def gerar_roteiro(
     ideia_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """
-    Gera um roteiro a partir de uma ideia aprovada.
-
-    O roteiro é gerado pelo Agente Roteirista com:
-    - Grounding via Tavily API (se configurado)
-    - Estrutura em blocos narrativos
-    - Dicas visuais e de áudio
-    - Se for continuação (parte 2+), usa roteiro anterior como contexto
-
-    O roteiro é criado com status "rascunho" para revisão.
+    Compatibility endpoint: delegates to a durable Editorial V3 run.
     """
-    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
-
-    generator = get_roteiro_generator(db)
+    from app.services.script_generation_jobs import ScriptGenerationJobService
 
     try:
-        resultado = await generator.generate_from_ideia(ideia_id=ideia_id)
+        return await ScriptGenerationJobService(db).enqueue(
+            ideia_id,
+            idempotency_key=f"legacy-initial-{ideia_id}",
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        from app.services.roteiros.gerador_roteiro import ScriptGenerationError
-
-        if isinstance(exc, ScriptGenerationError):
-            raise HTTPException(
-                status_code=502,
-                detail={"category": exc.category, "message": exc.public_message},
-            ) from exc
-        raise
-
-    return resultado
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -27,7 +27,7 @@ from app.services.script_generation_jobs import assemble_written_sections
 
 def _settings() -> Settings:
     return Settings(
-        llm_model="standard-test",
+        llm_standard_model="standard-test",
         generation_single_pass_max_seconds=480,
         generation_staged_max_seconds=2700,
         generation_section_target_seconds=300,
@@ -273,6 +273,7 @@ def test_long_form_sections_assemble_without_a_monolithic_model_output(
                 output={
                     "content": content,
                     "claims_used": [],
+                    "beats_covered": ["evidência"],
                     "visual_intent": None,
                     "audio_intent": None,
                 },
@@ -282,3 +283,9 @@ def test_long_form_sections_assemble_without_a_monolithic_model_output(
     assert len(blocks) == len(plan.sections)
     assert sum(count_words(block.conteudo) for block in blocks) == plan.target_words
     assert max(count_words(block.conteudo) for block in blocks) < 900
+    assert [item["key_point"] for item in blocks[0].beats] == ["evidência"]
+    assert [item["key_point"] for item in blocks[0].planned_beats] == [
+        "evidência",
+        "interpretação",
+        "transição",
+    ]

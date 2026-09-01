@@ -7,6 +7,7 @@ import hashlib
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -26,6 +27,7 @@ class ResearchSource:
     snippet: str
     source_type: str
     retrieved_at: str
+    domain: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -98,7 +100,7 @@ class ExternalResearchClient:
                     raise TypeError("Tavily response.results is not a list")
                 retrieved_at = datetime.now(UTC).isoformat()
                 sources: list[ResearchSource] = []
-                for index, item in enumerate(results[:max_results], start=1):
+                for item in results[:max_results]:
                     if not isinstance(item, dict):
                         continue
                     url = str(item.get("url") or "").strip()
@@ -107,13 +109,16 @@ class ExternalResearchClient:
                         continue
                     sources.append(
                         ResearchSource(
-                            source_id=f"external-{_identity(query + url)[:16]}-{index}",
+                            source_id=f"external-{_identity(url)[:20]}",
                             query=query,
                             title=str(item.get("title") or "Sem título")[:300],
                             url=url,
                             snippet=snippet,
                             source_type="external_search_result",
                             retrieved_at=retrieved_at,
+                            domain=(urlparse(url).hostname or "")
+                            .casefold()
+                            .removeprefix("www."),
                         )
                     )
                 logger.info(

@@ -43,6 +43,16 @@ class ScriptGenerationRun(Base, TimestampMixin):
         ForeignKey("roteiros.id", ondelete="SET NULL"),
         nullable=True,
     )
+    parent_roteiro_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("roteiros.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    generation_intent: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="initial", server_default="initial"
+    )
+    revision_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(
         String(128), nullable=False, unique=True
     )
@@ -85,7 +95,10 @@ class ScriptGenerationRun(Base, TimestampMixin):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     ideia: Mapped[Ideia] = relationship()
-    roteiro: Mapped[Roteiro | None] = relationship()
+    roteiro: Mapped[Roteiro | None] = relationship(foreign_keys=[roteiro_id])
+    parent_roteiro: Mapped[Roteiro | None] = relationship(
+        foreign_keys=[parent_roteiro_id]
+    )
     sections: Mapped[list[ScriptGenerationSection]] = relationship(
         back_populates="run",
         cascade="all, delete-orphan",

@@ -4,6 +4,7 @@ Todos os parâmetros que precisam ser ajustados empiricamente (threshold de
 similaridade, quantidade de ideias por trend etc.) ficam aqui, lidos do .env.
 """
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,11 +20,12 @@ class Settings(BaseSettings):
     api_port: int = 8000
     cors_origins: str = "http://localhost:5173"
 
-    # LLM / Agentes
-    llm_model: str = ""  # Modelo a ser usado via LiteLLM Proxy (ex: gpt-4o, gemini-pro)
-    llm_fast_model: str = ""
-    llm_standard_model: str = ""
-    llm_strong_model: str = ""
+    # LLM / Agentes. Values are semantic 9Router combo/alias names; provider
+    # composition and fallback remain entirely inside the gateway.
+    llm_fast_model: str = "neovids-fast"
+    llm_standard_model: str = "neovids-standard"
+    llm_strong_model: str = "neovids-strong"
+    llm_vision_model: str = "neovids-vision"
     llm_connect_timeout_seconds: float = 10.0
     llm_read_timeout_seconds: float = 180.0
     llm_max_attempts: int = 3
@@ -34,17 +36,18 @@ class Settings(BaseSettings):
     tavily_max_attempts: int = 2
     generation_research_max_queries: int = 4
     generation_research_results_per_query: int = 5
+    generation_capacity_min_ratio: float = 0.55
+    generation_capacity_additional_queries: int = 1
 
     # Embeddings
-    embedding_provider: str = "openai"
-    embedding_model: str = "ollama-embed"
+    embedding_provider: str = "ninerouter"
+    embedding_model: str = "neovids-embedding"
     embedding_dim: int = 1024
 
-    # LiteLLM Proxy
-    litellm_base_url: str = (
-        "http://172.20.0.1:4000"  # Endpoint do proxy local (gateway Docker)
-    )
-    litellm_master_key: str = ""  # Chave mestra do proxy
+    # 9Router OpenAI-compatible boundary. This is deliberately a service base
+    # URL without /v1; callers own the endpoint suffix exactly once.
+    ninerouter_base_url: str = "http://9router:20128"
+    ninerouter_api_key: str = ""
 
     # Media Indexer (audiovisual memory service)
     media_indexer_base_url: str = "http://localhost:8012"
@@ -77,15 +80,23 @@ class Settings(BaseSettings):
 
     @property
     def resolved_llm_fast_model(self) -> str:
-        return self.llm_fast_model or self.llm_model
+        return self.llm_fast_model
 
     @property
     def resolved_llm_standard_model(self) -> str:
-        return self.llm_standard_model or self.llm_model
+        return self.llm_standard_model
 
     @property
     def resolved_llm_strong_model(self) -> str:
-        return self.llm_strong_model or self.resolved_llm_standard_model
+        return self.llm_strong_model
+
+    @field_validator("ninerouter_base_url")
+    @classmethod
+    def validate_ninerouter_base_url(cls, value: str) -> str:
+        normalized = value.rstrip("/")
+        if normalized.casefold().endswith("/v1"):
+            raise ValueError("NINEROUTER_BASE_URL must not include the /v1 suffix")
+        return normalized
 
     # Parâmetros ajustáveis
     ideia_similarity_threshold: float = 0.85

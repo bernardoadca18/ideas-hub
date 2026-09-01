@@ -158,7 +158,7 @@ class TestMediaIndexerClientListAlignmentRuns:
                     "id": str(alignment_run_id),
                     "session_id": str(session_id),
                     "status": "completed",
-                    "provider": "litellm",
+                    "provider": "ninerouter",
                     "model": "gemini-2.0-flash",
                     "created_at": "2024-01-15T12:00:00Z",
                 }
@@ -168,7 +168,7 @@ class TestMediaIndexerClientListAlignmentRuns:
 
             assert len(result) == 1
             assert result[0]["status"] == "completed"
-            assert result[0]["provider"] == "litellm"
+            assert result[0]["provider"] == "ninerouter"
 
     @pytest.mark.asyncio
     async def test_list_alignment_runs_with_status_filter(self, client, session_id):

@@ -80,24 +80,24 @@ class AnaliseJogosService:
     """Serviço de geração de roteiros de análise de jogos a partir de anotações."""
 
     def __init__(self, media_context_provider: MediaContextProvider | None = None):
-        self.litellm_base_url = settings.litellm_base_url
-        self.litellm_api_key = settings.litellm_master_key or "dummy-key"
         self.tavily_api_key = settings.tavily_api_key
         self._media_context_provider = media_context_provider
 
     @property
     def media_context_provider(self) -> MediaContextProvider:
         """Lazy initialization of media context provider."""
-        if self._media_context_provider is None:
+        provider = self._media_context_provider
+        if provider is None:
             # Only create real provider if Media Indexer is configured
             if settings.media_indexer_base_url:
-                self._media_context_provider = MediaIndexerContextProvider()
+                provider = MediaIndexerContextProvider()
             else:
                 # Use fake provider that returns empty context
                 from app.services.media_context_provider import FakeMediaContextProvider
 
-                self._media_context_provider = FakeMediaContextProvider()
-        return self._media_context_provider
+                provider = FakeMediaContextProvider()
+            self._media_context_provider = provider
+        return provider
 
     def _build_note_provenance_lookup(
         self, media_context: GameAnalysisMediaContext | None
@@ -343,7 +343,7 @@ class AnaliseJogosService:
             .build(task_context=usuario_message)
         )
         composed.trace["model"] = llm_gateway.model_for(LLMTaskRole.WRITING)
-        composed.trace["provider"] = "litellm_openai_compatible"
+        composed.trace["model_gateway"] = "9router"
 
         resposta_llm = await self._call_llm(
             messages=[

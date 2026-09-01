@@ -23,7 +23,7 @@ that define a default.
 
 ## Generation strategies
 
-`editorial_generation_strategy_v1` chooses a bounded strategy from configured thresholds:
+`editorial_generation_strategy_v2` chooses a bounded strategy from configured thresholds:
 
 - `single_pass`: small work, represented by one durable section;
 - `staged`: an editorial plan followed by independently validated sections;
@@ -44,12 +44,17 @@ and bounded backoff. Recent runs are reloadable from the API.
 
 Human gameplay notes are authoritative evidence for observed gameplay. They are fragmented and
 indexed with stable source IDs; no LLM may create timestamps, UUIDs, actions or dialogue.
-External search is optional, query-bounded and deduplicated. Search snippets are explicitly
-untrusted data with `unknown_unverified` source quality, never system instructions.
+External search is query-bounded and deduplicated. Whether it is required is a versioned
+`SourcePolicy` decision owned by the production profile. Search snippets are explicitly untrusted
+data, never system instructions. Python classifies source trust by configured domain policy, then
+extracts small source-local claims and builds the canonical, host-owned claim ledger. Source trust
+and claim epistemic status are separate: even a reliable source may report a rumor, and an official
+visual observation does not confirm a mechanic.
 
-The planner emits a typed claim ledger with evidence tiers and source references. Deterministic
-validation rejects duplicate claim IDs, unknown sources and section output that cites a claim
-outside the approved ledger. `author_briefing` remains editorial opinion, not factual proof.
+The planner may select existing claim IDs for deterministic sections; it cannot mint claims.
+Deterministic validation rejects unknown sources, unknown claims, incoherent source/claim links and
+arbitrary evidence substitution. The post-write section audit, not the plan, records actual claim
+usage and actual beat coverage. `author_briefing` remains editorial opinion, not factual proof.
 
 Content capacity is advisory and visible before generation. It warns when the available evidence
 is unlikely to sustain the selected target; it does not invent depth or automatically lower the
@@ -57,12 +62,13 @@ operator's target.
 
 ## LLM policy and prompts
 
-The provider-neutral LiteLLM gateway owns connection pooling, context limits, native JSON Schema
+The provider-neutral 9Router client owns connection pooling, context limits, native JSON Schema
 with a controlled plain-JSON fallback, usage/latency provenance and bounded retries. Only network
 errors, timeouts, 408, 429 and transient 5xx are retried. 400/401/403/422 are terminal. A bounded
 repair call may repair serialization/schema shape but must preserve content and claims.
 
-Routes are aliases, not provider names: `fast`, `standard`, and optional `strong`. Policies are:
+Routes are semantic combos, not provider names: `neovids-fast`, `neovids-standard`,
+`neovids-strong`, `neovids-vision`, and `neovids-embedding`. Policies are:
 
 - `flash_only`: standard route for every editorial phase;
 - `standard`: task routing without strong escalation by default;
@@ -70,14 +76,24 @@ Routes are aliases, not provider names: `fast`, `standard`, and optional `strong
 - `strong`: strong route throughout.
 
 Repeated local budget failure may deterministically escalate when a distinct strong route exists;
-the reason is persisted. Gemini Flash remains viable as the standard route because decomposition,
+the reason is persisted. Provider capability remains a property of the configured combo because decomposition,
 local budgets and targeted revision do most of the reliability work.
 
-Prompt precedence is: global safety/factuality, production profile, workflow, bounded evidence,
-author briefing, deterministic section plan, targeted revision feedback. External content is
-delimited as data. Important identities are `prompt_composition_v2`,
-`editorial_generation_strategy_v1`, `editorial_generation_plan_v1` and
-`hierarchical_script_composition_v1`.
+Prompt precedence is: global safety/factuality, shared editorial quality charter, production
+profile, niche/channel policy, bounded evidence/approved claims, author briefing, audience promise,
+deterministic section plan and targeted revision feedback. External content is delimited as data.
+Fragmented V3 calls use `editorial_prompt_composition_v3`; legacy workflows retain
+`prompt_composition_v2`. Important identities are
+`editorial_generation_strategy_v2`, `editorial_generation_plan_v1`,
+`fragmented_editorial_planning_v1` and `editorial_prompt_composition_v3`.
+
+After each section reaches capacity and word validation, a bounded structured critic audits the
+full prose for factuality, unsupported specificity, uncertainty, spoken PT-BR, hook, continuity and
+redundancy. A targeted section revision may run within the existing revision limit. Continuity is
+built from the audited output summary, actual claims and actual beats rather than planned metadata.
+The staged global critic sees full prose; hierarchical long-form first produces chapter-local
+audits and then a compact global pass. Factual blockers get at most one global correction cycle and
+block normal human approval if unresolved. Style warnings remain visible to the human reviewer.
 
 ## Operations
 

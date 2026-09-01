@@ -1,18 +1,14 @@
-"""
-Serviço de embeddings para geração de vetores de similaridade.
-"""
-
-import httpx
+"""Serviço de embeddings pelo boundary compartilhado do 9Router."""
 
 from app.core.config import settings
+from app.services.llm_gateway import LLMGateway, llm_gateway
 
 
 class EmbeddingService:
-    """Serviço para geração de embeddings via LiteLLM Proxy."""
+    """Gera vetores com dimensão compatível com o schema persistido."""
 
-    def __init__(self):
-        self.base_url = settings.litellm_base_url
-        self.api_key = settings.litellm_master_key or "dummy-key"
+    def __init__(self, gateway: LLMGateway = llm_gateway):
+        self.gateway = gateway
         self.model = settings.embedding_model
         self.dimensions = settings.embedding_dim
 
@@ -26,21 +22,12 @@ class EmbeddingService:
         Returns:
             Lista de floats representando o vetor de embedding
         """
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{self.base_url}/v1/embeddings",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.model,
-                    "input": text,
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["data"][0]["embedding"]
+        vectors = await self.gateway.embed(
+            input=text,
+            model_alias=self.model,
+            expected_dimensions=self.dimensions,
+        )
+        return vectors[0]
 
     async def generate_for_ideia(
         self, titulo: str, descricao: str | None = None

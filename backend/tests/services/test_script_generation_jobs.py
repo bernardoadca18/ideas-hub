@@ -8,12 +8,24 @@ from uuid import uuid4
 
 import pytest
 from app.core.config import Settings
+from app.production_profiles import get_profile
 from app.schemas.generation import (
+    EditorialCriticIssue,
+    EditorialCriticOutput,
     EditorialPlanOutput,
     GlobalEditorialPlanOutput,
     PlannedSectionBatchOutput,
+    SectionEditorialAuditOutput,
     WrittenSectionOutput,
 )
+from app.schemas.media_indexer import (
+    GameAnalysisMediaContext,
+    MediaIndexerAlignment,
+    MediaIndexerNote,
+    MediaIndexerTimelineNote,
+    MediaIndexerTimelineSession,
+)
+from app.services.external_research import ResearchSource
 from app.services.llm_gateway import (
     LLMCallResult,
     LLMFailureCategory,
@@ -24,9 +36,13 @@ from app.services.script_generation_jobs import (
     GenerationFailureCategory,
     GenerationJobError,
     ScriptGenerationJobService,
+    _claim_extraction_max_tokens,
+    _editorial_review_payload,
+    _global_critic_output_contract,
     _global_plan_output_contract,
     _planning_max_tokens,
     _repair_max_tokens,
+    _section_audit_output_contract,
     _section_batch_output_contract,
     _section_batches,
     _temperature_for_role,
@@ -36,7 +52,6 @@ from app.services.script_generation_jobs import (
 
 def _config() -> Settings:
     return Settings(
-        llm_model="standard-route",
         llm_fast_model="fast-route",
         llm_standard_model="standard-route",
         llm_strong_model="strong-route",
@@ -112,6 +127,7 @@ def _section_dict(key: str) -> dict[str, object]:
         "narrative_role": "desenvolvimento",
         "beats": ["Apresentar o ponto central"],
         "evidence_refs": [],
+        "claim_refs": [],
         "must_cover": ["A tese editorial"],
         "must_not_repeat": [],
         "transition_target": "Conectar com a próxima seção",
@@ -123,15 +139,24 @@ def _batch_json(keys: list[str]) -> str:
 
 
 def _written_json(word_count: int, *, marker: str = "palavra") -> str:
-    return json.dumps(
-        {
-            "content": " ".join([marker] * word_count),
-            "transition_out": "Conexão com a próxima seção.",
-            "claims_used": [],
-            "beats_covered": ["Apresentar o ponto central"],
-            "visual_intent": None,
-            "audio_intent": None,
-        }
+    return json.dumps({"content": " ".join([marker] * word_count)})
+
+
+def _section_audit(
+    *,
+    revision_required: bool = False,
+    issues: list[EditorialCriticIssue] | None = None,
+    claims: list[str] | None = None,
+    beats: list[str] | None = None,
+) -> SectionEditorialAuditOutput:
+    return SectionEditorialAuditOutput(
+        revision_required=revision_required,
+        issues=issues or [],
+        actual_claim_refs=claims or [],
+        actual_beats_covered=["Apresentar o ponto central"] if beats is None else beats,
+        actual_summary="A seção cobriu o ponto central.",
+        opened_loops=[],
+        closed_loops=[],
     )
 
 
@@ -170,10 +195,14 @@ def _writing_fixture() -> tuple[
     )
     run = SimpleNamespace(
         id=uuid4(),
+        ideia_id=uuid4(),
+        production_profile="faceless_general",
         sections=[section],
         plan={
             "editorial": {
                 "thesis": "Tese global.",
+                "audience_promise": "Entender o ponto central.",
+                "open_loops": [],
                 "claim_ledger": [],
             }
         },
@@ -188,7 +217,146 @@ def _writing_fixture() -> tuple[
         heartbeat_at=None,
     )
     service = ScriptGenerationJobService(session, gateway=AsyncMock(), config=_config())
+    service._editorial_context = AsyncMock(  # type: ignore[method-assign]
+        return_value=(
+            SimpleNamespace(author_briefing=None),
+            None,
+            get_profile("faceless_general"),
+        )
+    )
+    service._audit_section = AsyncMock(  # type: ignore[method-assign]
+        return_value=(
+            _section_audit(),
+            {"audit": "test"},
+        )
+    )
     return service, session, run, section
+
+
+@pytest.mark.asyncio
+async def test_reaudit_process_never_calls_writer() -> None:
+    session = AsyncMock()
+    run = SimpleNamespace(
+        id=uuid4(),
+        status="running",
+        phase="validating",
+        generation_intent="reaudit",
+        sections=[],
+        roteiro_id=None,
+        completed_at=None,
+    )
+    service = ScriptGenerationJobService(session, gateway=AsyncMock())
+    service.get = AsyncMock(return_value=run)  # type: ignore[method-assign]
+    service._process_reaudit = AsyncMock()  # type: ignore[method-assign]
+    service._write_section = AsyncMock()  # type: ignore[method-assign]
+
+    result = await service.process(run.id)
+
+    assert result.status == "completed"
+    service._process_reaudit.assert_awaited_once_with(run)
+    service._write_section.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_game_media_context_uses_real_ids_and_preserves_unmatched() -> None:
+    project_id = uuid4()
+    session_id = uuid4()
+    matched_note_id = uuid4()
+    unmatched_note_id = uuid4()
+    context = GameAnalysisMediaContext(
+        project_id=project_id,
+        sessions=[
+            MediaIndexerTimelineSession(
+                session_id=session_id,
+                session_label="Gameplay",
+                notes=[
+                    MediaIndexerTimelineNote(
+                        note=MediaIndexerNote(
+                            id=matched_note_id,
+                            order=1,
+                            raw="O carro aparece na chuva.",
+                            alignment_status="matched",
+                        ),
+                        alignment=MediaIndexerAlignment(
+                            candidate_alignment_id=uuid4(),
+                            retrieval_rank=1,
+                            start_seconds=12.5,
+                            end_seconds=18.0,
+                            confidence=0.9,
+                        ),
+                    ),
+                    MediaIndexerTimelineNote(
+                        note=MediaIndexerNote(
+                            id=unmatched_note_id,
+                            order=2,
+                            raw="A nota humana não foi localizada.",
+                            alignment_status="unmatched",
+                        )
+                    ),
+                ],
+            )
+        ],
+        total_notes=2,
+        matched_notes=1,
+        unmatched_notes=1,
+        total_chars=100,
+        available=True,
+    )
+    provider = AsyncMock()
+    provider.get_context.return_value = context
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), media_context_provider=provider
+    )
+    run = SimpleNamespace(id=uuid4(), heartbeat_at=None, evidence_dossier={})
+
+    dossier = await service._retrieve_game_media_context(
+        run,
+        {
+            "media_project_id": str(project_id),
+            "media_session_ids": [str(session_id)],
+            "sources": [],
+            "fragments": [],
+        },
+    )
+
+    by_id = {item["source_fragment_id"]: item for item in dossier["fragments"]}
+    matched = by_id[f"media-timeline:{session_id}:{matched_note_id}"]
+    unmatched = by_id[f"media-timeline:{session_id}:{unmatched_note_id}"]
+    assert matched["alignment"]["start_seconds"] == 12.5
+    assert matched["alignment"]["end_seconds"] == 18.0
+    assert unmatched["alignment_status"] == "unmatched"
+    assert "alignment" not in unmatched
+    assert dossier["media_context"]["authority"] == "supplementary_audiovisual_evidence"
+
+
+@pytest.mark.asyncio
+async def test_optional_media_indexer_failure_is_persisted_as_warning() -> None:
+    project_id = uuid4()
+    provider = AsyncMock()
+    provider.get_context.return_value = GameAnalysisMediaContext(
+        project_id=project_id,
+        warnings=["Media Indexer unavailable"],
+        available=False,
+        error="temporary outage",
+    )
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), media_context_provider=provider
+    )
+    run = SimpleNamespace(id=uuid4(), heartbeat_at=None, evidence_dossier={})
+
+    dossier = await service._retrieve_game_media_context(
+        run,
+        {
+            "media_project_id": str(project_id),
+            "media_session_ids": [],
+            "sources": [],
+            "fragments": [],
+        },
+    )
+
+    assert dossier["media_context_retrieved"] is True
+    assert dossier["media_context"]["available"] is False
+    assert dossier["media_context"]["warnings"] == ["Media Indexer unavailable"]
 
 
 def _planning_fixture(
@@ -228,6 +396,8 @@ def _planning_fixture(
             "escalations": [],
         },
         model_policy={"strategy": "standard"},
+        production_profile="faceless_general",
+        continuity_state={"open_loops": [], "completed_sections": []},
         strategy_identity="fragmented-planning-test",
         heartbeat_at=None,
     )
@@ -238,6 +408,7 @@ def _planning_fixture(
                 titulo="Fixture editorial",
                 descricao_breve="Conteúdo sintético sem fatos externos.",
                 author_briefing=None,
+                nicho_id=None,
             )
         ),
     )
@@ -409,6 +580,10 @@ async def test_three_sections_assemble_exact_host_owned_plan(
         PlannedSectionBatchOutput.model_json_schema(),
     ]
     assert EditorialPlanOutput.model_json_schema() not in schemas
+    assert all(
+        call.kwargs["structured_mode"] == "json_object"
+        for call in service._complete.await_args_list
+    )
 
 
 @pytest.mark.asyncio
@@ -619,7 +794,7 @@ def test_writer_schema_does_not_echo_host_owned_section_metadata() -> None:
     assert set(properties) == {"content"}
 
 
-def test_section_claim_ids_are_derived_from_approved_evidence_refs() -> None:
+def test_section_claims_are_selected_only_by_explicit_approved_claim_refs() -> None:
     run = SimpleNamespace(
         plan={
             "editorial": {
@@ -630,10 +805,16 @@ def test_section_claim_ids_are_derived_from_approved_evidence_refs() -> None:
             }
         }
     )
-    claims = ScriptGenerationJobService._claim_ids_for_section(
-        run, {"evidence_refs": ["source-b"]}
+    claims = ScriptGenerationJobService._claims_for_section(
+        run, {"evidence_refs": ["source-a"], "claim_refs": ["claim-2"]}
     )
-    assert claims == ["claim-2"]
+    assert [item["id"] for item in claims] == ["claim-2"]
+    assert (
+        ScriptGenerationJobService._claims_for_section(
+            run, {"evidence_refs": ["source-b"], "claim_refs": []}
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio
@@ -774,7 +955,14 @@ async def test_stopped_output_outside_word_budget_uses_editorial_revision(
 def test_task_temperature_policy_keeps_repair_deterministic() -> None:
     assert _temperature_for_role(LLMTaskRole.REPAIR) == 0.0
     assert _temperature_for_role(LLMTaskRole.PLANNING) == 0.5
+    assert _temperature_for_role(LLMTaskRole.CRITIC) == 0.0
     assert _temperature_for_role(LLMTaskRole.WRITING) == 0.7
+
+
+def test_claim_extraction_capacity_has_reasoning_headroom_and_hard_ceiling() -> None:
+    assert _claim_extraction_max_tokens(1) >= 3000
+    assert _claim_extraction_max_tokens(4) == 4360
+    assert _claim_extraction_max_tokens(20) == 6000
 
 
 @pytest.mark.asyncio
@@ -1035,3 +1223,795 @@ def test_datetime_now_utc_produces_timezone_aware_values() -> None:
     assert naive.tzinfo is None
     aware_again = naive.replace(tzinfo=UTC)
     assert aware_again.tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_v3_writer_receives_policy_audience_and_factuality_over_word_pressure() -> (
+    None
+):
+    service, _, run, section = _writing_fixture()
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(
+            _written_json(580),
+            role=LLMTaskRole.WRITING,
+            max_tokens=7480,
+            completion_tokens=1700,
+        )
+    )
+
+    await service._write_section(run, section)
+
+    call = service._complete.await_args.kwargs
+    assert "Diretrizes de qualidade editorial" in call["system_prompt"]
+    assert "NARRAÇÃO PT-BR" in call["system_prompt"]
+    assert "FACTUALITY OVERRIDES WORD COUNT" in call["prompt"]
+    assert "Entender o ponto central" in call["prompt"]
+    assert call["prompt_version"] == "section_writer_v3"
+    assert set(call["schema"]["properties"]) == {"content"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("unsupported_prose", "category"),
+    [
+        ("Jacarés reagem ao ruído de motores.", "unsupported_specificity"),
+        (
+            "A deformação do terreno muda a dirigibilidade.",
+            "unsupported_specificity",
+        ),
+        (
+            "Rotas de cabotagem criam opções táticas e logísticas.",
+            "unsupported_specificity",
+        ),
+        (
+            "A Rockstar confirmou que o mapa da comunidade tem escala oficial.",
+            "overstated_claim",
+        ),
+    ],
+)
+async def test_section_audit_contract_carries_real_unsupported_specificity_examples(
+    unsupported_prose: str, category: str
+) -> None:
+    service, _, run, section = _writing_fixture()
+    service._audit_section = ScriptGenerationJobService._audit_section.__get__(  # type: ignore[method-assign]
+        service
+    )
+    issue = EditorialCriticIssue(
+        section_key="section-001",
+        category=category,  # type: ignore[arg-type]
+        severity="revision_required",
+        actionable_feedback="Remova ou qualifique a afirmação além da evidência.",
+        excerpt=unsupported_prose,
+    )
+    audit = _section_audit(revision_required=True, issues=[issue], beats=[])
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(
+            audit.model_dump_json(),
+            role=LLMTaskRole.CRITIC,
+            max_tokens=2500,
+        )
+    )
+
+    parsed, _ = await service._audit_section(
+        run,
+        section,
+        content=unsupported_prose,
+        evidence=[
+            {
+                "source_fragment_id": "official-material",
+                "claims": ["O material mostra jacarés ou cenário industrial."],
+            }
+        ],
+        approved_claims=[],
+        previous_actual=[],
+        idea=SimpleNamespace(author_briefing=None),
+        niche_prompt="Separe observação de mecânica.",
+    )
+
+    assert parsed.revision_required is True
+    assert parsed.issues[0].category == category
+    prompt = service._complete.await_args.kwargs["prompt"]
+    assert unsupported_prose in prompt
+    assert "FULL SECTION PROSE" in prompt
+    assert "unsupported_specificity" in prompt
+    assert service._complete.await_args.kwargs["structured_mode"] == "json_object"
+
+
+@pytest.mark.asyncio
+async def test_qualified_community_estimate_can_pass_section_audit() -> None:
+    service, _, run, section = _writing_fixture()
+    service._audit_section = ScriptGenerationJobService._audit_section.__get__(  # type: ignore[method-assign]
+        service
+    )
+    claim_id = "claim-community"
+    run.plan["editorial"]["claim_ledger"] = [{"id": claim_id}]
+    audit = _section_audit(claims=[claim_id])
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(
+            audit.model_dump_json(),
+            role=LLMTaskRole.CRITIC,
+            max_tokens=2500,
+        )
+    )
+    parsed, _ = await service._audit_section(
+        run,
+        section,
+        content="Uma estimativa da comunidade sugere um mapa maior; não é confirmação da Rockstar.",
+        evidence=[],
+        approved_claims=[
+            {
+                "id": claim_id,
+                "summary": "A comunidade estima um mapa maior.",
+                "source_trust": "community",
+                "claim_status": "speculation",
+            }
+        ],
+        previous_actual=[],
+        idea=SimpleNamespace(author_briefing=None),
+        niche_prompt=None,
+    )
+    assert parsed.revision_required is False
+    assert parsed.actual_claim_refs == [claim_id]
+
+
+@pytest.mark.asyncio
+async def test_section_audit_rejects_unknown_claim_and_unobserved_beat_ids() -> None:
+    service, _, run, section = _writing_fixture()
+    service._audit_section = ScriptGenerationJobService._audit_section.__get__(  # type: ignore[method-assign]
+        service
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(
+            _section_audit(claims=["invented"]).model_dump_json(),
+            role=LLMTaskRole.CRITIC,
+        )
+    )
+    with pytest.raises(GenerationJobError, match="unknown claims"):
+        await service._audit_section(
+            run,
+            section,
+            content="Texto.",
+            evidence=[],
+            approved_claims=[],
+            previous_actual=[],
+            idea=SimpleNamespace(author_briefing=None),
+            niche_prompt=None,
+        )
+
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(
+            _section_audit(beats=["Beat inventado"]).model_dump_json(),
+            role=LLMTaskRole.CRITIC,
+        )
+    )
+    with pytest.raises(GenerationJobError, match="unplanned beats"):
+        await service._audit_section(
+            run,
+            section,
+            content="Texto.",
+            evidence=[],
+            approved_claims=[],
+            previous_actual=[],
+            idea=SimpleNamespace(author_briefing=None),
+            niche_prompt=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_targeted_section_revision_is_bounded_and_uses_actual_audit_metadata() -> (
+    None
+):
+    service, _, run, section = _writing_fixture()
+    issue = EditorialCriticIssue(
+        section_key="section-001",
+        category="fake_hype",
+        severity="revision_required",
+        actionable_feedback="Remova a grandiosidade sem substância.",
+    )
+    service._audit_section = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            (_section_audit(revision_required=True, issues=[issue]), {}),
+            (
+                _section_audit(
+                    beats=[],
+                ).model_copy(
+                    update={
+                        "actual_summary": "Resumo real revisado.",
+                        "opened_loops": ["Pergunta real"],
+                    }
+                ),
+                {},
+            ),
+        ]
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_written_json(580, marker="hipérbole"), role=LLMTaskRole.WRITING),
+            _result(_written_json(580, marker="concreto"), role=LLMTaskRole.WRITING),
+        ]
+    )
+
+    await service._write_section(run, section)
+
+    assert service._complete.await_count == 2
+    assert section.attempt_count == 2
+    assert section.prompt_provenance["editorial_revision_count"] == 1
+    assert section.prompt_provenance["capacity_retry_count"] == 0
+    assert section.output["actual_summary"] == "Resumo real revisado."
+    assert section.output["beats_covered"] == []
+    assert (
+        run.continuity_state["completed_sections"][0]["actual_summary"]
+        == "Resumo real revisado."
+    )
+
+
+@pytest.mark.asyncio
+async def test_global_critic_receives_full_staged_content_and_section_audits() -> None:
+    session = AsyncMock()
+    service = ScriptGenerationJobService(session, gateway=AsyncMock(), config=_config())
+    service._editorial_context = AsyncMock(  # type: ignore[method-assign]
+        return_value=(SimpleNamespace(author_briefing=None), None, get_profile(None))
+    )
+    critic = EditorialCriticOutput(
+        summary="Sem bloqueadores.",
+        issues=[],
+        open_loops_closed=True,
+        unsupported_claims_detected=False,
+    )
+    service._global_critic_call = AsyncMock(  # type: ignore[method-assign]
+        return_value=(critic, {"critic": "test"})
+    )
+    marker = "PROBLEMA NO MEIO E NO FIM DA SEÇÃO"
+    section = SimpleNamespace(
+        section_key="section-001",
+        section_order=0,
+        chapter_order=0,
+        section_plan={"purpose": "Explicar", "must_cover": [], "must_not_repeat": []},
+        local_validation={"status": "within_budget"},
+        output={
+            "content": "abertura " + ("x" * 700) + marker,
+            "claims_used": [],
+            "section_audit": {"actual_summary": "Resumo real", "issues": []},
+        },
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        production_profile="faceless_general",
+        generation_strategy="staged",
+        sections=[section],
+        plan={
+            "editorial": {
+                "thesis": "Tese",
+                "audience_promise": "Promessa",
+                "open_loops": [],
+                "claim_ledger": [],
+            }
+        },
+    )
+
+    await service._run_global_critic(run, audit_scope="initial")
+
+    payload = service._global_critic_call.await_args.kwargs["payload"]
+    assert payload["mode"] == "full_staged_prose"
+    assert marker in payload["sections"][0]["full_content"]
+    assert payload["sections"][0]["section_audit"]["actual_summary"] == "Resumo real"
+    assert run.plan["global_critic"]["summary"] == "Sem bloqueadores."
+
+
+@pytest.mark.asyncio
+async def test_global_critic_unavailable_is_not_silently_factuality_pass() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    service._editorial_context = AsyncMock(  # type: ignore[method-assign]
+        return_value=(SimpleNamespace(author_briefing=None), None, get_profile(None))
+    )
+    service._global_critic_call = AsyncMock(  # type: ignore[method-assign]
+        side_effect=LLMGatewayError(LLMFailureCategory.PROVIDER, "critic down")
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        production_profile="faceless_general",
+        generation_strategy="staged",
+        sections=[],
+        plan={
+            "editorial": {
+                "thesis": "Tese",
+                "audience_promise": "Promessa",
+                "open_loops": [],
+                "claim_ledger": [],
+            }
+        },
+    )
+    with pytest.raises(LLMGatewayError):
+        await service._run_global_critic(run, audit_scope="initial")
+
+
+@pytest.mark.asyncio
+async def test_global_critic_cannot_report_unsupported_claims_without_actionable_issue() -> (
+    None
+):
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    service._editorial_context = AsyncMock(  # type: ignore[method-assign]
+        return_value=(SimpleNamespace(author_briefing=None), None, get_profile(None))
+    )
+    service._global_critic_call = AsyncMock(  # type: ignore[method-assign]
+        return_value=(
+            EditorialCriticOutput(
+                summary="Há afirmação sem suporte.",
+                issues=[],
+                open_loops_closed=True,
+                unsupported_claims_detected=True,
+            ),
+            {},
+        )
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        production_profile="faceless_general",
+        generation_strategy="staged",
+        sections=[],
+        plan={
+            "editorial": {
+                "thesis": "Tese",
+                "audience_promise": "Promessa",
+                "open_loops": [],
+                "claim_ledger": [],
+            }
+        },
+    )
+
+    with pytest.raises(GenerationJobError, match="without an actionable factual issue"):
+        await service._run_global_critic(run, audit_scope="initial")
+
+
+@pytest.mark.asyncio
+async def test_unsupported_claim_warning_is_promoted_to_targeted_revision() -> None:
+    service, _, run, section = _writing_fixture()
+    issue = EditorialCriticIssue(
+        section_key="section-001",
+        category="unsupported_claim",
+        severity="warning",
+        actionable_feedback="Remova a afirmação sem claim aprovado.",
+    )
+    service._audit_section = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            (_section_audit(revision_required=True, issues=[issue]), {}),
+            (_section_audit(), {}),
+        ]
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_written_json(580), role=LLMTaskRole.WRITING),
+            _result(_written_json(580), role=LLMTaskRole.WRITING),
+        ]
+    )
+
+    await service._write_section(run, section)
+
+    assert service._complete.await_count == 2
+    second_prompt = service._complete.await_args_list[1].kwargs["prompt"]
+    assert "Remova a afirmação sem claim aprovado" in second_prompt
+    assert section.prompt_provenance["editorial_revision_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_section_audit_promotes_unsupported_claim_warning_to_revision() -> None:
+    service, _, run, section = _writing_fixture()
+    service._audit_section = ScriptGenerationJobService._audit_section.__get__(  # type: ignore[method-assign]
+        service
+    )
+    audit = _section_audit(
+        issues=[
+            EditorialCriticIssue(
+                section_key="section-001",
+                category="unsupported_claim",
+                severity="warning",
+                actionable_feedback="Remova.",
+            )
+        ]
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(
+            audit.model_dump_json(),
+            role=LLMTaskRole.CRITIC,
+            max_tokens=2500,
+        )
+    )
+
+    parsed, _ = await service._audit_section(
+        run,
+        section,
+        content="Afirmação sem claim aprovado.",
+        evidence=[],
+        approved_claims=[],
+        previous_actual=[],
+        idea=SimpleNamespace(author_briefing=None),
+        niche_prompt=None,
+    )
+
+    assert parsed.revision_required is True
+
+
+def test_audit_contracts_define_each_issue_field_and_reject_description_alias() -> None:
+    section_contract = _section_audit_output_contract()
+    global_contract = _global_critic_output_contract()
+    for contract in (section_contract, global_contract):
+        assert "section_key, category, severity" in contract
+        assert "actionable_feedback, claim_ref and excerpt" in contract
+        assert "Never use description" in contract
+        assert "unsupported_specificity" in contract
+
+
+@pytest.mark.asyncio
+async def test_description_only_section_issue_is_repaired_with_exact_contract() -> None:
+    service, _, run, section = _writing_fixture()
+    service._audit_section = ScriptGenerationJobService._audit_section.__get__(  # type: ignore[method-assign]
+        service
+    )
+    invalid = json.dumps(
+        {
+            "revision_required": True,
+            "issues": [
+                {"description": "Afirmação mecânica além da evidência disponível."}
+            ],
+            "actual_claim_refs": [],
+            "actual_beats_covered": [],
+            "actual_summary": "A seção extrapola a observação disponível.",
+            "opened_loops": [],
+            "closed_loops": [],
+        }
+    )
+    repaired = _section_audit(
+        revision_required=True,
+        issues=[
+            EditorialCriticIssue(
+                section_key="section-001",
+                category="unsupported_specificity",
+                severity="revision_required",
+                actionable_feedback="Remova a reação ao ruído dos motores.",
+            )
+        ],
+        beats=[],
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(invalid, role=LLMTaskRole.CRITIC, max_tokens=2500),
+            _result(
+                repaired.model_dump_json(),
+                role=LLMTaskRole.REPAIR,
+                max_tokens=3500,
+            ),
+        ]
+    )
+
+    parsed, provenance = await service._audit_section(
+        run,
+        section,
+        content="Jacarés reagem ao ruído dos motores.",
+        evidence=[],
+        approved_claims=[],
+        previous_actual=[],
+        idea=SimpleNamespace(author_briefing=None),
+        niche_prompt=None,
+    )
+
+    assert parsed.issues[0].category == "unsupported_specificity"
+    assert provenance["repair_reason"] == "ValidationError"
+    assert service._complete.await_count == 2
+    repair_prompt = service._complete.await_args_list[1].kwargs["prompt"]
+    assert "Never use description" in repair_prompt
+
+
+@pytest.mark.asyncio
+async def test_description_only_section_issue_remains_bounded_when_repair_is_invalid() -> (
+    None
+):
+    service, _, run, section = _writing_fixture()
+    service._audit_section = ScriptGenerationJobService._audit_section.__get__(  # type: ignore[method-assign]
+        service
+    )
+    invalid = json.dumps(
+        {
+            "revision_required": True,
+            "issues": [{"description": "Sem shape contratual."}],
+            "actual_claim_refs": [],
+            "actual_beats_covered": [],
+            "actual_summary": "Resumo.",
+            "opened_loops": [],
+            "closed_loops": [],
+        }
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(invalid, role=LLMTaskRole.CRITIC, max_tokens=2500),
+            _result(invalid, role=LLMTaskRole.REPAIR, max_tokens=3500),
+        ]
+    )
+
+    with pytest.raises(LLMGatewayError, match="remained invalid"):
+        await service._audit_section(
+            run,
+            section,
+            content="Texto.",
+            evidence=[],
+            approved_claims=[],
+            previous_actual=[],
+            idea=SimpleNamespace(author_briefing=None),
+            niche_prompt=None,
+        )
+
+    assert service._complete.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_external_research_resume_preserves_completed_claim_checkpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock()
+    source = ResearchSource(
+        source_id="external-stable-1",
+        query="query",
+        title="Fonte",
+        url="https://news.example/fonte",
+        snippet="A fonte sustenta uma afirmação limitada.",
+        source_type="external_search_result",
+        retrieved_at="2026-08-31T00:00:00+00:00",
+        domain="news.example",
+    )
+    research = AsyncMock()
+    research.search.return_value = [source]
+    service = ScriptGenerationJobService(
+        session, gateway=AsyncMock(), research_client=research, config=_config()
+    )
+    idea = SimpleNamespace(
+        titulo="Pauta factual",
+        descricao_breve="Descrição",
+        nicho_id=None,
+        author_briefing=None,
+    )
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+        AsyncMock(return_value=idea),
+    )
+    claim = {
+        "id": "claim-stable",
+        "summary": "A fonte sustenta uma afirmação limitada.",
+        "source_refs": [source.source_id],
+        "source_fragment_id": source.source_id,
+        "source_trust": "unverified",
+        "claim_status": "reported",
+        "confidence": 0.5,
+        "qualification": "Relato não confirmado por fonte primária.",
+        "support_scope": "Somente a afirmação citada.",
+        "evidence_tier": "unverified",
+    }
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        production_profile="faceless_general",
+        target_words=None,
+        evidence_dossier={
+            "sources": [source.to_dict()],
+            "fragments": [
+                {
+                    "source_fragment_id": source.source_id,
+                    "title": source.title,
+                    "url": source.url,
+                    "snippet": source.snippet,
+                    "source_trust": "unverified",
+                    "claim_extraction_status": "completed",
+                    "claims": [claim],
+                }
+            ],
+            "claims": [claim],
+            "research_complete": False,
+        },
+        heartbeat_at=None,
+    )
+
+    await service._build_external_evidence_dossier(run)
+
+    assert run.evidence_dossier["claims"] == [claim]
+    assert run.evidence_dossier["fragments"][0]["claims"] == [claim]
+    assert run.evidence_dossier["research_complete"] is True
+    service._complete = AsyncMock()  # type: ignore[method-assign]
+    await service._extract_external_claims(run, idea)
+    service._complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fixed_target_with_insufficient_capacity_blocks_after_one_expansion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock()
+    source = ResearchSource(
+        source_id="capacity-source",
+        query="query",
+        title="Fonte limitada",
+        url="https://news.example/limited",
+        snippet="Uma única afirmação curta.",
+        source_type="external_search_result",
+        retrieved_at="2026-09-01T00:00:00+00:00",
+        domain="news.example",
+    )
+    research = AsyncMock()
+    research.search.return_value = [source]
+    service = ScriptGenerationJobService(
+        session, gateway=AsyncMock(), research_client=research, config=_config()
+    )
+    idea = SimpleNamespace(
+        titulo="Pauta extensa",
+        descricao_breve="Contrato longo com evidência curta",
+        nicho_id=None,
+        author_briefing=None,
+    )
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+        AsyncMock(return_value=idea),
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        production_profile="faceless_general",
+        target_words=2000,
+        evidence_dossier={
+            "sources": [],
+            "fragments": [],
+            "claims": [],
+            "research_complete": False,
+        },
+        heartbeat_at=None,
+    )
+
+    async def extract_claim(current_run, _idea):
+        dossier = dict(current_run.evidence_dossier)
+        claim = {
+            "id": "claim-limited",
+            "summary": "Uma única afirmação curta.",
+            "source_refs": [source.source_id],
+            "source_fragment_id": source.source_id,
+            "source_trust": "unverified",
+            "claim_status": "reported",
+            "confidence": 0.5,
+            "evidence_tier": "unverified",
+        }
+        dossier["claims"] = [claim]
+        for fragment in dossier.get("fragments") or []:
+            fragment["claims"] = [claim]
+            fragment["claim_extraction_status"] = "completed"
+        current_run.evidence_dossier = dossier
+
+    service._extract_external_claims = AsyncMock(  # type: ignore[method-assign]
+        side_effect=extract_claim
+    )
+
+    with pytest.raises(GenerationJobError, match="insufficient_evidence"):
+        await service._build_external_evidence_dossier(run)
+
+    assert research.search.await_count == 4
+    assert run.evidence_dossier["capacity"]["advisory_only"] is False
+    assert (
+        run.evidence_dossier["capacity"]["workflow_action"]
+        == "blocked_insufficient_evidence"
+    )
+
+
+@pytest.mark.asyncio
+async def test_grounded_profile_fails_when_external_research_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    research = AsyncMock()
+    research.search.return_value = []
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), research_client=research, config=_config()
+    )
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                titulo="Pauta factual",
+                descricao_breve="Descrição",
+                nicho_id=None,
+            )
+        ),
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        production_profile="faceless_general",
+        target_words=580,
+        evidence_dossier={},
+        heartbeat_at=None,
+    )
+
+    with pytest.raises(GenerationJobError) as captured:
+        await service._build_external_evidence_dossier(run)
+
+    assert captured.value.category is GenerationFailureCategory.GROUNDING
+
+
+def test_review_status_blocks_factual_revision_but_not_style_warning() -> None:
+    run = SimpleNamespace(
+        sections=[],
+        plan={},
+    )
+    style = EditorialCriticOutput(
+        summary="Ajuste de estilo.",
+        issues=[
+            EditorialCriticIssue(
+                category="spoken_language",
+                severity="warning",
+                actionable_feedback="Simplifique uma frase.",
+            )
+        ],
+        open_loops_closed=True,
+        unsupported_claims_detected=False,
+    )
+    style_review = _editorial_review_payload(run, style)
+    assert style_review["editorial_status"] == "warn"
+    assert style_review["approval_blocked"] is False
+
+    factual = EditorialCriticOutput(
+        summary="Fato sem suporte.",
+        issues=[
+            EditorialCriticIssue(
+                section_key="section-001",
+                category="unsupported_specificity",
+                severity="blocking",
+                actionable_feedback="Remova.",
+            )
+        ],
+        open_loops_closed=True,
+        unsupported_claims_detected=True,
+    )
+    factual_review = _editorial_review_payload(run, factual)
+    assert factual_review["approval_blocked"] is True
+
+
+@pytest.mark.asyncio
+async def test_prompt_identity_is_call_specific_and_keeps_strategy_provenance() -> None:
+    gateway = MagicMock()
+    gateway.model_for.return_value = "standard-route"
+    gateway.complete = AsyncMock(
+        side_effect=lambda **kwargs: _result(
+            "{}", role=kwargs["role"], max_tokens=kwargs["max_tokens"]
+        )
+    )
+    run = SimpleNamespace(
+        call_usage={"calls": 0, "total_tokens": 0},
+        model_policy={"strategy": "standard"},
+        strategy_identity="same-strategy",
+    )
+    service = ScriptGenerationJobService(AsyncMock(), gateway=gateway, config=_config())
+    await service._complete(
+        run,
+        role=LLMTaskRole.PLANNING,
+        prompt="same user text",
+        schema={"type": "object"},
+        max_tokens=100,
+        prompt_version="planning-v1",
+        scope="global",
+    )
+    await service._complete(
+        run,
+        role=LLMTaskRole.CRITIC,
+        prompt="same user text",
+        schema={"type": "object"},
+        max_tokens=100,
+        prompt_version="critic-v1",
+        scope="global",
+    )
+    identities = [
+        call.kwargs["prompt_identity"] for call in gateway.complete.await_args_list
+    ]
+    assert identities[0] != identities[1]
+    assert all(len(item) == 64 for item in identities)
+    assert {
+        item["strategy_identity"] for item in run.call_usage["prompt_identities"]
+    } == {"same-strategy"}

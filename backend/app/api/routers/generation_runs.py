@@ -13,6 +13,7 @@ from app.schemas.generation import (
     GenerationPreviewRequest,
     GenerationRunCreate,
     GenerationRunResponse,
+    RevisionGenerationRunCreate,
 )
 from app.services.duration_contract import duration_calibration_client
 from app.services.editorial_generation import (
@@ -106,6 +107,51 @@ async def start_generation_run(
     try:
         return await ScriptGenerationJobService(db).enqueue(
             ideia_id,
+            idempotency_key=payload.idempotency_key,
+            model_strategy=payload.model_strategy,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/roteiros/{roteiro_id}/generation-runs",
+    response_model=GenerationRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_revision_generation_run(
+    roteiro_id: UUID,
+    payload: RevisionGenerationRunCreate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Regenerate from operator feedback through the durable Editorial V3 pipeline."""
+
+    try:
+        return await ScriptGenerationJobService(db).enqueue_revision(
+            roteiro_id,
+            idempotency_key=payload.idempotency_key,
+            feedback=payload.feedback,
+            model_strategy=payload.model_strategy,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/roteiros/{roteiro_id}/audit",
+    response_model=GenerationRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_reaudit_run(
+    roteiro_id: UUID,
+    payload: GenerationRunCreate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Audit current narration without invoking the WRITING role."""
+
+    try:
+        return await ScriptGenerationJobService(db).enqueue_reaudit(
+            roteiro_id,
             idempotency_key=payload.idempotency_key,
             model_strategy=payload.model_strategy,
         )

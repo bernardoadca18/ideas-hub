@@ -41,6 +41,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      default: {}
+      neovids:
+        aliases:
+          - ideas-hub
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/ready"]
       interval: 10s
@@ -90,7 +95,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - default
+      - neovids
 
 volumes:
   ideas-hub-db-data:
     name: ideas-hub-db-data
+
+networks:
+  neovids:
+    external: true
+    name: neovids

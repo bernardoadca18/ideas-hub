@@ -56,16 +56,14 @@ class IdeiaRefinada:
 
 
 class CuradorService:
-    """Serviço de curadoria de ideias via LiteLLM Proxy."""
+    """Serviço de curadoria de ideias pelo gateway de modelos."""
 
     def __init__(self):
-        self.litellm_base_url = settings.litellm_base_url
-        self.litellm_api_key = settings.litellm_master_key or "dummy-key"
         self.tavily_api_key = settings.tavily_api_key
         self.similarity_threshold = settings.ideia_similarity_threshold
 
     async def _call_llm(self, messages: list[dict], temperature: float = 0.7) -> str:
-        """Faz chamada para o LLM via LiteLLM Proxy."""
+        """Faz chamada para o LLM pelo gateway compartilhado."""
         result = await llm_gateway.complete(
             messages=messages,
             role=LLMTaskRole.FAST,

@@ -2,15 +2,17 @@
 Router CRUD para a entidade Roteiro.
 """
 
+import hashlib
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.repositories.roteiro_repository import RoteiroRepository
-from app.schemas.analise_jogo import AnaliseJogoRequest, AnaliseJogoResponse
+from app.schemas.analise_jogo import AnaliseJogoRequest
+from app.schemas.generation import GenerationRunResponse
 from app.schemas.roteiro import (
     RoteiroResponse,
     ScriptCreateRequest,
@@ -155,35 +157,31 @@ async def editar_como_nova_revisao(
 
 @router.post(
     "/{roteiro_id:uuid}/revisoes/regenerar",
-    response_model=RoteiroResponse,
-    status_code=201,
+    response_model=GenerationRunResponse,
+    status_code=202,
 )
 async def regenerar_com_feedback(
     roteiro_id: UUID,
     payload: ScriptRegenerationRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Generate a new version from explicit operator feedback."""
+    """Compatibility boundary delegating regeneration to durable Editorial V3."""
 
-    from app.services.roteiros.gerador_roteiro import (
-        ScriptGenerationError,
-        get_roteiro_generator,
-    )
+    from app.services.script_generation_jobs import ScriptGenerationJobService
 
     try:
-        created = await get_roteiro_generator(db).regenerate_with_feedback(
-            roteiro_id, payload.feedback
+        fallback_key = (
+            "legacy-revision-"
+            + hashlib.sha256(f"{roteiro_id}:{payload.feedback}".encode()).hexdigest()
         )
-        refreshed = await RoteiroRepository(db).get_by_id(created.id)
-        assert refreshed is not None
-        return refreshed
-    except ScriptGenerationError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={"category": exc.category, "message": exc.public_message},
-        ) from exc
+        return await ScriptGenerationJobService(db).enqueue_revision(
+            roteiro_id,
+            idempotency_key=payload.idempotency_key or fallback_key,
+            feedback=payload.feedback,
+            model_strategy=payload.model_strategy,
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.patch("/{roteiro_id:uuid}/aprovar", response_model=RoteiroResponse)
@@ -235,28 +233,20 @@ async def rejeitar_roteiro(
     return roteiro
 
 
-@router.post("/analise-jogo", response_model=AnaliseJogoResponse, status_code=201)
+@router.post("/analise-jogo", response_model=GenerationRunResponse, status_code=202)
 async def criar_analise_de_jogo(
     request: AnaliseJogoRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """
-    Workflow de Análise de Jogos: recebe as anotações de gameplay do autor e gera
-    diretamente uma Ideia (já aprovada) + Roteiro v1, fora do funil de trends.
+    Compatibility endpoint delegating game analysis to durable Editorial V3.
     """
-    from app.services.roteiros.gerador_roteiro import (
-        ScriptGenerationError,
-        get_roteiro_generator,
-    )
+    from app.services.script_generation_jobs import ScriptGenerationJobService
 
-    generator = get_roteiro_generator(db)
     try:
-        resultado = await generator.generate_from_notas(request)
+        return await ScriptGenerationJobService(db).enqueue_game_analysis(
+            request,
+            idempotency_key=f"legacy-game-analysis-{uuid4()}",
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except ScriptGenerationError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={"category": exc.category, "message": exc.public_message},
-        ) from exc
-    return resultado
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -15,6 +15,40 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
+class SourceMatchRule:
+    """Versionable source rule prepared for host/path/account-level policies."""
+
+    host: str
+    path_prefix: str | None = None
+    account: str | None = None
+
+
+@dataclass(frozen=True)
+class SourcePolicy:
+    """Deterministic source classification and grounding policy.
+
+    Domain lists are intentionally profile configuration rather than provider/model
+    judgments. An empty list means "unknown", never implicitly trustworthy.
+    """
+
+    primary_domains: tuple[str, ...] = ()
+    primary_sources: tuple[SourceMatchRule, ...] = ()
+    reliable_domains: tuple[str, ...] = ()
+    reliable_sources: tuple[SourceMatchRule, ...] = ()
+    community_domains: tuple[str, ...] = (
+        "reddit.com",
+        "facebook.com",
+        "instagram.com",
+        "youtube.com",
+        "youtu.be",
+    )
+    unknown_default: str = "unverified"
+    grounding_required: bool = True
+    minimum_claims: int = 1
+    version: str = "source_policy_v2"
+
+
+@dataclass(frozen=True)
 class DurationPolicy:
     """Versioned editorial duration contract for a production profile."""
 
@@ -73,6 +107,7 @@ class ProductionProfile:
     model_routing_policy: str = "standard"
     long_form_supported: bool = True
     max_practical_duration_seconds: int = 14_400
+    source_policy: SourcePolicy = field(default_factory=SourcePolicy)
 
 
 FACELESS_POP_CULTURE_LISTS = ProductionProfile(
@@ -268,6 +303,10 @@ GAME_ANALYSIS = ProductionProfile(
     workflow_roteiro="roteiro_analise_jogos",
     permite_grounding_automatico=False,
     max_practical_duration_seconds=28_800,
+    source_policy=SourcePolicy(
+        grounding_required=False,
+        minimum_claims=0,
+    ),
 )
 
 _REGISTRY: dict[str, ProductionProfile] = {

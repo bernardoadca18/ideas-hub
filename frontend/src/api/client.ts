@@ -35,6 +35,9 @@ export interface GenerationRun {
   id: string;
   ideia_id: string;
   roteiro_id?: string;
+  parent_roteiro_id?: string;
+  generation_intent: string;
+  revision_feedback?: string;
   status: string;
   phase: string;
   generation_strategy: string;
@@ -116,6 +119,11 @@ export interface Roteiro {
     prompt_trace?: Record<string, unknown>;
     duration_contract?: DurationContract;
     editorial_quality?: Record<string, unknown>;
+    editorial_review?: EditorialReview;
+    evidence_provenance?: EvidenceProvenance;
+    section_audits?: Record<string, SectionAudit | null>;
+    global_critic?: { summary?: string; issues?: EditorialIssue[] };
+    generation_run_id?: string;
   };
   status: string;
   author_briefing_snapshot?: string;
@@ -128,6 +136,56 @@ export interface Roteiro {
   atualizado_em: string;
 }
 
+export interface EditorialIssue {
+  section_key?: string;
+  category: string;
+  severity: 'warning' | 'revision_required' | 'blocking';
+  actionable_feedback: string;
+  claim_ref?: string;
+  excerpt?: string;
+}
+
+export interface SectionAudit {
+  revision_required?: boolean;
+  issues?: EditorialIssue[];
+  actual_claim_refs?: string[];
+  actual_beats_covered?: string[];
+  actual_summary?: string;
+}
+
+export interface EditorialReview {
+  audit_status: string;
+  editorial_status: string;
+  factuality_status: string;
+  approval_blocked: boolean;
+  global_summary?: string;
+  global_issues?: EditorialIssue[];
+  section_issues?: Record<string, EditorialIssue[]>;
+  unsupported_claim_count?: number;
+}
+
+export interface EvidenceProvenance {
+  version?: string;
+  generation_run_id?: string;
+  sources?: Array<{
+    source_id?: string;
+    title?: string;
+    url?: string;
+    domain?: string;
+    source_trust?: string;
+  }>;
+  claim_ledger?: Array<{
+    id: string;
+    summary: string;
+    source_trust?: string;
+    claim_status?: string;
+    confidence?: number;
+    source_refs?: string[];
+    qualification?: string;
+  }>;
+  section_claim_usage?: Record<string, string[]>;
+}
+
 export interface BlocoNarrativo {
   tipo: string;
   duracao_segundos: number;
@@ -137,6 +195,7 @@ export interface BlocoNarrativo {
   visual_queries?: Array<Record<string, unknown>>;
   purpose?: string;
   beats?: Array<Record<string, unknown>>;
+  planned_beats?: Array<Record<string, unknown>>;
   claims?: Array<Record<string, unknown>>;
   audio_intent?: Record<string, unknown>;
 }
@@ -248,8 +307,8 @@ class ApiClient {
     return this.request<Ideia>(`/ideias/${id}/rejeitar`, { method: 'PATCH' });
   }
 
-  async gerarRoteiro(ideiaId: string): Promise<{ roteiro_id: string; titulo: string }> {
-    return this.request(`/ideias/${ideiaId}/roteiro`, { method: 'POST' });
+  async gerarRoteiro(ideiaId: string): Promise<GenerationRun> {
+    return this.request<GenerationRun>(`/ideias/${ideiaId}/roteiro`, { method: 'POST' });
   }
 
   async startGenerationRun(ideiaId: string, idempotencyKey: string): Promise<GenerationRun> {
@@ -353,10 +412,17 @@ class ApiClient {
     });
   }
 
-  async regenerarRoteiroComFeedback(id: string, feedback: string): Promise<Roteiro> {
-    return this.request<Roteiro>(`/roteiros/${id}/revisoes/regenerar`, {
+  async startRevisionGenerationRun(id: string, feedback: string, idempotencyKey: string): Promise<GenerationRun> {
+    return this.request<GenerationRun>(`/roteiros/${id}/generation-runs`, {
       method: 'POST',
-      body: JSON.stringify({ feedback }),
+      body: JSON.stringify({ feedback, idempotency_key: idempotencyKey }),
+    });
+  }
+
+  async startRoteiroAudit(id: string, idempotencyKey: string): Promise<GenerationRun> {
+    return this.request<GenerationRun>(`/roteiros/${id}/audit`, {
+      method: 'POST',
+      body: JSON.stringify({ idempotency_key: idempotencyKey }),
     });
   }
 }
