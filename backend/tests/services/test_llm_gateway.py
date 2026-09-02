@@ -340,6 +340,66 @@ async def test_malformed_success_envelope_reports_safe_shape_diagnostics() -> No
 
 
 @pytest.mark.asyncio
+async def test_non_json_success_envelope_is_typed_and_does_not_leak_body() -> None:
+    malformed = httpx.Response(
+        200,
+        text="upstream secret-bearing response that is not JSON",
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
+    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = malformed
+
+    with pytest.raises(LLMGatewayError) as captured:
+        await LLMGateway(_settings(), client=client).complete(
+            messages=[{"role": "user", "content": "test"}],
+            role=LLMTaskRole.CRITIC,
+            temperature=0,
+            max_tokens=100,
+        )
+
+    message = str(captured.value)
+    assert captured.value.category is LLMFailureCategory.FORMAT
+    assert "non_json_response" in message
+    assert "secret-bearing" not in message
+    assert client.post.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"choices": []},
+        {"choices": [{}]},
+        {"choices": [{"message": {}}]},
+        {"choices": None},
+    ],
+    ids=["empty-choices", "missing-message", "missing-content", "null-choices"],
+)
+async def test_malformed_choices_are_typed_and_not_completed(
+    payload: dict[str, object],
+) -> None:
+    malformed = httpx.Response(
+        200,
+        json=payload,
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
+    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = malformed
+
+    with pytest.raises(LLMGatewayError) as captured:
+        await LLMGateway(_settings(), client=client).complete(
+            messages=[{"role": "user", "content": "test"}],
+            role=LLMTaskRole.CRITIC,
+            temperature=0,
+            max_tokens=100,
+        )
+
+    assert captured.value.category is LLMFailureCategory.FORMAT
+    assert "top_level_keys=choices" in str(captured.value)
+    assert client.post.await_count == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "body",
     [

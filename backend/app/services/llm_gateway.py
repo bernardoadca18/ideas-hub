@@ -332,7 +332,7 @@ class LLMGateway:
                 return result
             except LLMGatewayError:
                 raise
-            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
                 envelope_details = "non_json_response"
                 if isinstance(data, dict):
                     error = data.get("error")

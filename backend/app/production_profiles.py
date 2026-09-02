@@ -51,8 +51,18 @@ class SourcePolicy:
             query_suffix="site:rockstargames.com",
         ),
     )
-    reliable_domains: tuple[str, ...] = ()
-    reliable_sources: tuple[SourceMatchRule, ...] = ()
+    # Small, host-owned baseline for the first production domain. These outlets
+    # may support reported claims; they never promote a claim to confirmed.
+    reliable_domains: tuple[str, ...] = (
+        "reuters.com",
+        "bloomberg.com",
+        "bbc.com",
+        "theverge.com",
+        "gamesindustry.biz",
+    )
+    reliable_sources: tuple[SourceMatchRule, ...] = (
+        SourceMatchRule(host="ign.com", path_prefix="/articles"),
+    )
     community_domains: tuple[str, ...] = (
         "reddit.com",
         "facebook.com",
@@ -63,7 +73,7 @@ class SourcePolicy:
     unknown_default: str = "unverified"
     grounding_required: bool = True
     minimum_claims: int = 1
-    version: str = "source_policy_v4"
+    version: str = "source_policy_v5"
 
 
 @dataclass(frozen=True)

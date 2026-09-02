@@ -15,7 +15,7 @@ from app.prompts.components import (
 from app.prompts.quality import editorial_quality_charter
 from app.prompts.workflows import get_workflow
 
-EDITORIAL_PROMPT_COMPOSITION_VERSION = "editorial_prompt_composition_v4"
+EDITORIAL_PROMPT_COMPOSITION_VERSION = "editorial_prompt_composition_v5"
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,7 @@ _FACTUALITY_POLICY = """POLÍTICA EPISTÊMICA:
 - confirmed pode ser afirmado diretamente apenas dentro do escopo confirmado.
 - official_observation descreve o que o material oficial mostra; não confirma, sozinho, mecânica, causalidade, frequência, intenção ou implementação técnica.
 - reported deve ser atribuído; inference usa linguagem como "isso sugere"; rumor/leak/speculation precisam ser inequivocamente rotulados; unknown não vira fato.
+- Ausência de evidência no dossiê nunca é evidência de ausência. Afirmar que uma entidade não anunciou, publicou, confirmou ou mostrou algo exige um claim aprovado que sustente exatamente essa ausência.
 - Nunca invente especificidade mecânica, técnica, geográfica, comportamental, quantitativa ou causal para cumprir contagem de palavras.
 - Se a evidência for insuficiente, reduza o escopo, qualifique a inferência ou exponha a pergunta em aberto. Um texto honesto mais curto é preferível a profundidade fabricada.
 - AUTHOR BRIEFING é opinião/direção editorial, não evidência factual.
@@ -46,6 +47,7 @@ _SPOKEN_PT_BR_POLICY = """NARRAÇÃO PT-BR:
 _AUDIT_POLICY = """AUDITORIA:
 - unsupported_specificity significa que a prosa adiciona detalhe mecânico, técnico, geográfico, comportamental, quantitativo ou causal além do que os claims aprovados estabelecem.
 - Não use ausência de claim ID para promover uma afirmação. Uma factual assertion sem claim aprovado é unsupported_claim.
+- Trate como unsupported_claim qualquer alegação de que algo não foi anunciado, publicado, confirmado ou mostrado quando o ledger não contiver um claim aprovado sobre essa ausência; não infira ausência apenas porque a evidência disponível não a menciona.
 - Para cada claim usado que não seja confirmed/strongly_supported, registre um claim_language_assessment. reported exige atribuição explícita; rumor/leak/speculation exigem rótulo inequívoco; inference/interpretation exigem linguagem inferencial; official_observation deve preservar o escopo observado e nunca certificar uma mecânica não declarada.
 - Retorne somente issues concisos, trechos curtos e feedback acionável; nunca chain-of-thought nem reescrita integral."""
 

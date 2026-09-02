@@ -759,8 +759,14 @@ def test_explicit_primary_source_requirement_is_narrow_and_accent_insensitive() 
         "Priorize exclusivamente evidência oficial e perfis oficiais."
     )
     assert _explicit_primary_source_required("Use official sources only.")
+    assert _explicit_primary_source_required(
+        "Use apenas informações oficialmente confirmadas pela Rockstar."
+    )
     assert not _explicit_primary_source_required(
-        "Uma análise editorial geral sobre a história dos videogames."
+        "Faça uma análise de GTA VI e prefira fontes oficiais quando disponíveis."
+    )
+    assert not _explicit_primary_source_required(
+        "O que sabemos sobre GTA VI, incluindo reportagens e rumores qualificados."
     )
 
 
@@ -2406,9 +2412,9 @@ async def test_short_research_expands_before_claim_extraction_when_no_trusted_so
     )
     idea = SimpleNamespace(
         titulo="GTA VI personagens oficiais",
-        descricao_breve="Perfis oficiais da Rockstar",
+        descricao_breve="Contraste entre personagens apresentados pela Rockstar.",
         nicho_id=None,
-        author_briefing=None,
+        author_briefing="Use apenas informações oficialmente confirmadas pela Rockstar.",
     )
     monkeypatch.setattr(
         "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
@@ -2463,6 +2469,144 @@ async def test_short_research_expands_before_claim_extraction_when_no_trusted_so
         "new_candidates": 1,
         "trusted_candidates_found": 1,
     }
+    assert research.search.await_args_list[1].args[0].endswith("site:rockstargames.com")
+
+
+@pytest.mark.asyncio
+async def test_generic_gta_brief_continues_with_reliable_secondary_without_primary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock()
+    secondary = ResearchSource(
+        source_id="external-reuters",
+        query="initial",
+        title="Reportagem sobre GTA VI",
+        url="https://www.reuters.com/technology/gta-vi-report",
+        snippet="A reportagem atribui à empresa uma informação sobre GTA VI.",
+        source_type="external_search_result",
+        retrieved_at="2026-09-02T00:00:00+00:00",
+        domain="reuters.com",
+    )
+    research = AsyncMock()
+    research.search.return_value = [secondary]
+    service = ScriptGenerationJobService(
+        session, gateway=AsyncMock(), research_client=research, config=_config()
+    )
+    idea = SimpleNamespace(
+        titulo="Faça uma análise de GTA VI",
+        descricao_breve="Contextualize o que sabemos até agora.",
+        nicho_id=None,
+        author_briefing=None,
+    )
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+        AsyncMock(return_value=idea),
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        production_profile="faceless_general",
+        target_duration_seconds=60,
+        target_words=145,
+        evidence_dossier={},
+        heartbeat_at=None,
+    )
+
+    async def extract_claims(current_run, _idea):
+        dossier = dict(current_run.evidence_dossier)
+        claim = {
+            "id": "claim-reported",
+            "summary": "A reportagem atribui à empresa uma informação sobre GTA VI.",
+            "source_refs": [secondary.source_id],
+            "source_fragment_id": secondary.source_id,
+            "source_trust": "reliable_secondary",
+            "claim_status": "reported",
+            "confidence": 0.7,
+            "qualification": "Segundo a reportagem.",
+            "support_scope": "Somente a informação reportada.",
+            "evidence_tier": "reliable_secondary",
+        }
+        dossier["claims"] = [claim]
+        for fragment in dossier.get("fragments") or []:
+            fragment["claims"] = [claim]
+            fragment["claim_extraction_status"] = "completed"
+        current_run.evidence_dossier = dossier
+
+    service._extract_external_claims = AsyncMock(  # type: ignore[method-assign]
+        side_effect=extract_claims
+    )
+
+    await service._build_external_evidence_dossier(run)
+
+    assert research.search.await_count == 1
+    assert run.evidence_dossier["primary_source_required"] is False
+    assert run.evidence_dossier["research_status"] == "completed"
+    assert run.evidence_dossier["selected_source_count"] == 1
+    assert run.evidence_dossier["claims"][0]["source_trust"] == "reliable_secondary"
+    assert run.evidence_dossier["claims"][0]["claim_status"] == "reported"
+
+
+@pytest.mark.asyncio
+async def test_explicit_official_only_brief_fails_after_one_bounded_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock()
+    secondary = ResearchSource(
+        source_id="external-reuters",
+        query="initial",
+        title="Reportagem sobre GTA VI",
+        url="https://www.reuters.com/technology/gta-vi-report",
+        snippet="Uma reportagem secundária sobre GTA VI.",
+        source_type="external_search_result",
+        retrieved_at="2026-09-02T00:00:00+00:00",
+        domain="reuters.com",
+    )
+    unverified = ResearchSource(
+        source_id="external-unverified",
+        query="official recovery",
+        title="Resumo não oficial",
+        url="https://unknown.example/gta-vi",
+        snippet="Um resumo não oficial sobre GTA VI.",
+        source_type="external_search_result",
+        retrieved_at="2026-09-02T00:00:00+00:00",
+        domain="unknown.example",
+    )
+    research = AsyncMock()
+    research.search.side_effect = [[secondary], [unverified]]
+    service = ScriptGenerationJobService(
+        session, gateway=AsyncMock(), research_client=research, config=_config()
+    )
+    service._extract_external_claims = AsyncMock()  # type: ignore[method-assign]
+    idea = SimpleNamespace(
+        titulo="GTA VI confirmado",
+        descricao_breve="Liste somente recursos confirmados.",
+        nicho_id=None,
+        author_briefing="Use apenas informações oficialmente confirmadas pela Rockstar.",
+    )
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+        AsyncMock(return_value=idea),
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        production_profile="faceless_general",
+        target_duration_seconds=60,
+        target_words=145,
+        evidence_dossier={},
+        heartbeat_at=None,
+    )
+
+    with pytest.raises(GenerationJobError, match="primary official evidence"):
+        await service._build_external_evidence_dossier(run)
+
+    assert research.search.await_count == 2
+    assert research.search.await_args_list[1].args[0].endswith("site:rockstargames.com")
+    service._extract_external_claims.assert_not_awaited()
+    assert run.evidence_dossier["primary_source_required"] is True
+    assert run.evidence_dossier["research_status"] == (
+        "blocked_primary_source_unavailable"
+    )
 
 
 @pytest.mark.asyncio

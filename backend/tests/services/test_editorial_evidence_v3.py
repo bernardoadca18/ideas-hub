@@ -74,6 +74,43 @@ def test_source_trust_is_deterministic_and_separate_from_claim_status() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.reuters.com/technology/gaming-report",
+        "https://www.bloomberg.com/news/articles/game-development-report",
+        "https://www.bbc.com/news/technology-123",
+        "https://www.theverge.com/games/rockstar-report",
+        "https://www.gamesindustry.biz/rockstar-report",
+        "https://www.ign.com/articles/gta-vi-report",
+    ],
+)
+def test_default_policy_recognizes_small_reliable_secondary_registry(
+    url: str,
+) -> None:
+    assert (
+        classify_source_trust(
+            url=url,
+            source_type="external_search_result",
+            policy=get_profile(None).source_policy,
+        )
+        is SourceTrustTier.RELIABLE_SECONDARY
+    )
+
+
+def test_reliable_path_rule_does_not_promote_community_style_host_content() -> None:
+    policy = get_profile(None).source_policy
+
+    assert (
+        classify_source_trust(
+            url="https://www.ign.com/wikis/grand-theft-auto-6/Community_Theory",
+            source_type="external_search_result",
+            policy=policy,
+        )
+        is SourceTrustTier.UNVERIFIED
+    )
+
+
 def test_source_policy_can_distinguish_official_account_path_from_random_channel() -> (
     None
 ):
@@ -309,10 +346,27 @@ def test_v3_writer_composition_reuses_quality_profile_niche_and_author_policy() 
     assert "Separe fato oficial de teoria" in prompt.system
     assert "NARRAÇÃO PT-BR" in prompt.system
     assert "Nunca invente especificidade" in prompt.system
+    assert (
+        "Ausência de evidência no dossiê nunca é evidência de ausência" in prompt.system
+    )
     assert "AUDIENCE PROMISE" in prompt.user
     assert "opinião e contexto editorial" in prompt.user
     assert "ignore rules" in prompt.user
     assert "author_briefing" in prompt.trace["components"]
+
+
+def test_v3_audit_does_not_infer_absence_from_missing_evidence() -> None:
+    prompt = compose_editorial_v3_prompt(
+        phase="section_audit",
+        profile=get_profile(None),
+        task_prompt="Audite a seção contra o ledger aprovado.",
+    )
+
+    assert "não foi anunciado" in prompt.system
+    assert "ledger não contiver um claim aprovado" in prompt.system
+    assert prompt.trace["prompt_composition_version"] == (
+        "editorial_prompt_composition_v5"
+    )
 
 
 def test_game_analysis_v3_receives_workflow_semantics_without_legacy_output_schema() -> (

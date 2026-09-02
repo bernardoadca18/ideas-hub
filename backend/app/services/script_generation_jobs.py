@@ -1214,12 +1214,21 @@ class ScriptGenerationJobService:
             target_words=getattr(run, "target_words", None),
             config=self.config,
         )
-        candidate_queries = [
-            idea.titulo,
-            _primary_source_research_query(idea.titulo, profile.source_policy),
-            f"{idea.titulo} {description[:500]}" if description else "",
-            f"{idea.titulo} verificação fontes confiáveis contexto",
-        ]
+        primary_recovery_query = (
+            _primary_source_research_query(idea.titulo, profile.source_policy)
+            if primary_source_required
+            else None
+        )
+        candidate_queries = [idea.titulo]
+        if primary_recovery_query:
+            candidate_queries.append(primary_recovery_query)
+        candidate_queries.extend(
+            [
+                f"{idea.titulo} {description[:500]}" if description else "",
+                f"{idea.titulo} verificação fontes confiáveis contexto",
+                f"{idea.titulo} reportagens entrevistas contexto de desenvolvimento",
+            ]
+        )
         queries: list[str] = []
         for query in candidate_queries:
             normalized = " ".join(query.split())
@@ -1270,20 +1279,18 @@ class ScriptGenerationJobService:
                 }
             )
         preselection_expansion: dict[str, Any] | None = None
-        trusted_tiers = {
-            SourceTrustTier.PRIMARY_OFFICIAL.value,
-            SourceTrustTier.RELIABLE_SECONDARY.value,
-        }
         if (
-            research_budget.tier == "short"
+            primary_source_required
             and not any(
-                str(item.get("source_trust")) in trusted_tiers
+                str(item.get("source_trust")) == SourceTrustTier.PRIMARY_OFFICIAL.value
                 for item in classified_sources
             )
+            and primary_recovery_query is not None
+            and primary_recovery_query not in queries[: research_budget.initial_queries]
             and research_budget.initial_queries < research_budget.total_queries
             and profile.permite_grounding_automatico
         ):
-            expansion_query = queries[research_budget.initial_queries]
+            expansion_query = primary_recovery_query
             expansion_results = await self.research_client.search(
                 expansion_query,
                 max_results=research_budget.results_per_query,
@@ -1321,7 +1328,8 @@ class ScriptGenerationJobService:
                 "query": expansion_query,
                 "new_candidates": new_candidate_count,
                 "trusted_candidates_found": sum(
-                    str(item.get("source_trust")) in trusted_tiers
+                    str(item.get("source_trust"))
+                    == SourceTrustTier.PRIMARY_OFFICIAL.value
                     for item in classified_sources
                 ),
             }
@@ -1386,17 +1394,14 @@ class ScriptGenerationJobService:
         dossier["raw_research_result_count"] = raw_result_count
         dossier["deduplicated_source_count"] = len(sources_by_url)
         dossier["selected_source_count"] = len(external_sources)
-        dossier["source_selection_version"] = "host_relevance_diversity_v2"
+        dossier["source_selection_version"] = "host_relevance_diversity_v3"
+        dossier["primary_source_required"] = primary_source_required
         if preselection_expansion is not None:
             dossier["source_preselection_expansion"] = preselection_expansion
         run.evidence_dossier = dossier
         await self.session.commit()
         if primary_source_required and not any(
-            str(item.get("source_trust"))
-            in {
-                SourceTrustTier.PRIMARY_OFFICIAL.value,
-                SourceTrustTier.RELIABLE_SECONDARY.value,
-            }
+            str(item.get("source_trust")) == SourceTrustTier.PRIMARY_OFFICIAL.value
             for item in external_sources
         ):
             dossier["research_complete"] = True
@@ -1406,8 +1411,8 @@ class ScriptGenerationJobService:
             await self.session.commit()
             raise GenerationJobError(
                 GenerationFailureCategory.GROUNDING,
-                "insufficient_evidence: the editorial brief requires a primary source, "
-                "but bounded research found none",
+                "insufficient_evidence: the editorial promise requires primary official "
+                "evidence, but bounded recovery found none",
             )
         await self._extract_external_claims(run, idea)
         dossier = dict(run.evidence_dossier)
@@ -3267,19 +3272,24 @@ def _explicit_primary_source_required(text: str) -> bool:
     return any(
         phrase in normalized
         for phrase in (
-            "fonte oficial",
-            "fontes oficiais",
-            "fonte primaria",
-            "fontes primarias",
-            "material oficial",
-            "materiais oficiais",
-            "evidencia oficial",
-            "evidencias oficiais",
-            "perfil oficial",
-            "perfis oficiais",
-            "official source",
-            "official sources",
-            "official material",
+            "apenas informacoes oficialmente confirmadas",
+            "somente informacoes oficialmente confirmadas",
+            "exclusivamente informacoes oficialmente confirmadas",
+            "apenas o que foi confirmado",
+            "somente o que foi confirmado",
+            "apenas fontes oficiais",
+            "somente fontes oficiais",
+            "exclusivamente fontes oficiais",
+            "use apenas fontes oficiais",
+            "use somente fontes oficiais",
+            "baseie-se apenas em fontes oficiais",
+            "recursos oficialmente confirmados",
+            "exclusivamente evidencia oficial",
+            "official sources only",
+            "only official sources",
+            "use only official sources",
+            "only officially confirmed",
+            "officially confirmed features",
         )
     )
 
