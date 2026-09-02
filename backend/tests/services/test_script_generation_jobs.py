@@ -13,6 +13,7 @@ from app.schemas.generation import (
     EditorialCriticIssue,
     EditorialCriticOutput,
     EditorialPlanOutput,
+    ExternalClaimExtractionOutput,
     GlobalEditorialPlanOutput,
     PlannedSectionBatchOutput,
     SectionEditorialAuditOutput,
@@ -38,13 +39,23 @@ from app.services.script_generation_jobs import (
     ScriptGenerationJobService,
     _claim_extraction_max_tokens,
     _editorial_review_payload,
+    _enforce_claim_language_assessments,
+    _explicit_primary_source_required,
     _global_critic_output_contract,
     _global_plan_output_contract,
+    _normalize_research_url,
     _planning_max_tokens,
+    _primary_source_research_query,
+    _reaudit_claim_refs,
+    _reaudited_blocks,
     _repair_max_tokens,
+    _research_budget,
+    _role_model_snapshot,
+    _section_audit_max_tokens,
     _section_audit_output_contract,
     _section_batch_output_contract,
     _section_batches,
+    _select_research_sources,
     _temperature_for_role,
     _writing_max_tokens,
 )
@@ -148,6 +159,7 @@ def _section_audit(
     issues: list[EditorialCriticIssue] | None = None,
     claims: list[str] | None = None,
     beats: list[str] | None = None,
+    claim_language_assessments: list[dict[str, object]] | None = None,
 ) -> SectionEditorialAuditOutput:
     return SectionEditorialAuditOutput(
         revision_required=revision_required,
@@ -157,6 +169,7 @@ def _section_audit(
         actual_summary="A seção cobriu o ponto central.",
         opened_loops=[],
         closed_loops=[],
+        claim_language_assessments=claim_language_assessments or [],
     )
 
 
@@ -467,7 +480,8 @@ def _planning_fixture(
     ("strategy", "role", "escalation", "expected"),
     [
         ("standard", LLMTaskRole.WRITING, None, "standard-route"),
-        ("flash_only", LLMTaskRole.CRITIC, None, "standard-route"),
+        ("flash_only", LLMTaskRole.CRITIC, None, "fast-route"),
+        ("flash_only", LLMTaskRole.WRITING, "repeated_failure", "fast-route"),
         ("hybrid", LLMTaskRole.PLANNING, None, "strong-route"),
         ("hybrid", LLMTaskRole.WRITING, None, "standard-route"),
         ("strong", LLMTaskRole.WRITING, None, "strong-route"),
@@ -511,6 +525,362 @@ async def test_task_policy_routes_by_function_without_provider_names(
     assert (len(run.call_usage["escalations"]) == 1) is bool(escalation)
 
 
+def test_semantic_model_strategy_matrix_is_complete() -> None:
+    expected = {
+        "flash_only": {
+            "fast": "fast-route",
+            "planning": "fast-route",
+            "writing": "fast-route",
+            "critic": "fast-route",
+            "repair": "fast-route",
+        },
+        "standard": {
+            "fast": "fast-route",
+            "planning": "standard-route",
+            "writing": "standard-route",
+            "critic": "standard-route",
+            "repair": "fast-route",
+        },
+        "hybrid": {
+            "fast": "fast-route",
+            "planning": "strong-route",
+            "writing": "standard-route",
+            "critic": "strong-route",
+            "repair": "fast-route",
+        },
+        "strong": {
+            "fast": "strong-route",
+            "planning": "strong-route",
+            "writing": "strong-route",
+            "critic": "strong-route",
+            "repair": "strong-route",
+        },
+    }
+    assert {
+        strategy: _role_model_snapshot(_config(), strategy) for strategy in expected
+    } == expected
+
+
+def test_research_budget_is_proportional_and_bounded() -> None:
+    config = _config()
+    short = _research_budget(
+        target_duration_seconds=60, target_words=145, config=config
+    )
+    medium = _research_budget(
+        target_duration_seconds=360, target_words=870, config=config
+    )
+    long = _research_budget(
+        target_duration_seconds=720, target_words=1740, config=config
+    )
+    assert (short.initial_queries, short.total_queries, short.results_per_query) == (
+        1,
+        2,
+        3,
+    )
+    assert short.selected_sources == 2
+    assert medium.selected_sources == 7
+    assert long.selected_sources == 10
+    assert short.selected_sources < medium.selected_sources < long.selected_sources
+    assert long.total_queries <= config.generation_research_max_queries
+
+
+@pytest.mark.parametrize(
+    ("claim_count", "expected"),
+    [(0, 8000), (12, 8000), (13, 8000), (42, 8000), (200, 8000)],
+)
+def test_section_audit_output_budget_is_bounded_and_proportional(
+    claim_count: int, expected: int
+) -> None:
+    assert _section_audit_max_tokens(claim_count) == expected
+
+
+def test_reaudit_claim_selection_uses_parent_section_provenance_without_reusing_audit() -> (
+    None
+):
+    available = ["claim-parent", "claim-unused"]
+    assert _reaudit_claim_refs(
+        current_claims=[],
+        inherited_claims=[{"id": "claim-parent"}, {"id": "claim-unknown"}],
+        available_claim_ids=available,
+    ) == ["claim-parent"]
+    assert _reaudit_claim_refs(
+        current_claims=[{"id": "claim-unused"}],
+        inherited_claims=[{"id": "claim-parent"}],
+        available_claim_ids=available,
+    ) == ["claim-unused"]
+    assert (
+        _reaudit_claim_refs(
+            current_claims=[], inherited_claims=[], available_claim_ids=available
+        )
+        == available
+    )
+
+
+def test_reaudited_blocks_preserve_prose_and_persist_only_actual_claims() -> None:
+    block = SimpleNamespace(
+        model_dump=lambda **_: {
+            "tipo": "seção",
+            "duracao_segundos": 60,
+            "conteudo": "Texto humano preservado.",
+            "claims": [],
+            "beats": [],
+        }
+    )
+    section = SimpleNamespace(
+        section_order=0,
+        section_plan={"evidence_refs": ["source-1"]},
+        output={
+            "claims_used": ["claim-used"],
+            "beats_covered": ["Beat observado"],
+        },
+    )
+
+    result = _reaudited_blocks(
+        [block],
+        [section],
+        claim_ledger=[
+            {"id": "claim-used", "summary": "Usado"},
+            {"id": "claim-unused", "summary": "Não usado"},
+        ],
+    )
+
+    assert result[0]["conteudo"] == "Texto humano preservado."
+    assert [item["id"] for item in result[0]["claims"]] == ["claim-used"]
+    assert result[0]["beats"] == [
+        {
+            "purpose": "actual",
+            "key_point": "Beat observado",
+            "evidence_refs": ["source-1"],
+        }
+    ]
+
+
+def test_source_preselection_normalizes_tracking_and_preserves_relevant_diversity() -> (
+    None
+):
+    assert (
+        _normalize_research_url(
+            "https://www.rockstargames.com/news/?utm_source=test&lang=pt#fragment"
+        )
+        == "https://rockstargames.com/news?lang=pt"
+    )
+    sources = [
+        {
+            "title": "Rockstar Games anuncia GTA VI",
+            "snippet": "Página oficial com o anúncio de GTA VI.",
+            "url": "https://rockstargames.com/VI",
+            "domain": "rockstargames.com",
+            "source_trust": "primary_official",
+        },
+        {
+            "title": "GTA VI report",
+            "snippet": "A secondary report about GTA VI development.",
+            "url": "https://news.example/gta-vi",
+            "domain": "news.example",
+            "source_trust": "unverified",
+        },
+        {
+            "title": "Frases para começar bem o dia",
+            "snippet": "Mensagens motivacionais e cartões de bom dia.",
+            "url": "https://irrelevant.example/bom-dia",
+            "domain": "irrelevant.example",
+            "source_trust": "unverified",
+        },
+    ]
+    selected = _select_research_sources(sources, topic="GTA VI anúncio", limit=3)
+    assert [item["domain"] for item in selected] == [
+        "rockstargames.com",
+        "news.example",
+    ]
+
+
+def test_short_source_preselection_uses_trusted_sources_before_unverified() -> None:
+    sources = [
+        {
+            "title": "Rockstar Games GTA VI",
+            "snippet": "Página oficial sobre GTA VI.",
+            "url": "https://rockstargames.com/VI",
+            "domain": "rockstargames.com",
+            "source_trust": "primary_official",
+        },
+        {
+            "title": "GTA VI report",
+            "snippet": "Unverified report about GTA VI.",
+            "url": "https://unknown.example/gta-vi",
+            "domain": "unknown.example",
+            "source_trust": "unverified",
+        },
+    ]
+
+    selected = _select_research_sources(
+        sources,
+        topic="GTA VI",
+        limit=2,
+        trusted_only_when_available=True,
+    )
+
+    assert [item["source_trust"] for item in selected] == ["primary_official"]
+
+
+def test_short_source_preselection_keeps_unverified_without_trusted_source() -> None:
+    sources = [
+        {
+            "title": "GTA VI report",
+            "snippet": "Unverified report about GTA VI.",
+            "url": "https://unknown.example/gta-vi",
+            "domain": "unknown.example",
+            "source_trust": "unverified",
+        }
+    ]
+
+    selected = _select_research_sources(
+        sources,
+        topic="GTA VI",
+        limit=2,
+        trusted_only_when_available=True,
+    )
+
+    assert [item["source_trust"] for item in selected] == ["unverified"]
+
+
+def test_primary_source_query_uses_topic_scoped_policy_rule() -> None:
+    policy = get_profile(None).source_policy
+
+    assert _primary_source_research_query("Análise de GTA VI", policy).endswith(
+        "site:rockstargames.com"
+    )
+    assert _primary_source_research_query("História de Marte", policy).endswith(
+        "fonte primária oficial anúncio"
+    )
+
+
+def test_explicit_primary_source_requirement_is_narrow_and_accent_insensitive() -> None:
+    assert _explicit_primary_source_required(
+        "Priorize exclusivamente evidência oficial e perfis oficiais."
+    )
+    assert _explicit_primary_source_required("Use official sources only.")
+    assert not _explicit_primary_source_required(
+        "Uma análise editorial geral sobre a história dos videogames."
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "attributed", "qualified", "scope_preserved"),
+    [
+        ("reported", False, False, True),
+        ("rumor", True, False, True),
+        ("leak", True, False, True),
+        ("speculation", True, False, True),
+        ("inference", True, False, True),
+        ("official_observation", True, True, False),
+    ],
+)
+def test_non_direct_claim_language_loss_becomes_revision_required(
+    status: str,
+    attributed: bool,
+    qualified: bool,
+    scope_preserved: bool,
+) -> None:
+    claim_ref = f"claim-{status}"
+    audit = SectionEditorialAuditOutput.model_validate(
+        {
+            "revision_required": False,
+            "issues": [],
+            "actual_claim_refs": [claim_ref],
+            "actual_beats_covered": [],
+            "actual_summary": "A seção usou o claim.",
+            "opened_loops": [],
+            "closed_loops": [],
+            "claim_language_assessments": [
+                {
+                    "claim_ref": claim_ref,
+                    "language_proportional": True,
+                    "attribution_present": attributed,
+                    "qualification_present": qualified,
+                    "scope_preserved": scope_preserved,
+                }
+            ],
+        }
+    )
+    checked = _enforce_claim_language_assessments(
+        audit,
+        [{"id": claim_ref, "claim_status": status}],
+    )
+    assert checked.revision_required is True
+    assert checked.issues[0].category == "uncertainty_lost"
+    assert checked.issues[0].claim_ref == claim_ref
+
+
+def test_reported_attribution_is_accepted_and_confirmed_needs_no_assessment() -> None:
+    reported = SectionEditorialAuditOutput.model_validate(
+        {
+            "revision_required": False,
+            "issues": [],
+            "actual_claim_refs": ["claim-reported"],
+            "actual_beats_covered": [],
+            "actual_summary": "Segundo a fonte, a empresa estaria desenvolvendo X.",
+            "opened_loops": [],
+            "closed_loops": [],
+            "claim_language_assessments": [
+                {
+                    "claim_ref": "claim-reported",
+                    "language_proportional": True,
+                    "attribution_present": True,
+                    "qualification_present": True,
+                    "scope_preserved": True,
+                }
+            ],
+        }
+    )
+    assert not _enforce_claim_language_assessments(
+        reported,
+        [{"id": "claim-reported", "claim_status": "reported"}],
+    ).revision_required
+    confirmed = reported.model_copy(
+        update={
+            "actual_claim_refs": ["claim-confirmed"],
+            "claim_language_assessments": [],
+        }
+    )
+    assert not _enforce_claim_language_assessments(
+        confirmed,
+        [{"id": "claim-confirmed", "claim_status": "confirmed"}],
+    ).revision_required
+
+
+def test_attributed_official_observation_is_accepted_without_false_qualification() -> (
+    None
+):
+    audit = SectionEditorialAuditOutput.model_validate(
+        {
+            "revision_required": False,
+            "issues": [],
+            "actual_claim_refs": ["claim-official"],
+            "actual_beats_covered": [],
+            "actual_summary": "O material oficial mostra X.",
+            "opened_loops": [],
+            "closed_loops": [],
+            "claim_language_assessments": [
+                {
+                    "claim_ref": "claim-official",
+                    "language_proportional": True,
+                    "attribution_present": True,
+                    "qualification_present": False,
+                    "scope_preserved": True,
+                }
+            ],
+        }
+    )
+
+    checked = _enforce_claim_language_assessments(
+        audit,
+        [{"id": "claim-official", "claim_status": "official_observation"}],
+    )
+
+    assert checked.revision_required is False
+    assert checked.issues == []
+
+
 @pytest.mark.asyncio
 async def test_valid_global_fragment_does_not_call_repair() -> None:
     service = ScriptGenerationJobService(
@@ -544,6 +914,41 @@ async def test_json_only_markdown_fence_is_locally_unwrapped_without_repair() ->
 
 
 @pytest.mark.asyncio
+async def test_external_claim_confidence_labels_are_normalized_without_llm_repair() -> (
+    None
+):
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    service._complete = AsyncMock()  # type: ignore[method-assign]
+    result = _result(
+        json.dumps(
+            {
+                "claims": [
+                    {
+                        "summary": "A fonte descreve o personagem.",
+                        "source_fragment_id": "source-1",
+                        "claim_status": "reported",
+                        "confidence": "alta",
+                        "support_scope": "texto",
+                    }
+                ]
+            }
+        )
+    )
+
+    parsed, provenance = await service._parse_or_repair(
+        SimpleNamespace(), result, ExternalClaimExtractionOutput
+    )
+
+    assert parsed.claims[0].confidence == 0.9
+    assert provenance["local_shape_normalizations"] == [
+        "external_claim_confidence_label"
+    ]
+    service._complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_global_wrong_root_uses_global_only_repair() -> None:
     service = ScriptGenerationJobService(
         AsyncMock(), gateway=AsyncMock(), config=_config()
@@ -560,6 +965,7 @@ async def test_global_wrong_root_uses_global_only_repair() -> None:
     )
     assert parsed.chapters[0].key == "chapter-001"
     assert provenance["repair_reason"] == "ValidationError"
+    assert "chapters" in provenance["repair_validation_errors"]
     prompt = service._complete.await_args.kwargs["prompt"]
     assert "VALIDATION ERRORS" in prompt
     assert "Do not return sections" in prompt
@@ -645,7 +1051,7 @@ async def test_three_sections_assemble_exact_host_owned_plan(
     ]
     assert EditorialPlanOutput.model_json_schema() not in schemas
     assert all(
-        call.kwargs["structured_mode"] == "json_object"
+        call.kwargs["structured_mode"] == "json_schema"
         for call in service._complete.await_args_list
     )
 
@@ -830,8 +1236,8 @@ async def test_28_sections_never_request_monolithic_editorial_schema(
 
 
 def test_planning_and_repair_token_budgets_remain_bounded() -> None:
-    assert _planning_max_tokens(1) == 3000
-    assert _planning_max_tokens(4) == 5000
+    assert _planning_max_tokens(1) == 6000
+    assert _planning_max_tokens(4) == 6000
     with pytest.raises(ValueError, match="at least one"):
         _planning_max_tokens(0)
     assert (
@@ -902,6 +1308,27 @@ async def test_writing_stop_does_not_use_capacity_retry() -> None:
     assert section.local_validation["actual_words"] == 580
     assert section.prompt_provenance["capacity_retry_count"] == 0
     assert section.prompt_provenance["editorial_revision_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_writing_resume_preserves_bounded_editorial_attempt_count() -> None:
+    service, _, run, section = _writing_fixture()
+    section.attempt_count = 1
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(
+            _written_json(580),
+            role=LLMTaskRole.WRITING,
+            max_tokens=7480,
+            completion_tokens=1700,
+        )
+    )
+
+    await service._write_section(run, section)
+
+    assert service._complete.await_count == 1
+    assert section.status == "completed"
+    assert section.attempt_count == 2
+    assert section.prompt_provenance["editorial_revision_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -1014,6 +1441,10 @@ async def test_stopped_output_outside_word_budget_uses_editorial_revision(
     assert section.local_validation["actual_words"] == 580
     assert section.prompt_provenance["capacity_retry_count"] == 0
     assert section.prompt_provenance["editorial_revision_count"] == 1
+    assert [
+        item["editorial_attempt"]
+        for item in section.prompt_provenance["validation_attempts"]
+    ] == [1, 2]
 
 
 def test_task_temperature_policy_keeps_repair_deterministic() -> None:
@@ -1378,7 +1809,7 @@ async def test_section_audit_contract_carries_real_unsupported_specificity_examp
     assert unsupported_prose in prompt
     assert "FULL SECTION PROSE" in prompt
     assert "unsupported_specificity" in prompt
-    assert service._complete.await_args.kwargs["structured_mode"] == "json_object"
+    assert service._complete.await_args.kwargs["structured_mode"] == "json_schema"
 
 
 @pytest.mark.asyncio
@@ -1389,7 +1820,18 @@ async def test_qualified_community_estimate_can_pass_section_audit() -> None:
     )
     claim_id = "claim-community"
     run.plan["editorial"]["claim_ledger"] = [{"id": claim_id}]
-    audit = _section_audit(claims=[claim_id])
+    audit = _section_audit(
+        claims=[claim_id],
+        claim_language_assessments=[
+            {
+                "claim_ref": claim_id,
+                "language_proportional": True,
+                "attribution_present": True,
+                "qualification_present": True,
+                "scope_preserved": True,
+            }
+        ],
+    )
     service._complete = AsyncMock(  # type: ignore[method-assign]
         return_value=_result(
             audit.model_dump_json(),
@@ -1419,7 +1861,7 @@ async def test_qualified_community_estimate_can_pass_section_audit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_section_audit_rejects_unknown_claim_and_unobserved_beat_ids() -> None:
+async def test_section_audit_rejects_unknown_claim_and_drops_unobserved_beats() -> None:
     service, _, run, section = _writing_fixture()
     service._audit_section = ScriptGenerationJobService._audit_section.__get__(  # type: ignore[method-assign]
         service
@@ -1448,17 +1890,18 @@ async def test_section_audit_rejects_unknown_claim_and_unobserved_beat_ids() -> 
             role=LLMTaskRole.CRITIC,
         )
     )
-    with pytest.raises(GenerationJobError, match="unplanned beats"):
-        await service._audit_section(
-            run,
-            section,
-            content="Texto.",
-            evidence=[],
-            approved_claims=[],
-            previous_actual=[],
-            idea=SimpleNamespace(author_briefing=None),
-            niche_prompt=None,
-        )
+    audit, provenance = await service._audit_section(
+        run,
+        section,
+        content="Texto.",
+        evidence=[],
+        approved_claims=[],
+        previous_actual=[],
+        idea=SimpleNamespace(author_briefing=None),
+        niche_prompt=None,
+    )
+    assert audit.actual_beats_covered == []
+    assert provenance["dropped_unplanned_beats"] == ["Beat inventado"]
 
 
 @pytest.mark.asyncio
@@ -1635,6 +2078,47 @@ async def test_global_critic_cannot_report_unsupported_claims_without_actionable
 
 
 @pytest.mark.asyncio
+async def test_resume_after_global_correction_never_opens_second_correction_cycle() -> (
+    None
+):
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    blocking = EditorialCriticOutput(
+        summary="Ainda há claim sem suporte.",
+        issues=[
+            EditorialCriticIssue(
+                section_key="section-001",
+                category="unsupported_claim",
+                severity="blocking",
+                actionable_feedback="Remova o claim.",
+            )
+        ],
+        open_loops_closed=True,
+        unsupported_claims_detected=True,
+    )
+    service._run_global_critic = AsyncMock(return_value=blocking)  # type: ignore[method-assign]
+    service._apply_global_factual_corrections = AsyncMock()  # type: ignore[method-assign]
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        plan={"global_correction": {"cycles": 1}},
+    )
+
+    with (
+        patch(
+            "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+            new=AsyncMock(return_value=SimpleNamespace()),
+        ),
+        pytest.raises(GenerationJobError, match="retained unsupported"),
+    ):
+        await service._assemble(run)
+
+    assert service._run_global_critic.await_args.kwargs["audit_scope"] == "final"
+    service._apply_global_factual_corrections.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_unsupported_claim_warning_is_promoted_to_targeted_revision() -> None:
     service, _, run, section = _writing_fixture()
     issue = EditorialCriticIssue(
@@ -1710,6 +2194,7 @@ def test_audit_contracts_define_each_issue_field_and_reject_description_alias() 
         assert "actionable_feedback, claim_ref and excerpt" in contract
         assert "Never use description" in contract
         assert "unsupported_specificity" in contract
+    assert "compound beat is covered only" in section_contract
 
 
 @pytest.mark.asyncio
@@ -1887,6 +2372,97 @@ async def test_external_research_resume_preserves_completed_claim_checkpoints(
     service._complete = AsyncMock()  # type: ignore[method-assign]
     await service._extract_external_claims(run, idea)
     service._complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_short_research_expands_before_claim_extraction_when_no_trusted_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock()
+    unverified = ResearchSource(
+        source_id="external-community",
+        query="initial",
+        title="Community report",
+        url="https://unknown.example/gta-vi",
+        snippet="Community description of GTA VI.",
+        source_type="external_search_result",
+        retrieved_at="2026-09-01T00:00:00+00:00",
+        domain="unknown.example",
+    )
+    official = ResearchSource(
+        source_id="external-rockstar",
+        query="official",
+        title="Grand Theft Auto VI - Rockstar Games",
+        url="https://www.rockstargames.com/VI",
+        snippet="Official descriptions for the GTA VI characters.",
+        source_type="external_search_result",
+        retrieved_at="2026-09-01T00:00:00+00:00",
+        domain="rockstargames.com",
+    )
+    research = AsyncMock()
+    research.search.side_effect = [[unverified], [official]]
+    service = ScriptGenerationJobService(
+        session, gateway=AsyncMock(), research_client=research, config=_config()
+    )
+    idea = SimpleNamespace(
+        titulo="GTA VI personagens oficiais",
+        descricao_breve="Perfis oficiais da Rockstar",
+        nicho_id=None,
+        author_briefing=None,
+    )
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+        AsyncMock(return_value=idea),
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        production_profile="faceless_general",
+        target_duration_seconds=60,
+        target_words=145,
+        evidence_dossier={},
+        heartbeat_at=None,
+    )
+
+    async def extract_claims(current_run, _idea):
+        dossier = dict(current_run.evidence_dossier)
+        claims = [
+            {
+                "id": f"claim-{index}",
+                "summary": f"Official claim {index}",
+                "source_refs": [official.source_id],
+                "source_fragment_id": official.source_id,
+                "source_trust": "primary_official",
+                "claim_status": "confirmed",
+                "confidence": 0.9,
+                "evidence_tier": "official_confirmed",
+            }
+            for index in range(3)
+        ]
+        dossier["claims"] = claims
+        for fragment in dossier.get("fragments") or []:
+            fragment["claims"] = claims
+            fragment["claim_extraction_status"] = "completed"
+        current_run.evidence_dossier = dossier
+
+    service._extract_external_claims = AsyncMock(  # type: ignore[method-assign]
+        side_effect=extract_claims
+    )
+
+    await service._build_external_evidence_dossier(run)
+
+    assert research.search.await_count == 2
+    assert run.evidence_dossier["query_count"] == 2
+    assert run.evidence_dossier["selected_source_count"] == 1
+    assert (
+        run.evidence_dossier["fragments"][0]["source_fragment_id"] == official.source_id
+    )
+    assert run.evidence_dossier["source_preselection_expansion"] == {
+        "attempted": True,
+        "query": research.search.await_args_list[1].args[0],
+        "new_candidates": 1,
+        "trusted_candidates_found": 1,
+    }
 
 
 @pytest.mark.asyncio

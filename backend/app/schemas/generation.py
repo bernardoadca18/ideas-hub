@@ -207,6 +207,18 @@ class EditorialCriticOutput(BaseModel):
     unsupported_claims_detected: bool
 
 
+class ClaimLanguageAssessment(BaseModel):
+    """Auditable semantic judgment for one claim actually used in prose."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim_ref: str = Field(min_length=1, max_length=100)
+    language_proportional: bool
+    attribution_present: bool
+    qualification_present: bool
+    scope_preserved: bool
+
+
 class SectionEditorialAuditOutput(BaseModel):
     """Post-write observations; planning metadata cannot self-certify prose."""
 
@@ -219,6 +231,9 @@ class SectionEditorialAuditOutput(BaseModel):
     actual_summary: str = Field(min_length=1, max_length=1500)
     opened_loops: list[str] = Field(default_factory=list, max_length=20)
     closed_loops: list[str] = Field(default_factory=list, max_length=20)
+    claim_language_assessments: list[ClaimLanguageAssessment] = Field(
+        default_factory=list, max_length=50
+    )
 
 
 class GenerationRunCreate(BaseModel):

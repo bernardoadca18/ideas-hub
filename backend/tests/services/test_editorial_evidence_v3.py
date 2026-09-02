@@ -106,6 +106,34 @@ def test_source_policy_can_distinguish_official_account_path_from_random_channel
     )
 
 
+def test_default_source_policy_recognizes_only_specific_rockstar_properties() -> None:
+    policy = SourcePolicy()
+    assert (
+        classify_source_trust(
+            url="https://www.rockstargames.com/VI",
+            source_type="external_search_result",
+            policy=policy,
+        )
+        is SourceTrustTier.PRIMARY_OFFICIAL
+    )
+    assert (
+        classify_source_trust(
+            url="https://youtube.com/@rockstargames/videos",
+            source_type="external_search_result",
+            policy=policy,
+        )
+        is SourceTrustTier.PRIMARY_OFFICIAL
+    )
+    assert (
+        classify_source_trust(
+            url="https://youtube.com/@randomchannel/videos",
+            source_type="external_search_result",
+            policy=policy,
+        )
+        is SourceTrustTier.COMMUNITY
+    )
+
+
 def test_unverified_source_cannot_promote_claim_to_confirmed() -> None:
     status, confidence, qualification = _calibrate_external_claim(
         source_trust=SourceTrustTier.UNVERIFIED,
@@ -116,6 +144,18 @@ def test_unverified_source_cannot_promote_claim_to_confirmed() -> None:
     assert status is ClaimStatus.REPORTED
     assert confidence == 0.5
     assert qualification and "não é uma fonte primária" in qualification
+
+
+def test_primary_visual_observation_is_not_calibrated_as_confirmed_fact() -> None:
+    status, confidence, qualification = _calibrate_external_claim(
+        source_trust=SourceTrustTier.PRIMARY_OFFICIAL,
+        claim_status=ClaimStatus.CONFIRMED,
+        confidence=1.0,
+        qualification="direct observation in official material",
+    )
+    assert status is ClaimStatus.OFFICIAL_OBSERVATION
+    assert confidence == 1.0
+    assert qualification == "direct observation in official material"
 
 
 def test_official_observation_does_not_become_confirmed_mechanic() -> None:
@@ -348,7 +388,7 @@ async def test_external_fragment_produces_typed_host_owned_claim_checkpoint() ->
     assert "never implies an unstated gameplay mechanic" in extraction_prompt
     assert service._complete.await_args.kwargs["temperature"] == 0.0
     assert service._complete.await_args.kwargs["max_tokens"] == 4360
-    assert service._complete.await_args.kwargs["structured_mode"] == "json_object"
+    assert service._complete.await_args.kwargs["structured_mode"] == "json_schema"
     session.commit.assert_awaited_once()
 
 

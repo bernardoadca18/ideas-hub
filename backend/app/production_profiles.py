@@ -24,6 +24,14 @@ class SourceMatchRule:
 
 
 @dataclass(frozen=True)
+class SourceSearchRule:
+    """Topic-scoped primary-source search guidance owned by source policy."""
+
+    topic_terms: tuple[str, ...]
+    query_suffix: str
+
+
+@dataclass(frozen=True)
 class SourcePolicy:
     """Deterministic source classification and grounding policy.
 
@@ -31,8 +39,18 @@ class SourcePolicy:
     judgments. An empty list means "unknown", never implicitly trustworthy.
     """
 
-    primary_domains: tuple[str, ...] = ()
-    primary_sources: tuple[SourceMatchRule, ...] = ()
+    # Small cross-profile official registry. It is deliberately conservative:
+    # YouTube is official only for the unique Rockstar handle, never by host alone.
+    primary_domains: tuple[str, ...] = ("rockstargames.com",)
+    primary_sources: tuple[SourceMatchRule, ...] = (
+        SourceMatchRule(host="youtube.com", path_prefix="/@rockstargames"),
+    )
+    primary_search_rules: tuple[SourceSearchRule, ...] = (
+        SourceSearchRule(
+            topic_terms=("gta", "grand theft auto", "rockstar"),
+            query_suffix="site:rockstargames.com",
+        ),
+    )
     reliable_domains: tuple[str, ...] = ()
     reliable_sources: tuple[SourceMatchRule, ...] = ()
     community_domains: tuple[str, ...] = (
@@ -45,7 +63,7 @@ class SourcePolicy:
     unknown_default: str = "unverified"
     grounding_required: bool = True
     minimum_claims: int = 1
-    version: str = "source_policy_v2"
+    version: str = "source_policy_v4"
 
 
 @dataclass(frozen=True)

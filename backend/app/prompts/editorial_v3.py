@@ -46,6 +46,7 @@ _SPOKEN_PT_BR_POLICY = """NARRAÇÃO PT-BR:
 _AUDIT_POLICY = """AUDITORIA:
 - unsupported_specificity significa que a prosa adiciona detalhe mecânico, técnico, geográfico, comportamental, quantitativo ou causal além do que os claims aprovados estabelecem.
 - Não use ausência de claim ID para promover uma afirmação. Uma factual assertion sem claim aprovado é unsupported_claim.
+- Para cada claim usado que não seja confirmed/strongly_supported, registre um claim_language_assessment. reported exige atribuição explícita; rumor/leak/speculation exigem rótulo inequívoco; inference/interpretation exigem linguagem inferencial; official_observation deve preservar o escopo observado e nunca certificar uma mecânica não declarada.
 - Retorne somente issues concisos, trechos curtos e feedback acionável; nunca chain-of-thought nem reescrita integral."""
 
 

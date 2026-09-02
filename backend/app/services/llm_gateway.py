@@ -240,6 +240,7 @@ class LLMGateway:
         last_error: Exception | None = None
         structured_fallback_used = False
         for attempt in range(1, self.config.llm_max_attempts + 1):
+            data: Any = None
             try:
                 response = await self._get_client().post(
                     f"{self.config.ninerouter_base_url}/v1/chat/completions",
@@ -291,8 +292,16 @@ class LLMGateway:
                 choice_data = data["choices"][0]
                 choice = choice_data["message"]["content"]
                 if not isinstance(choice, str) or not choice.strip():
+                    usage = data.get("usage") or {}
+                    completion_details = usage.get("completion_tokens_details") or {}
                     raise LLMGatewayError(
-                        LLMFailureCategory.FORMAT, "LLM returned empty content"
+                        LLMFailureCategory.FORMAT,
+                        "LLM returned empty content: "
+                        f"model={data.get('model') or 'unknown'} "
+                        f"finish_reason={choice_data.get('finish_reason') or 'unknown'} "
+                        f"completion_tokens={usage.get('completion_tokens') or 0} "
+                        "reasoning_tokens="
+                        f"{completion_details.get('reasoning_tokens') or 0}",
                     )
                 usage = data.get("usage") or {}
                 completion_details = usage.get("completion_tokens_details") or {}
@@ -324,9 +333,24 @@ class LLMGateway:
             except LLMGatewayError:
                 raise
             except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                envelope_details = "non_json_response"
+                if isinstance(data, dict):
+                    error = data.get("error")
+                    error_details: list[str] = []
+                    if isinstance(error, dict):
+                        for key in ("type", "code", "status"):
+                            value = error.get(key)
+                            if isinstance(value, str) and value:
+                                error_details.append(f"error_{key}={value[:80]}")
+                    envelope_details = "top_level_keys=" + ",".join(
+                        sorted(str(key) for key in data)[:12]
+                    )
+                    if error_details:
+                        envelope_details += " " + " ".join(error_details)
                 raise LLMGatewayError(
                     LLMFailureCategory.FORMAT,
-                    "LLM provider returned a malformed response envelope",
+                    "LLM provider returned a malformed response envelope: "
+                    f"{envelope_details}",
                 ) from exc
             except (
                 httpx.TimeoutException,

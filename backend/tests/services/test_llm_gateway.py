@@ -129,6 +129,37 @@ async def test_reasoning_usage_and_visible_size_are_recorded() -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_content_error_preserves_safe_response_diagnostics() -> None:
+    response = httpx.Response(
+        200,
+        json={
+            "model": "provider/reasoning-model",
+            "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+            "usage": {
+                "completion_tokens": 2500,
+                "completion_tokens_details": {"reasoning_tokens": 2500},
+            },
+        },
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
+    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = response
+
+    with pytest.raises(LLMGatewayError) as captured:
+        await LLMGateway(_settings(), client=client).complete(
+            messages=[{"role": "user", "content": "test"}],
+            role=LLMTaskRole.CRITIC,
+            temperature=0,
+            max_tokens=2500,
+        )
+
+    assert captured.value.category is LLMFailureCategory.FORMAT
+    assert "model=provider/reasoning-model" in str(captured.value)
+    assert "finish_reason=length" in str(captured.value)
+    assert "reasoning_tokens=2500" in str(captured.value)
+
+
+@pytest.mark.asyncio
 async def test_timeout_is_bounded_and_classified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -272,6 +303,39 @@ async def test_regular_400_with_schema_does_not_use_capability_fallback() -> Non
             response_schema={"type": "object"},
         )
     assert captured.value.category is LLMFailureCategory.REQUEST
+    assert client.post.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_malformed_success_envelope_reports_safe_shape_diagnostics() -> None:
+    malformed = httpx.Response(
+        200,
+        json={
+            "error": {
+                "type": "upstream_error",
+                "code": "provider_unavailable",
+                "message": "sensitive upstream detail must not be copied",
+            }
+        },
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
+    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = malformed
+
+    with pytest.raises(LLMGatewayError) as captured:
+        await LLMGateway(_settings(), client=client).complete(
+            messages=[{"role": "user", "content": "test"}],
+            role=LLMTaskRole.CRITIC,
+            temperature=0,
+            max_tokens=100,
+        )
+
+    message = str(captured.value)
+    assert captured.value.category is LLMFailureCategory.FORMAT
+    assert "top_level_keys=error" in message
+    assert "error_type=upstream_error" in message
+    assert "error_code=provider_unavailable" in message
+    assert "sensitive upstream detail" not in message
     assert client.post.await_count == 1
 
 
