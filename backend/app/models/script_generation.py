@@ -139,5 +139,8 @@ class ScriptGenerationSection(Base, TimestampMixin):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    review_state: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default="clean"
+    )
 
     run: Mapped[ScriptGenerationRun] = relationship(back_populates="sections")

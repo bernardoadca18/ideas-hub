@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     generation_chapter_target_seconds: int = 1_800
     generation_max_sections: int = 120
     generation_max_calls: int = 180
-    generation_max_revisions_per_section: int = 2
+    generation_max_revisions_per_section: int = 1
     generation_stale_after_seconds: int = 300
     generation_worker_poll_seconds: float = 2.0
 

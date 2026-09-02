@@ -27,8 +27,22 @@ function auditStatusColor(status?: string) {
 }
 
 function approvalIsBlocked(script: Roteiro) {
+  // Manual approval is sovereign - only block if no review exists
+  // Review warnings are displayed but don't block approval
   const review = script.estrutura.editorial_review;
-  return !review || review.audit_status !== 'completed' || review.approval_blocked === true;
+  return !review;
+}
+
+function hasReviewWarnings(script: Roteiro): boolean {
+  const review = script.estrutura.editorial_review;
+  if (!review) return false;
+  // Check for high factual risk or needs_review states in sections
+  const sections = script.estrutura.blocos || [];
+  return sections.some((block: any) =>
+    block.review_state === 'high_factual_risk' ||
+    block.review_state === 'needs_review' ||
+    (block.section_audit?.issues?.length > 0)
+  );
 }
 
 export default function Roteiros() {
@@ -321,6 +335,15 @@ export default function Roteiros() {
                     {revisionRun && regenerating && <span className="form-help">{revisionRun.phase} · {revisionRun.completed_sections}/{revisionRun.total_sections} seções</span>}
                   </form>
                   {selected.estrutura.editorial_review?.audit_status !== 'completed' && <button className="btn btn-primary" disabled={regenerating} onClick={() => void reaudit(selected)}>Revalidar texto atual</button>}
+                  {hasReviewWarnings(selected) && (
+                    <div className="review-warnings-banner" style={{ marginTop: '1rem', padding: '0.75rem', backgroundColor: '#fef3c7', border: '1px solid #f59e0b', borderRadius: '4px' }}>
+                      <strong>⚠️ Avisos de revisão detectados</strong>
+                      <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.9rem' }}>
+                        Este roteiro contém questões editoriais ou factuais que requerem atenção.
+                        Você pode aprovar mesmo assim, mas revise os blocos marcados abaixo.
+                      </p>
+                    </div>
+                  )}
                 </div>
                 {selected.status === 'rascunho' && <div className="modal-footer">{selectedIsLatest ? <><button onClick={() => reject(selected)} className="btn btn-danger">Rejeitar</button><button onClick={() => approve(selected)} className="btn btn-success" disabled={approvalIsBlocked(selected)} title={approvalIsBlocked(selected) ? 'Audit atual obrigatório e sem bloqueadores antes da aprovação.' : undefined}>Aprovar versão</button></> : <span className="form-help">Somente o draft mais recente pode ser aprovado ou rejeitado.</span>}</div>}
               </>

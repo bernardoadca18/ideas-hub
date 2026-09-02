@@ -2387,8 +2387,11 @@ async def test_global_critic_cannot_report_unsupported_claims_without_actionable
         },
     )
 
-    with pytest.raises(GenerationJobError, match="without an actionable factual issue"):
-        await service._run_global_critic(run, audit_scope="initial")
+    # SOFT REVIEW: No longer raises error - adds warning issue instead
+    result = await service._run_global_critic(run, audit_scope="initial")
+    # Verify a warning issue was added
+    assert any(issue.category == "unsupported_claim" and issue.severity == "warning"
+               for issue in result.issues)
 
 
 @pytest.mark.asyncio

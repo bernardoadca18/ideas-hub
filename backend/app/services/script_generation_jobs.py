@@ -2395,6 +2395,7 @@ class ScriptGenerationJobService:
         feedback = initial_feedback
         first_attempt = max(1, section.attempt_count + 1)
         final_audit: SectionEditorialAuditOutput | None = None
+        last_valid_written: WrittenSectionOutput | None = None
         for attempt in range(
             first_attempt,
             self.config.generation_max_revisions_per_section + 2,
@@ -2500,22 +2501,38 @@ class ScriptGenerationJobService:
             written, section_provenance = await self._parse_or_repair(
                 run, result, WrittenSectionOutput
             )
+            # Capture last valid writer output for production-first fallback
+            last_valid_written = written
             validation = validate_section_words(
                 count_words(written.content), _section_budget_from_mapping(plan)
             )
             audit: SectionEditorialAuditOutput | None = None
             audit_provenance: dict[str, Any] | None = None
+            audit_unavailable = False
             if not validation["revision_required"]:
-                audit, audit_provenance = await self._audit_section(
-                    run,
-                    section,
-                    content=written.content,
-                    evidence=evidence,
-                    approved_claims=approved_claims,
-                    previous_actual=previous,
-                    idea=idea,
-                    niche_prompt=niche_prompt,
-                )
+                try:
+                    audit, audit_provenance = await self._audit_section(
+                        run,
+                        section,
+                        content=written.content,
+                        evidence=evidence,
+                        approved_claims=approved_claims,
+                        previous_actual=previous,
+                        idea=idea,
+                        niche_prompt=niche_prompt,
+                    )
+                except Exception as e:
+                    # SOFT REVIEW: Critic failure should not destroy valid writer output
+                    logger.warning(
+                        "section_critic_unavailable",
+                        extra={
+                            "run_id": str(run.id),
+                            "section_key": section.section_key,
+                            "error": str(e),
+                            "error_type": type(e).__name__,
+                        },
+                    )
+                    audit_unavailable = True
             final_audit = audit
             section.local_validation = {
                 **validation,
@@ -2641,15 +2658,51 @@ class ScriptGenerationJobService:
                 if audit is not None and audit.revision_required
                 else validation["status"],
             )
-        section.status = "failed"
-        if final_audit and _audit_has_factual_blockers(final_audit):
+        # SOFT REVIEW: Preserve output even with editorial/factual issues
+        # Determine review state based on audit findings
+        if audit_unavailable:
+            review_state = "audit_unavailable"
+        elif final_audit and _audit_has_factual_blockers(final_audit):
+            review_state = "high_factual_risk"
+        elif final_audit and final_audit.issues:
+            review_state = "needs_review"
+        else:
+            review_state = "clean"
+
+        # Production-first: Use the last valid writer output, NEVER fall back to empty
+        if last_valid_written is not None:
+            written_content = last_valid_written.content
+        else:
+            # This should never happen in normal flow - indicates a structural bug
             raise GenerationJobError(
-                GenerationFailureCategory.GROUNDING,
-                f"section {section.section_key} retained unsupported factual assertions after bounded revision",
+                error_category="schema",
+                message=f"No valid writer output available for section {section.section_key}",
+                run_id=str(run.id),
+                section_key=section.section_key,
             )
-        raise GenerationJobError(
-            GenerationFailureCategory.EDITORIAL,
-            f"section {section.section_key} failed bounded local editorial validation",
+
+        # Preserve the output with review state
+        section.output = {
+            "content": written_content,
+            "transition_out": plan.get("transition_target"),
+            "claims_used": list(final_audit.actual_claim_refs) if final_audit else [],
+            "beats_covered": list(final_audit.actual_beats_covered) if final_audit else [],
+            "actual_summary": final_audit.actual_summary if final_audit else "",
+            "opened_loops": list(final_audit.opened_loops) if final_audit else [],
+            "closed_loops": list(final_audit.closed_loops) if final_audit else [],
+            "section_audit": final_audit.model_dump(mode="json") if final_audit else None,
+            "visual_intent": None,
+            "audio_intent": None,
+            "review_warnings": _extract_review_warnings(final_audit) if final_audit else [],
+        }
+        section.review_state = review_state
+        section.status = "completed"
+        logger.warning(
+            "section_completed_with_review_warnings",
+            run_id=str(run.id),
+            section_key=section.section_key,
+            review_state=review_state,
+            issues_count=len(final_audit.issues) if final_audit else 0,
         )
 
     async def _audit_section(
@@ -2703,22 +2756,51 @@ class ScriptGenerationJobService:
             repair_contract=contract,
         )
         allowed_claims = {str(item["id"]) for item in approved_claims}
+
+        # SOFT REVIEW: Handle critic-hallucinated claim refs
+        # Case A: unknown claims in actual_claim_refs - remove from trusted provenance
         unknown_claims = set(audit.actual_claim_refs) - allowed_claims
         if unknown_claims:
-            raise GenerationJobError(
-                GenerationFailureCategory.GROUNDING,
-                f"section audit returned unknown claims: {sorted(unknown_claims)}",
+            logger.warning(
+                "critic_hallucinated_claim_refs",
+                extra={
+                    "run_id": str(run.id),
+                    "section_key": section.section_key,
+                    "unknown_claims": sorted(unknown_claims),
+                },
             )
+            # Remove unknown claims from actual_claim_refs
+            audit = audit.model_copy(
+                update={
+                    "actual_claim_refs": [
+                        ref for ref in audit.actual_claim_refs if ref in allowed_claims
+                    ]
+                }
+            )
+
+        # Case B: unknown claims in issue.claim_ref - normalize to null
         unknown_issue_claims = {
             issue.claim_ref
             for issue in audit.issues
             if issue.claim_ref and issue.claim_ref not in allowed_claims
         }
         if unknown_issue_claims:
-            raise GenerationJobError(
-                GenerationFailureCategory.GROUNDING,
-                f"section audit issues reference unknown claims: {sorted(unknown_issue_claims)}",
+            logger.warning(
+                "critic_issue_hallucinated_claim_refs",
+                extra={
+                    "run_id": str(run.id),
+                    "section_key": section.section_key,
+                    "unknown_issue_claims": sorted(unknown_issue_claims),
+                },
             )
+            # Normalize unknown claim_refs to null in issues
+            updated_issues = []
+            for issue in audit.issues:
+                if issue.claim_ref and issue.claim_ref not in allowed_claims:
+                    updated_issues.append(issue.model_copy(update={"claim_ref": None}))
+                else:
+                    updated_issues.append(issue)
+            audit = audit.model_copy(update={"issues": updated_issues})
         audit = _enforce_claim_language_assessments(audit, approved_claims)
         audit = _enforce_negative_assertions_and_epistemic_drift(audit, approved_claims)
         planned_beats = set(plan.get("beats") or [])
@@ -3032,13 +3114,28 @@ class ScriptGenerationJobService:
             run,
             audit_scope="final" if correction_cycles else "initial",
         )
-        if _critic_factual_blockers(critic) and correction_cycles < 1:
-            await self._apply_global_factual_corrections(run, critic)
-            critic = await self._run_global_critic(run, audit_scope="final")
+        # SOFT REVIEW: Global automatic correction removed from normal generation.
+        # Corrections only happen during manual approval with mode="correct_factual".
+        # During normal generation, factual blockers are surfaced as review warnings.
         if _critic_factual_blockers(critic):
-            raise GenerationJobError(
-                GenerationFailureCategory.GROUNDING,
-                "global critic retained unsupported factual assertions after one bounded correction cycle",
+            # Mark affected sections as high_factual_risk for human review
+            for issue in _critic_factual_blockers(critic):
+                if issue.section_key:
+                    for section in run.sections:
+                        if section.section_key == issue.section_key:
+                            section.review_state = "high_factual_risk"
+                            if not section.review_warnings:
+                                section.review_warnings = []
+                            section.review_warnings.append({
+                                "type": "global_factual_issue",
+                                "message": issue.actionable_feedback,
+                                "severity": issue.severity,
+                            })
+            logger.warning(
+                "global_factual_issues_found",
+                run_id=str(run.id),
+                issue_count=len(_critic_factual_blockers(critic)),
+                note="Surfaced for human review; use approval endpoint with mode=correct_factual to apply corrections",
             )
         run.phase = "assembling"
         blocks = assemble_written_sections(
@@ -3079,10 +3176,24 @@ class ScriptGenerationJobService:
         )
         generated.editorial_quality = evaluate_editorial_quality(blocks)
         if generated.duration_contract["revision_required"]:
-            raise GenerationJobError(
-                GenerationFailureCategory.DURATION,
-                "assembled script failed global duration contract after local validation",
+            # SOFT REVIEW: Log diagnostic but don't fail - preserve output
+            logger.warning(
+                "duration_contract_miss",
+                run_id=str(run.id),
+                target_seconds=run.target_duration_seconds,
+                actual_seconds=generated.duration_contract.get("actual_seconds"),
+                deviation_pct=generated.duration_contract.get("deviation_pct"),
             )
+            # Add duration warning to editorial review
+            run.plan = {
+                **run.plan,
+                "duration_contract_warning": {
+                    "target_seconds": run.target_duration_seconds,
+                    "actual_seconds": generated.duration_contract.get("actual_seconds"),
+                    "deviation_pct": generated.duration_contract.get("deviation_pct"),
+                    "revision_required": True,
+                },
+            }
         from app.services.roteiros.gerador_roteiro import RoteiroGenerator
 
         payload = roteirista_service.to_dict(generated)
@@ -3233,10 +3344,21 @@ class ScriptGenerationJobService:
         if critic.unsupported_claims_detected and not any(
             issue.category in FACTUAL_BLOCKING_CATEGORIES for issue in critic.issues
         ):
-            raise GenerationJobError(
-                GenerationFailureCategory.GROUNDING,
-                "global critic reported unsupported claims without an actionable factual issue",
+            # SOFT REVIEW: Log diagnostic but don't fail the generation
+            logger.warning(
+                "global_critic_unsupported_claims_no_issue",
+                run_id=str(run.id),
+                unsupported_claims_detected=critic.unsupported_claims_detected,
             )
+            # Add a diagnostic issue to the critic output for visibility
+            critic.issues.append(EditorialCriticIssue(
+                section_key=None,
+                category="unsupported_claim",
+                severity="warning",
+                actionable_feedback="Global critic detected unsupported claims but did not identify specific factual issues. Manual review recommended.",
+                claim_ref=None,
+                excerpt=None,
+            ))
         history = [
             *list(run.plan.get("global_critic_history") or []),
             {
@@ -3325,10 +3447,15 @@ class ScriptGenerationJobService:
                 section.attempt_count
                 >= self.config.generation_max_revisions_per_section + 1
             ):
-                raise GenerationJobError(
-                    GenerationFailureCategory.GROUNDING,
-                    f"section {section_key} exhausted revisions before global factual correction",
+                # SOFT REVIEW: Skip correction, mark section as needs_review
+                section.review_state = "high_factual_risk"
+                logger.warning(
+                    "section_skipped_global_correction",
+                    run_id=str(run.id),
+                    section_key=section_key,
+                    reason="revision_limit_exhausted",
                 )
+                continue
             section.status = "pending"
             await self._write_section(
                 run,
@@ -4332,6 +4459,21 @@ def _audit_has_factual_blockers(audit: SectionEditorialAuditOutput) -> bool:
     return any(_issue_is_factual_blocker(issue) for issue in audit.issues)
 
 
+def _extract_review_warnings(audit: SectionEditorialAuditOutput) -> list[dict[str, Any]]:
+    """Extract warnings from audit for soft review display."""
+    warnings = []
+    for issue in audit.issues:
+        warnings.append({
+            "category": issue.category,
+            "severity": issue.severity,
+            "feedback": issue.actionable_feedback,
+            "excerpt": issue.excerpt,
+            "claim_ref": issue.claim_ref,
+            "is_factual": _issue_is_factual_blocker(issue),
+        })
+    return warnings
+
+
 def _issue_is_factual_blocker(issue: EditorialCriticIssue) -> bool:
     return issue.category in FACTUAL_BLOCKING_CATEGORIES and (
         issue.category in ALWAYS_BLOCKING_FACTUAL_CATEGORIES
@@ -4352,13 +4494,25 @@ def _enforce_claim_language_assessments(
             GenerationFailureCategory.SCHEMA,
             "section audit returned duplicate claim language assessments",
         )
+
+    # Initialize issues FIRST before any append operations
+    issues = list(audit.issues)
+
     unknown = set(assessments) - set(claims_by_id)
     if unknown:
-        raise GenerationJobError(
-            GenerationFailureCategory.GROUNDING,
-            f"section audit assessed unknown claims: {sorted(unknown)}",
+        # SOFT REVIEW: Log warning but don't fail - add diagnostic issue
+        logger.warning(
+            "audit_unknown_claims",
+            unknown_claims=sorted(unknown),
         )
-    issues = list(audit.issues)
+        issues.append(EditorialCriticIssue(
+            section_key=None,
+            category="epistemic_drift",
+            severity="warning",
+            actionable_feedback=f"Audit referenced unknown claims: {sorted(unknown)}. These may be hallucinated.",
+            claim_ref=None,
+            excerpt=None,
+        ))
     existing = {
         (issue.claim_ref, issue.category)
         for issue in issues
