@@ -12,7 +12,34 @@ from app.schemas.analise_jogo import AnaliseJogoRequest
 from app.services.editorial_generation import DurationMode
 
 
+class PlannedBeatOutput(BaseModel):
+    """One planning obligation with explicit claim provenance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    editorial_goal: str = Field(min_length=1, max_length=1000)
+    kind: Literal["claim_backed", "editorial"]
+    claim_refs: list[str] = Field(default_factory=list, max_length=20)
+    required: bool = False
+
+
+class PlannedSectionV2Output(BaseModel):
+    """LLM-owned enrichment; all section-level refs are host-derived."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=200)
+    purpose: str = Field(min_length=1, max_length=1000)
+    narrative_role: str = Field(min_length=1, max_length=100)
+    beat_contracts: list[PlannedBeatOutput] = Field(min_length=1, max_length=12)
+    must_not_repeat: list[str] = Field(default_factory=list, max_length=20)
+    transition_target: str | None = Field(default=None, max_length=500)
+
+
 class PlannedSectionOutput(BaseModel):
+    """Persisted section plan, including the backward-compatible text projection."""
+
     key: str = Field(min_length=1, max_length=64)
     title: str = Field(min_length=1, max_length=200)
     purpose: str = Field(min_length=1, max_length=1000)
@@ -20,9 +47,19 @@ class PlannedSectionOutput(BaseModel):
     beats: list[str] = Field(min_length=1, max_length=12)
     evidence_refs: list[str] = Field(default_factory=list, max_length=30)
     claim_refs: list[str] = Field(default_factory=list, max_length=50)
-    must_cover: list[str] = Field(min_length=1, max_length=20)
+    must_cover: list[str] = Field(default_factory=list, max_length=20)
     must_not_repeat: list[str] = Field(default_factory=list, max_length=20)
     transition_target: str | None = Field(default=None, max_length=500)
+    beat_contracts: list[PlannedBeatOutput] = Field(default_factory=list, max_length=12)
+    planning_version: str | None = Field(default=None, max_length=100)
+
+
+class LegacyPlannedSectionBatchOutput(BaseModel):
+    """Read/resume contract for planning snapshots created before explicit coverage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sections: list[PlannedSectionOutput] = Field(min_length=1, max_length=4)
 
 
 class PlannedClaimOutput(BaseModel):
@@ -89,11 +126,11 @@ class GlobalEditorialPlanOutput(BaseModel):
 
 
 class PlannedSectionBatchOutput(BaseModel):
-    """Bounded editorial enrichment for host-selected section keys."""
+    """Bounded V2 enrichment with beat-level claim provenance."""
 
     model_config = ConfigDict(extra="forbid")
 
-    sections: list[PlannedSectionOutput] = Field(min_length=1, max_length=4)
+    sections: list[PlannedSectionV2Output] = Field(min_length=1, max_length=4)
 
 
 class EditorialPlanOutput(BaseModel):

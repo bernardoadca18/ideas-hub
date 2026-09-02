@@ -15,6 +15,7 @@ from app.schemas.generation import (
     EditorialPlanOutput,
     ExternalClaimExtractionOutput,
     GlobalEditorialPlanOutput,
+    PlannedClaimOutput,
     PlannedSectionBatchOutput,
     SectionEditorialAuditOutput,
     WrittenSectionOutput,
@@ -34,6 +35,8 @@ from app.services.llm_gateway import (
     LLMTaskRole,
 )
 from app.services.script_generation_jobs import (
+    FRAGMENTED_PLANNING_VERSION,
+    LEGACY_FRAGMENTED_PLANNING_VERSION,
     GenerationFailureCategory,
     GenerationJobError,
     ScriptGenerationJobService,
@@ -137,6 +140,25 @@ def _section_dict(key: str) -> dict[str, object]:
         "title": f"Plano {key}",
         "purpose": "Desenvolver o argumento com clareza.",
         "narrative_role": "desenvolvimento",
+        "beat_contracts": [
+            {
+                "editorial_goal": "Apresentar o ponto central",
+                "kind": "editorial",
+                "claim_refs": [],
+                "required": True,
+            }
+        ],
+        "must_not_repeat": [],
+        "transition_target": "Conectar com a próxima seção",
+    }
+
+
+def _legacy_section_dict(key: str) -> dict[str, object]:
+    return {
+        "key": key,
+        "title": f"Plano {key}",
+        "purpose": "Desenvolver o argumento com clareza.",
+        "narrative_role": "desenvolvimento",
         "beats": ["Apresentar o ponto central"],
         "evidence_refs": [],
         "claim_refs": [],
@@ -148,6 +170,46 @@ def _section_dict(key: str) -> dict[str, object]:
 
 def _batch_json(keys: list[str]) -> str:
     return json.dumps({"sections": [_section_dict(key) for key in keys]})
+
+
+def _claim_backed_section_dict(
+    key: str,
+    *,
+    claim_refs: list[str],
+    editorial_goal: str = "Relatar o claim dentro do suporte aprovado",
+) -> dict[str, object]:
+    return {
+        "key": key,
+        "title": f"Plano {key}",
+        "purpose": "Desenvolver somente claims aprovados.",
+        "narrative_role": "desenvolvimento",
+        "beat_contracts": [
+            {
+                "editorial_goal": editorial_goal,
+                "kind": "claim_backed",
+                "claim_refs": claim_refs,
+                "required": True,
+            }
+        ],
+        "must_not_repeat": [],
+        "transition_target": None,
+    }
+
+
+def _planned_claim(
+    claim_id: str = "claim-a", *, source_ref: str = "source-a"
+) -> PlannedClaimOutput:
+    return PlannedClaimOutput(
+        id=claim_id,
+        summary="Uma fonte relata um detalhe delimitado.",
+        evidence_tier="reliable_secondary",
+        source_refs=[source_ref],
+        confidence=0.8,
+        source_trust="reliable_secondary",
+        claim_status="reported",
+        qualification="Segundo a fonte, o detalhe foi relatado.",
+        support_scope="Somente o detalhe explicitamente relatado.",
+    )
 
 
 def _written_json(word_count: int, *, marker: str = "palavra") -> str:
@@ -1117,6 +1179,195 @@ async def test_three_sections_assemble_exact_host_owned_plan(
 
 
 @pytest.mark.asyncio
+async def test_claim_coverage_correction_is_bounded_and_precedes_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, rows = _planning_fixture(monkeypatch, section_count=1)
+    claim = _planned_claim()
+    run.evidence_dossier["fragments"] = [
+        {"source_fragment_id": "source-a", "claims": []}
+    ]
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs._claim_ledger_from_dossier",
+        lambda _dossier: [claim],
+    )
+    invalid = _claim_backed_section_dict("section-001", claim_refs=[])
+    corrected = _claim_backed_section_dict("section-001", claim_refs=[claim.id])
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_global_json()),
+            _result(json.dumps({"sections": [invalid]})),
+            _result(json.dumps({"sections": [corrected]})),
+        ]
+    )
+    service._write_section = AsyncMock()  # type: ignore[method-assign]
+
+    await service._plan(run)
+
+    assert service._complete.await_count == 3
+    assert [call.kwargs["role"] for call in service._complete.await_args_list] == [
+        LLMTaskRole.PLANNING
+    ] * 3
+    service._write_section.assert_not_awaited()
+    assert rows[0].section_plan["claim_refs"] == [claim.id]
+    assert rows[0].section_plan["evidence_refs"] == ["source-a"]
+    assert rows[0].section_plan["must_cover"] == [
+        "Relatar o claim dentro do suporte aprovado"
+    ]
+    coverage = run.plan["planning_state"]["claim_coverage"]
+    assert coverage["planning_correction_calls"] == 1
+    assert coverage["rejected_beats"] == 1
+    assert coverage["orphan_factual_beats_after_correction"] == 0
+
+
+@pytest.mark.asyncio
+async def test_claim_coverage_fails_after_one_correction_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, rows = _planning_fixture(monkeypatch, section_count=1)
+    claim = _planned_claim()
+    run.evidence_dossier["fragments"] = [
+        {"source_fragment_id": "source-a", "claims": []}
+    ]
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs._claim_ledger_from_dossier",
+        lambda _dossier: [claim],
+    )
+    invalid = json.dumps(
+        {"sections": [_claim_backed_section_dict("section-001", claim_refs=[])]}
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[_result(_global_json()), _result(invalid), _result(invalid)]
+    )
+    service._write_section = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(GenerationJobError) as captured:
+        await service._plan(run)
+
+    assert captured.value.category is GenerationFailureCategory.GROUNDING
+    assert "after one bounded correction" in str(captured.value)
+    assert service._complete.await_count == 3
+    service._write_section.assert_not_awaited()
+    assert rows[0].status == "planning"
+    failure = run.plan["planning_state"]["coverage_failures"][-1]
+    assert failure["accepted"] is False
+    assert failure["claim_coverage"]["orphan_factual_beats_after_correction"] == 1
+
+    with pytest.raises(GenerationJobError, match="already exhausted"):
+        await service._plan(run)
+    assert service._complete.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_claim_coverage_corrects_only_invalid_sections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, rows = _planning_fixture(monkeypatch, section_count=2)
+    claim = _planned_claim()
+    run.evidence_dossier["fragments"] = [
+        {"source_fragment_id": "source-a", "claims": []}
+    ]
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs._claim_ledger_from_dossier",
+        lambda _dossier: [claim],
+    )
+    initial = {
+        "sections": [
+            _claim_backed_section_dict("section-001", claim_refs=[claim.id]),
+            _claim_backed_section_dict(
+                "section-002",
+                claim_refs=[],
+                editorial_goal="Instagram, hashtags e intenção da Rockstar",
+            ),
+        ]
+    }
+    corrected = {
+        "sections": [_claim_backed_section_dict("section-002", claim_refs=[claim.id])]
+    }
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_global_json()),
+            _result(json.dumps(initial)),
+            _result(json.dumps(corrected)),
+        ]
+    )
+
+    await service._plan(run)
+
+    correction_prompt = service._complete.await_args_list[2].kwargs["prompt"]
+    assert "section-002" in correction_prompt
+    assert "IMMUTABLE INVALID SECTION SKELETON" in correction_prompt
+    assert [row.section_plan["claim_refs"] for row in rows] == [
+        [claim.id],
+        [claim.id],
+    ]
+
+
+def test_v1_persisted_plan_is_not_reinterpreted_or_rewritten() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    legacy_plan = {
+        **_legacy_section_dict("section-001"),
+        "must_cover": ["Fato legado sem provenance beat-level"],
+    }
+    section = SimpleNamespace(section_key="section-001", section_plan=legacy_plan)
+    run = SimpleNamespace(
+        plan={
+            "planning_state": {
+                "version": LEGACY_FRAGMENTED_PLANNING_VERSION,
+                "status": "completed",
+            }
+        }
+    )
+
+    service._validate_persisted_section_coverage(run, section)
+
+    assert section.section_plan == legacy_plan
+
+
+def test_v2_persisted_plan_drift_is_blocked_before_writing() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    claim = _planned_claim()
+    section = SimpleNamespace(
+        section_key="section-001",
+        section_plan={
+            **_legacy_section_dict("section-001"),
+            "planning_version": FRAGMENTED_PLANNING_VERSION,
+            "beat_contracts": [
+                {
+                    "editorial_goal": "Relatar o claim aprovado",
+                    "kind": "claim_backed",
+                    "claim_refs": [claim.id],
+                    "required": True,
+                }
+            ],
+            "claim_refs": ["claim-inventado"],
+            "evidence_refs": ["source-a"],
+        },
+    )
+    run = SimpleNamespace(
+        production_profile="faceless_general",
+        evidence_dossier={
+            "sources": [],
+            "fragments": [{"source_fragment_id": "source-a"}],
+        },
+        plan={
+            "planning_state": {
+                "version": FRAGMENTED_PLANNING_VERSION,
+                "status": "completed",
+            },
+            "editorial": {"claim_ledger": [claim.model_dump(mode="json")]},
+        },
+    )
+
+    with pytest.raises(GenerationJobError, match="coverage fields drifted"):
+        service._validate_persisted_section_coverage(run, section)
+
+
+@pytest.mark.asyncio
 async def test_wrong_section_batch_root_repairs_only_batch_in_real_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1235,7 +1486,7 @@ async def test_resume_reuses_global_and_completed_sections(
                 status="pending" if completed else "planning",
                 section_plan={
                     **budget,
-                    **(_section_dict(key) if completed else {}),
+                    **(_legacy_section_dict(key) if completed else {}),
                     "planning_status": "completed" if completed else "pending",
                 },
                 prompt_provenance={"already_completed": True} if completed else None,
@@ -1250,7 +1501,9 @@ async def test_resume_reuses_global_and_completed_sections(
         "truncated_batches": [],
     }
     service._complete = AsyncMock(  # type: ignore[method-assign]
-        return_value=_result(_batch_json(["section-003"]))
+        return_value=_result(
+            json.dumps({"sections": [_legacy_section_dict("section-003")]})
+        )
     )
     await service._plan(run)
     service._complete.assert_awaited_once()
