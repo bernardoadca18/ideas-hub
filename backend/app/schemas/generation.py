@@ -228,6 +228,8 @@ class EditorialCriticIssue(BaseModel):
         "must_not_repeat",
         "ai_prose",
         "fake_hype",
+        "unsupported_negative_assertion",
+        "epistemic_drift",
     ]
     severity: Literal["warning", "revision_required", "blocking"]
     actionable_feedback: str = Field(min_length=1, max_length=1000)
@@ -254,6 +256,37 @@ class ClaimLanguageAssessment(BaseModel):
     attribution_present: bool
     qualification_present: bool
     scope_preserved: bool
+    observed_epistemic_mode: str | None = Field(
+        default=None,
+        max_length=50,
+        description="Epistemic mode observed in prose (e.g., 'reported', 'rumor', 'confirmed'). "
+        "Used to detect drift from canonical claim_status.",
+    )
+
+
+class NegativeWorldStateAssertion(BaseModel):
+    """A negative assertion about the world state that requires claim provenance.
+
+    Examples:
+    - "Sem confirmação da Rockstar" (asserts absence of confirmation)
+    - "Não há evidência de multiplayer" (asserts absence of evidence)
+
+    These assertions make factual claims about what is NOT known or confirmed,
+    and therefore require the same epistemic grounding as positive claims.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    excerpt: str = Field(min_length=1, max_length=500, description="The negative assertion text")
+    assertion_type: str = Field(
+        max_length=50,
+        description="Type of negative assertion (e.g., 'absence_of_confirmation', 'absence_of_evidence')",
+    )
+    claim_ref: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Reference to claim that supports this assertion, if any",
+    )
 
 
 class SectionEditorialAuditOutput(BaseModel):
@@ -270,6 +303,11 @@ class SectionEditorialAuditOutput(BaseModel):
     closed_loops: list[str] = Field(default_factory=list, max_length=20)
     claim_language_assessments: list[ClaimLanguageAssessment] = Field(
         default_factory=list, max_length=50
+    )
+    negative_world_state_assertions: list[NegativeWorldStateAssertion] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Negative assertions detected in prose that require claim provenance",
     )
 
 

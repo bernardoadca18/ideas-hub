@@ -153,8 +153,10 @@ FACTUAL_BLOCKING_CATEGORIES = {
     "source_mismatch",
     "factuality",
     "evidence",
+    "unsupported_negative_assertion",
+    "epistemic_drift",
 }
-ALWAYS_BLOCKING_FACTUAL_CATEGORIES = {"unsupported_claim", "source_mismatch"}
+ALWAYS_BLOCKING_FACTUAL_CATEGORIES = {"unsupported_claim", "source_mismatch", "unsupported_negative_assertion", "epistemic_drift"}
 
 _RESEARCH_STOP_WORDS = {
     "a",
@@ -2524,6 +2526,7 @@ class ScriptGenerationJobService:
             provenance = dict(section.prompt_provenance or {})
             provenance["accepted_result"] = section_provenance
             provenance["editorial_revision_count"] = attempt - 1
+            provenance["realization_contracts"] = [c.to_writer_dict() for c in realization_contracts]
             provenance["capacity_retry_count"] = sum(
                 int(item.get("capacity_attempt", 1)) > 1
                 for item in provenance.get("writing_calls", [])
@@ -2717,6 +2720,7 @@ class ScriptGenerationJobService:
                 f"section audit issues reference unknown claims: {sorted(unknown_issue_claims)}",
             )
         audit = _enforce_claim_language_assessments(audit, approved_claims)
+        audit = _enforce_negative_assertions_and_epistemic_drift(audit, approved_claims)
         planned_beats = set(plan.get("beats") or [])
         unknown_beats = set(audit.actual_beats_covered) - planned_beats
         if unknown_beats:
@@ -4410,6 +4414,114 @@ def _enforce_claim_language_assessments(
             or any(
                 _issue_is_factual_blocker(issue)
                 or issue.severity in {"revision_required", "blocking"}
+                for issue in issues
+            ),
+        }
+    )
+
+
+def _enforce_negative_assertions_and_epistemic_drift(
+    audit: SectionEditorialAuditOutput,
+    approved_claims: list[dict[str, Any]],
+) -> SectionEditorialAuditOutput:
+    """Host-side enforcement for negative assertions and epistemic drift.
+
+    This function enforces two critical constraints that the LLM audit may miss:
+
+    1. NEGATIVE ASSERTIONS: Phrases like "Sem confirmação da Rockstar" or
+       "Não há evidência de X" make factual claims about what is NOT known.
+       These require the same claim provenance as positive assertions.
+
+    2. EPISTEMIC DRIFT: When a claim with claim_status="reported" is rendered
+       in prose as "rumor" or vice versa, the epistemic mode has drifted.
+       The prose must render claims according to their canonical claim_status.
+
+    Args:
+        audit: The section audit output from the LLM.
+        approved_claims: The canonical claim ledger with claim_status.
+
+    Returns:
+        Updated audit with blocking issues for any violations.
+    """
+    issues = list(audit.issues)
+
+    claims_by_id = {str(item.get("id")): item for item in approved_claims}
+    assessments_by_ref = {item.claim_ref: item for item in audit.claim_language_assessments}
+
+    # 1. Enforce negative assertions have claim provenance
+    for neg_assertion in audit.negative_world_state_assertions:
+        if neg_assertion.claim_ref is None:
+            # Negative assertion without supporting claim - blocker
+            issues.append(
+                EditorialCriticIssue(
+                    section_key=None,
+                    category="unsupported_negative_assertion",
+                    severity="blocking",
+                    actionable_feedback=(
+                        f"A negação '{neg_assertion.excerpt[:50]}...' faz uma afirmação "
+                        "factual sobre o que NÃO é conhecido. Toda negação material "
+                        "requer um claim que a suporte no ledger aprovado. Se não há "
+                        "claim que suporte esta negação, remova-a ou adicione o claim "
+                        "apropriado ao dossier de evidências."
+                    ),
+                    claim_ref=None,
+                    excerpt=neg_assertion.excerpt,
+                )
+            )
+
+    # 2. Enforce epistemic mode matches canonical claim_status
+    for assessment in audit.claim_language_assessments:
+        claim = claims_by_id.get(assessment.claim_ref)
+        if claim is None:
+            continue
+
+        canonical_status = str(claim.get("claim_status") or "unknown")
+
+        if assessment.observed_epistemic_mode is None:
+            # LLM didn't detect epistemic mode - check if it should have
+            if canonical_status == ClaimStatus.REPORTED.value:
+                # For reported claims, epistemic mode detection is required
+                issues.append(
+                    EditorialCriticIssue(
+                        section_key=None,
+                        category="epistemic_drift",
+                        severity="blocking",
+                        actionable_feedback=(
+                            f"O claim {assessment.claim_ref} tem status canônico "
+                            f"'{canonical_status}' mas o audit não detectou o modo "
+                            "epistêmico na prosa. Reported claims devem ser renderizados "
+                            "como 'segundo [fonte], ...' e não como rumor ou fato confirmado."
+                        ),
+                        claim_ref=assessment.claim_ref,
+                        excerpt=None,
+                    )
+                )
+        elif assessment.observed_epistemic_mode != canonical_status:
+            # Epistemic drift detected
+            observed = assessment.observed_epistemic_mode
+            issues.append(
+                EditorialCriticIssue(
+                    section_key=None,
+                    category="epistemic_drift",
+                    severity="blocking",
+                    actionable_feedback=(
+                        f"O claim {assessment.claim_ref} tem status canônico "
+                        f"'{canonical_status}' mas foi renderizado como '{observed}'. "
+                        "A prosa deve refletir o status epistêmico canônico do claim. "
+                        f"Claims '{canonical_status}' devem ser atribuídos à fonte. "
+                        "Não promova rumores a fatos nem rebaixe fatos reportados a rumores."
+                    ),
+                    claim_ref=assessment.claim_ref,
+                    excerpt=None,
+                )
+            )
+
+    return audit.model_copy(
+        update={
+            "issues": issues,
+            "revision_required": audit.revision_required
+            or any(
+                issue.severity in {"revision_required", "blocking"}
                 for issue in issues
             ),
         }
