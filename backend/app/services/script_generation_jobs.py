@@ -4067,18 +4067,29 @@ def _editorial_issue_output_contract() -> str:
 def _section_audit_output_contract() -> str:
     return (
         "Return ONE object with exactly revision_required, issues, actual_claim_refs, "
-        "actual_beats_covered, actual_summary, opened_loops, closed_loops and "
-        "claim_language_assessments. "
+        "actual_beats_covered, actual_summary, opened_loops, closed_loops, "
+        "claim_language_assessments, and negative_world_state_assertions. "
         + _editorial_issue_output_contract()
         + " actual_claim_refs may contain only IDs from APPROVED CLAIMS. "
-        "claim_language_assessments contains exactly one assessment for every actually used "
-        "claim that is not confirmed/strongly_supported. Each assessment has exactly "
-        "claim_ref, language_proportional, attribution_present, qualification_present and "
-        "scope_preserved. For reported claims, attribution_present must reflect explicit "
-        "attribution such as 'segundo a fonte'; an unattributed direct assertion is "
-        "uncertainty_lost. rumor/leak/speculation require an unequivocal label; inference "
-        "requires inferential language; official_observation must remain limited to what the "
-        "official material shows and cannot become a confirmed mechanic. "
+        "claim_language_assessments contains EXACTLY ONE assessment for EVERY claim in "
+        "actual_claim_refs, regardless of status. Each assessment has exactly claim_ref, "
+        "language_proportional, attribution_present, qualification_present, scope_preserved, "
+        "and observed_epistemic_mode. observed_epistemic_mode must be one of: confirmed, "
+        "official_observation, reported, strongly_supported, interpretation, inference, "
+        "rumor, leak, speculation, unknown, author_opinion, gameplay_observation. "
+        "For reported claims, attribution_present must reflect explicit attribution such as "
+        "'segundo a fonte'; an unattributed direct assertion is uncertainty_lost. "
+        "rumor/leak/speculation require an unequivocal label; inference requires inferential "
+        "language; official_observation must remain limited to what the official material "
+        "shows and cannot become a confirmed mechanic. "
+        "negative_world_state_assertions lists every negative assertion about world state "
+        "(e.g., 'X não foi confirmado', 'não há evidência de X'). Each has excerpt, "
+        "assertion_type (one of: absence_of_confirmation, absence_of_announcement, "
+        "absence_of_evidence, absence_of_publication, absence_of_showing, unknown_state, "
+        "speculative_state, other_negative_world_state), claim_ref, and support_preserved. "
+        "claim_ref MUST be provided ONLY if an approved claim SEMANTICALLY SUPPORTS the "
+        "negative assertion. support_preserved must be true when claim_ref is provided. "
+        "DO NOT associate a claim merely because no source contradicts the phrase. "
         "actual_beats_covered may contain only verbatim entries from PLANNED BEATS. A "
         "compound beat is covered only when every material factual element in that beat is "
         "explicitly present in the prose; partial or implied coverage must be omitted. "
@@ -4426,15 +4437,23 @@ def _enforce_negative_assertions_and_epistemic_drift(
 ) -> SectionEditorialAuditOutput:
     """Host-side enforcement for negative assertions and epistemic drift.
 
-    This function enforces two critical constraints that the LLM audit may miss:
+    This function enforces three critical constraints that the LLM audit may miss:
 
     1. NEGATIVE ASSERTIONS: Phrases like "Sem confirmação da Rockstar" or
        "Não há evidência de X" make factual claims about what is NOT known.
        These require the same claim provenance as positive assertions.
+       Validation includes:
+       - claim_ref must be present (not null)
+       - claim_ref must exist in approved_claims
+       - claim_ref must be in actual_claim_refs
+       - support_preserved must be true when claim_ref is provided
 
     2. EPISTEMIC DRIFT: When a claim with claim_status="reported" is rendered
        in prose as "rumor" or vice versa, the epistemic mode has drifted.
        The prose must render claims according to their canonical claim_status.
+
+    3. COMPLETE ASSESSMENT COVERAGE: Every claim in actual_claim_refs must have
+       exactly one assessment in claim_language_assessments.
 
     Args:
         audit: The section audit output from the LLM.
@@ -4447,11 +4466,51 @@ def _enforce_negative_assertions_and_epistemic_drift(
 
     claims_by_id = {str(item.get("id")): item for item in approved_claims}
     assessments_by_ref = {item.claim_ref: item for item in audit.claim_language_assessments}
+    actual_claim_refs_set = set(audit.actual_claim_refs)
 
-    # 1. Enforce negative assertions have claim provenance
+    # 1. Enforce complete assessment coverage for actual_claim_refs
+    assessed_refs = set(assessments_by_ref.keys())
+
+    # Check for missing assessments
+    missing_assessments = actual_claim_refs_set - assessed_refs
+    for missing_ref in missing_assessments:
+        issues.append(
+            EditorialCriticIssue(
+                section_key=None,
+                category="epistemic_drift",
+                severity="blocking",
+                actionable_feedback=(
+                    f"O claim '{missing_ref}' está em actual_claim_refs mas não possui "
+                    "assessment. Todo claim utilizado deve ter exatamente um assessment "
+                    "com observed_epistemic_mode."
+                ),
+                claim_ref=missing_ref,
+                excerpt=None,
+            )
+        )
+
+    # Check for extra assessments (claims not in actual_claim_refs)
+    extra_assessments = assessed_refs - actual_claim_refs_set
+    for extra_ref in extra_assessments:
+        issues.append(
+            EditorialCriticIssue(
+                section_key=None,
+                category="epistemic_drift",
+                severity="blocking",
+                actionable_feedback=(
+                    f"O claim '{extra_ref}' possui assessment mas não está em "
+                    "actual_claim_refs. Apenas claims efetivamente utilizados devem "
+                    "ter assessment."
+                ),
+                claim_ref=extra_ref,
+                excerpt=None,
+            )
+        )
+
+    # 2. Enforce negative assertions have valid claim provenance
     for neg_assertion in audit.negative_world_state_assertions:
         if neg_assertion.claim_ref is None:
-            # Negative assertion without supporting claim - blocker
+            # A. claim_ref missing - blocker
             issues.append(
                 EditorialCriticIssue(
                     section_key=None,
@@ -4460,44 +4519,95 @@ def _enforce_negative_assertions_and_epistemic_drift(
                     actionable_feedback=(
                         f"A negação '{neg_assertion.excerpt[:50]}...' faz uma afirmação "
                         "factual sobre o que NÃO é conhecido. Toda negação material "
-                        "requer um claim que a suporte no ledger aprovado. Se não há "
-                        "claim que suporte esta negação, remova-a ou adicione o claim "
-                        "apropriado ao dossier de evidências."
+                        "requer um claim que a suporte no ledger aprovado. "
+                        "Remova ou reformule a afirmação usando apenas os approved claims "
+                        "existentes. A revisão desta seção não pode criar novo claim nem "
+                        "nova evidência."
                     ),
                     claim_ref=None,
                     excerpt=neg_assertion.excerpt,
                 )
             )
+        elif neg_assertion.claim_ref not in claims_by_id:
+            # B. claim_ref unknown - blocker
+            issues.append(
+                EditorialCriticIssue(
+                    section_key=None,
+                    category="unsupported_negative_assertion",
+                    severity="blocking",
+                    actionable_feedback=(
+                        f"A negação '{neg_assertion.excerpt[:50]}...' referencia "
+                        f"'{neg_assertion.claim_ref}' que não existe nos approved claims. "
+                        "Remova ou reformule a afirmação usando apenas os approved claims "
+                        "existentes. A revisão desta seção não pode criar novo claim nem "
+                        "nova evidência."
+                    ),
+                    claim_ref=neg_assertion.claim_ref,
+                    excerpt=neg_assertion.excerpt,
+                )
+            )
+        elif neg_assertion.claim_ref not in actual_claim_refs_set:
+            # C. claim_ref not in actual_claim_refs - blocker
+            issues.append(
+                EditorialCriticIssue(
+                    section_key=None,
+                    category="unsupported_negative_assertion",
+                    severity="blocking",
+                    actionable_feedback=(
+                        f"A negação '{neg_assertion.excerpt[:50]}...' referencia "
+                        f"'{neg_assertion.claim_ref}' que não consta em actual_claim_refs. "
+                        "Se a negação depende deste claim, o claim deve estar efetivamente "
+                        "utilizado na prosa."
+                    ),
+                    claim_ref=neg_assertion.claim_ref,
+                    excerpt=neg_assertion.excerpt,
+                )
+            )
+        elif neg_assertion.support_preserved is not True:
+            # D. support_preserved not true - blocker
+            issues.append(
+                EditorialCriticIssue(
+                    section_key=None,
+                    category="unsupported_negative_assertion",
+                    severity="blocking",
+                    actionable_feedback=(
+                        f"A negação '{neg_assertion.excerpt[:50]}...' referencia "
+                        f"'{neg_assertion.claim_ref}' mas support_preserved não é true. "
+                        "O claim referenciado deve sustentar semanticamente a negação."
+                    ),
+                    claim_ref=neg_assertion.claim_ref,
+                    excerpt=neg_assertion.excerpt,
+                )
+            )
 
-    # 2. Enforce epistemic mode matches canonical claim_status
+    # 3. Enforce epistemic mode matches canonical claim_status
     for assessment in audit.claim_language_assessments:
         claim = claims_by_id.get(assessment.claim_ref)
         if claim is None:
+            # Skip - this is handled by assessment coverage check above
             continue
 
         canonical_status = str(claim.get("claim_status") or "unknown")
 
         if assessment.observed_epistemic_mode is None:
-            # LLM didn't detect epistemic mode - check if it should have
-            if canonical_status == ClaimStatus.REPORTED.value:
-                # For reported claims, epistemic mode detection is required
-                issues.append(
-                    EditorialCriticIssue(
-                        section_key=None,
-                        category="epistemic_drift",
-                        severity="blocking",
-                        actionable_feedback=(
-                            f"O claim {assessment.claim_ref} tem status canônico "
-                            f"'{canonical_status}' mas o audit não detectou o modo "
-                            "epistêmico na prosa. Reported claims devem ser renderizados "
-                            "como 'segundo [fonte], ...' e não como rumor ou fato confirmado."
-                        ),
-                        claim_ref=assessment.claim_ref,
-                        excerpt=None,
-                    )
+            # LLM didn't detect epistemic mode - blocker for all claims
+            issues.append(
+                EditorialCriticIssue(
+                    section_key=None,
+                    category="epistemic_drift",
+                    severity="blocking",
+                    actionable_feedback=(
+                        f"O claim {assessment.claim_ref} tem status canônico "
+                        f"'{canonical_status}' mas o audit não detectou o modo "
+                        "epistêmico na prosa. Todo claim utilizado deve ter "
+                        "observed_epistemic_mode definido."
+                    ),
+                    claim_ref=assessment.claim_ref,
+                    excerpt=None,
                 )
+            )
         elif assessment.observed_epistemic_mode != canonical_status:
-            # Epistemic drift detected
+            # Epistemic drift detected - blocker
             observed = assessment.observed_epistemic_mode
             issues.append(
                 EditorialCriticIssue(
@@ -4508,8 +4618,8 @@ def _enforce_negative_assertions_and_epistemic_drift(
                         f"O claim {assessment.claim_ref} tem status canônico "
                         f"'{canonical_status}' mas foi renderizado como '{observed}'. "
                         "A prosa deve refletir o status epistêmico canônico do claim. "
-                        f"Claims '{canonical_status}' devem ser atribuídos à fonte. "
-                        "Não promova rumores a fatos nem rebaixe fatos reportados a rumores."
+                        f"Claims '{canonical_status}' devem ser renderizados como "
+                        f"'{canonical_status}'. Não promova nem rebaixe o status epistêmico."
                     ),
                     claim_ref=assessment.claim_ref,
                     excerpt=None,

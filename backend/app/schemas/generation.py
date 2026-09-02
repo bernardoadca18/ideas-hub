@@ -256,10 +256,22 @@ class ClaimLanguageAssessment(BaseModel):
     attribution_present: bool
     qualification_present: bool
     scope_preserved: bool
-    observed_epistemic_mode: str | None = Field(
+    observed_epistemic_mode: Literal[
+        "confirmed",
+        "official_observation",
+        "reported",
+        "strongly_supported",
+        "interpretation",
+        "inference",
+        "rumor",
+        "leak",
+        "speculation",
+        "unknown",
+        "author_opinion",
+        "gameplay_observation",
+    ] | None = Field(
         default=None,
-        max_length=50,
-        description="Epistemic mode observed in prose (e.g., 'reported', 'rumor', 'confirmed'). "
+        description="Epistemic mode observed in prose. Must match canonical claim_status. "
         "Used to detect drift from canonical claim_status.",
     )
 
@@ -278,14 +290,27 @@ class NegativeWorldStateAssertion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     excerpt: str = Field(min_length=1, max_length=500, description="The negative assertion text")
-    assertion_type: str = Field(
-        max_length=50,
-        description="Type of negative assertion (e.g., 'absence_of_confirmation', 'absence_of_evidence')",
+    assertion_type: Literal[
+        "absence_of_confirmation",
+        "absence_of_announcement",
+        "absence_of_evidence",
+        "absence_of_publication",
+        "absence_of_showing",
+        "unknown_state",
+        "speculative_state",
+        "other_negative_world_state",
+    ] = Field(
+        description="Type of negative assertion",
     )
     claim_ref: str | None = Field(
         default=None,
         max_length=100,
         description="Reference to claim that supports this assertion, if any",
+    )
+    support_preserved: bool | None = Field(
+        default=None,
+        description="Whether the referenced claim semantically supports this negative assertion. "
+        "Must be true when claim_ref is provided.",
     )
 
 

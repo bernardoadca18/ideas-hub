@@ -2142,6 +2142,7 @@ async def test_qualified_community_estimate_can_pass_section_audit() -> None:
                 "attribution_present": True,
                 "qualification_present": True,
                 "scope_preserved": True,
+                "observed_epistemic_mode": "speculation",
             }
         ],
     )
