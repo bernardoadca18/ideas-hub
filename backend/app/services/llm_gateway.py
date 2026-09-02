@@ -148,6 +148,24 @@ def _is_structured_output_rejection(response: httpx.Response) -> bool:
     return False
 
 
+def _malformed_envelope_details(data: Any) -> str:
+    """Describe only response shape/error codes; never echo upstream content."""
+
+    if not isinstance(data, dict):
+        return "non_json_response"
+    details = "top_level_keys=" + ",".join(sorted(str(key) for key in data)[:12])
+    error = data.get("error")
+    if isinstance(error, dict):
+        error_details = []
+        for key in ("type", "code", "status"):
+            value = error.get(key)
+            if isinstance(value, str) and value:
+                error_details.append(f"error_{key}={value[:80]}")
+        if error_details:
+            details += " " + " ".join(error_details)
+    return details
+
+
 class LLMGateway:
     """One connection pool per process; callers retain deterministic task policy."""
 
@@ -239,7 +257,11 @@ class LLMGateway:
         started = time.monotonic()
         last_error: Exception | None = None
         structured_fallback_used = False
-        for attempt in range(1, self.config.llm_max_attempts + 1):
+        malformed_retry_used = False
+        transport_attempts = 0
+        request_attempt = 0
+        while transport_attempts < self.config.llm_max_attempts:
+            request_attempt += 1
             data: Any = None
             try:
                 response = await self._get_client().post(
@@ -294,14 +316,26 @@ class LLMGateway:
                 if not isinstance(choice, str) or not choice.strip():
                     usage = data.get("usage") or {}
                     completion_details = usage.get("completion_tokens_details") or {}
-                    raise LLMGatewayError(
-                        LLMFailureCategory.FORMAT,
-                        "LLM returned empty content: "
+                    empty_details = (
                         f"model={data.get('model') or 'unknown'} "
                         f"finish_reason={choice_data.get('finish_reason') or 'unknown'} "
                         f"completion_tokens={usage.get('completion_tokens') or 0} "
                         "reasoning_tokens="
-                        f"{completion_details.get('reasoning_tokens') or 0}",
+                        f"{completion_details.get('reasoning_tokens') or 0}"
+                    )
+                    if not malformed_retry_used:
+                        malformed_retry_used = True
+                        logger.warning(
+                            "llm_malformed_envelope_retry",
+                            task_role=role.value,
+                            model_alias=model,
+                            envelope_kind="empty_content",
+                            prompt_identity=prompt_identity,
+                        )
+                        continue
+                    raise LLMGatewayError(
+                        LLMFailureCategory.FORMAT,
+                        f"LLM returned empty content: {empty_details}",
                     )
                 usage = data.get("usage") or {}
                 completion_details = usage.get("completion_tokens_details") or {}
@@ -319,7 +353,7 @@ class LLMGateway:
                     completion_tokens=usage.get("completion_tokens"),
                     total_tokens=usage.get("total_tokens"),
                     latency_seconds=round(time.monotonic() - started, 3),
-                    attempt_count=attempt,
+                    attempt_count=request_attempt,
                     finish_reason=str(raw_finish_reason)
                     if raw_finish_reason is not None
                     else None,
@@ -333,20 +367,17 @@ class LLMGateway:
             except LLMGatewayError:
                 raise
             except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
-                envelope_details = "non_json_response"
-                if isinstance(data, dict):
-                    error = data.get("error")
-                    error_details: list[str] = []
-                    if isinstance(error, dict):
-                        for key in ("type", "code", "status"):
-                            value = error.get(key)
-                            if isinstance(value, str) and value:
-                                error_details.append(f"error_{key}={value[:80]}")
-                    envelope_details = "top_level_keys=" + ",".join(
-                        sorted(str(key) for key in data)[:12]
+                envelope_details = _malformed_envelope_details(data)
+                if not malformed_retry_used:
+                    malformed_retry_used = True
+                    logger.warning(
+                        "llm_malformed_envelope_retry",
+                        task_role=role.value,
+                        model_alias=model,
+                        envelope_kind=envelope_details,
+                        prompt_identity=prompt_identity,
                     )
-                    if error_details:
-                        envelope_details += " " + " ".join(error_details)
+                    continue
                 raise LLMGatewayError(
                     LLMFailureCategory.FORMAT,
                     "LLM provider returned a malformed response envelope: "
@@ -358,6 +389,7 @@ class LLMGateway:
                 httpx.HTTPStatusError,
             ) as exc:
                 last_error = exc
+                transport_attempts += 1
                 status = (
                     exc.response.status_code
                     if isinstance(exc, httpx.HTTPStatusError)
@@ -369,7 +401,7 @@ class LLMGateway:
                         "LLM request failed",
                         status_code=status,
                     ) from exc
-                if attempt >= self.config.llm_max_attempts:
+                if transport_attempts >= self.config.llm_max_attempts:
                     break
                 retry_after = 0.0
                 if isinstance(exc, httpx.HTTPStatusError):
@@ -378,7 +410,9 @@ class LLMGateway:
                         retry_after = min(float(raw), 30.0) if raw else 0.0
                     except ValueError:
                         retry_after = 0.0
-                await asyncio.sleep(max(retry_after, min(2 ** (attempt - 1), 8)))
+                await asyncio.sleep(
+                    max(retry_after, min(2 ** (transport_attempts - 1), 8))
+                )
         category = (
             LLMFailureCategory.RATE_LIMIT
             if isinstance(last_error, httpx.HTTPStatusError)

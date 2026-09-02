@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -69,21 +70,31 @@ class ExternalResearchClient:
         query: str,
         *,
         max_results: int,
+        include_domains: Sequence[str] | None = None,
     ) -> list[ResearchSource]:
         if not self.config.tavily_api_key or not query.strip():
             return []
         last_error: Exception | None = None
         for attempt in range(1, self.config.tavily_max_attempts + 1):
             try:
+                request_payload: dict[str, Any] = {
+                    "query": query,
+                    "max_results": max_results,
+                    "include_answer": False,
+                    "include_raw_content": False,
+                }
+                if include_domains:
+                    request_payload["include_domains"] = list(
+                        dict.fromkeys(
+                            domain.casefold().removeprefix("www.")
+                            for domain in include_domains
+                            if domain.strip()
+                        )
+                    )
                 response = await self._get_client().post(
                     "https://api.tavily.com/search",
                     headers={"Authorization": f"Bearer {self.config.tavily_api_key}"},
-                    json={
-                        "query": query,
-                        "max_results": max_results,
-                        "include_answer": False,
-                        "include_raw_content": False,
-                    },
+                    json=request_payload,
                 )
                 if response.status_code >= 400:
                     if not is_retryable_status(response.status_code):

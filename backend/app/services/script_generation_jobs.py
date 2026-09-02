@@ -1214,14 +1214,7 @@ class ScriptGenerationJobService:
             target_words=getattr(run, "target_words", None),
             config=self.config,
         )
-        primary_recovery_query = (
-            _primary_source_research_query(idea.titulo, profile.source_policy)
-            if primary_source_required
-            else None
-        )
         candidate_queries = [idea.titulo]
-        if primary_recovery_query:
-            candidate_queries.append(primary_recovery_query)
         candidate_queries.extend(
             [
                 f"{idea.titulo} {description[:500]}" if description else "",
@@ -1237,12 +1230,14 @@ class ScriptGenerationJobService:
             }:
                 queries.append(normalized)
         raw_result_count = 0
+        executed_queries: list[str] = []
         sources_by_url: dict[str, dict[str, Any]] = {}
         for query in queries[: research_budget.initial_queries]:
             results = await self.research_client.search(
                 query,
                 max_results=research_budget.results_per_query,
             )
+            executed_queries.append(query)
             raw_result_count += len(results)
             for research_source in results:
                 normalized_url = _normalize_research_url(research_source.url)
@@ -1279,22 +1274,39 @@ class ScriptGenerationJobService:
                 }
             )
         preselection_expansion: dict[str, Any] | None = None
+        trusted_tiers = {
+            SourceTrustTier.PRIMARY_OFFICIAL.value,
+            SourceTrustTier.RELIABLE_SECONDARY.value,
+        }
+        has_primary = any(
+            str(item.get("source_trust")) == SourceTrustTier.PRIMARY_OFFICIAL.value
+            for item in classified_sources
+        )
+        has_trusted = any(
+            str(item.get("source_trust")) in trusted_tiers
+            for item in classified_sources
+        )
         if (
-            primary_source_required
-            and not any(
-                str(item.get("source_trust")) == SourceTrustTier.PRIMARY_OFFICIAL.value
-                for item in classified_sources
-            )
-            and primary_recovery_query is not None
-            and primary_recovery_query not in queries[: research_budget.initial_queries]
-            and research_budget.initial_queries < research_budget.total_queries
+            (not has_primary if primary_source_required else not has_trusted)
+            and len(executed_queries) < research_budget.total_queries
             and profile.permite_grounding_automatico
         ):
-            expansion_query = primary_recovery_query
+            expansion_query = (
+                _primary_source_research_query(idea.titulo, profile.source_policy)
+                if primary_source_required
+                else _trusted_source_research_query(idea.titulo)
+            )
+            include_domains = (
+                _primary_source_domains(profile.source_policy)
+                if primary_source_required
+                else _trusted_source_domains(profile.source_policy)
+            )
             expansion_results = await self.research_client.search(
                 expansion_query,
                 max_results=research_budget.results_per_query,
+                include_domains=include_domains,
             )
+            executed_queries.append(expansion_query)
             raw_result_count += len(expansion_results)
             new_candidate_count = 0
             for research_source in expansion_results:
@@ -1325,9 +1337,18 @@ class ScriptGenerationJobService:
                 new_candidate_count += 1
             preselection_expansion = {
                 "attempted": True,
+                "mode": (
+                    "primary_required"
+                    if primary_source_required
+                    else "trusted_preference"
+                ),
                 "query": expansion_query,
                 "new_candidates": new_candidate_count,
                 "trusted_candidates_found": sum(
+                    str(item.get("source_trust")) in trusted_tiers
+                    for item in classified_sources
+                ),
+                "primary_candidates_found": sum(
                     str(item.get("source_trust"))
                     == SourceTrustTier.PRIMARY_OFFICIAL.value
                     for item in classified_sources
@@ -1387,14 +1408,12 @@ class ScriptGenerationJobService:
         dossier["research_status"] = (
             "completed" if external_sources else "unavailable_or_empty"
         )
-        dossier["query_count"] = research_budget.initial_queries + int(
-            preselection_expansion is not None
-        )
+        dossier["query_count"] = len(executed_queries)
         dossier["research_budget"] = asdict(research_budget)
         dossier["raw_research_result_count"] = raw_result_count
         dossier["deduplicated_source_count"] = len(sources_by_url)
         dossier["selected_source_count"] = len(external_sources)
-        dossier["source_selection_version"] = "host_relevance_diversity_v3"
+        dossier["source_selection_version"] = "host_relevance_diversity_v4"
         dossier["primary_source_required"] = primary_source_required
         if preselection_expansion is not None:
             dossier["source_preselection_expansion"] = preselection_expansion
@@ -1430,10 +1449,10 @@ class ScriptGenerationJobService:
             ),
             target_words=run.target_words,
         )
-        expansion_start = research_budget.initial_queries + int(
-            preselection_expansion is not None
-        )
-        expansion_queries = queries[expansion_start : research_budget.total_queries]
+        executed_query_keys = {query.casefold() for query in executed_queries}
+        expansion_queries = [
+            query for query in queries if query.casefold() not in executed_query_keys
+        ][: max(0, research_budget.total_queries - len(executed_queries))]
         if (
             (
                 capacity["status"] == "probably_insufficient"
@@ -3260,6 +3279,39 @@ def _primary_source_research_query(topic: str, policy: SourcePolicy) -> str:
         if any(term.casefold() in normalized_topic for term in rule.topic_terms):
             return f"{topic} {rule.query_suffix}"
     return f"{topic} fonte primária oficial anúncio"
+
+
+def _trusted_source_research_query(topic: str) -> str:
+    """Request better evidence without encoding a domain policy in the workflow."""
+
+    return f"{topic} fonte oficial reportagem entrevista contexto"
+
+
+def _primary_source_domains(policy: SourcePolicy) -> tuple[str, ...]:
+    """Return the bounded official-domain hint understood by the search adapter."""
+
+    return tuple(
+        dict.fromkeys(
+            (
+                *policy.primary_domains,
+                *(rule.host for rule in policy.primary_sources),
+            )
+        )
+    )
+
+
+def _trusted_source_domains(policy: SourcePolicy) -> tuple[str, ...]:
+    """Return host-owned official/reliable hints; classification still checks paths."""
+
+    return tuple(
+        dict.fromkeys(
+            (
+                *_primary_source_domains(policy),
+                *policy.reliable_domains,
+                *(rule.host for rule in policy.reliable_sources),
+            )
+        )
+    )
 
 
 def _explicit_primary_source_required(text: str) -> bool:

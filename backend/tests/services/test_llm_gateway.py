@@ -157,6 +157,7 @@ async def test_empty_content_error_preserves_safe_response_diagnostics() -> None
     assert "model=provider/reasoning-model" in str(captured.value)
     assert "finish_reason=length" in str(captured.value)
     assert "reasoning_tokens=2500" in str(captured.value)
+    assert client.post.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -336,7 +337,7 @@ async def test_malformed_success_envelope_reports_safe_shape_diagnostics() -> No
     assert "error_type=upstream_error" in message
     assert "error_code=provider_unavailable" in message
     assert "sensitive upstream detail" not in message
-    assert client.post.await_count == 1
+    assert client.post.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -361,7 +362,7 @@ async def test_non_json_success_envelope_is_typed_and_does_not_leak_body() -> No
     assert captured.value.category is LLMFailureCategory.FORMAT
     assert "non_json_response" in message
     assert "secret-bearing" not in message
-    assert client.post.await_count == 1
+    assert client.post.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -396,6 +397,75 @@ async def test_malformed_choices_are_typed_and_not_completed(
 
     assert captured.value.category is LLMFailureCategory.FORMAT
     assert "top_level_keys=choices" in str(captured.value)
+    assert client.post.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        httpx.Response(
+            200,
+            text="not-json",
+            request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
+        ),
+        httpx.Response(
+            200,
+            json={"error": {"type": "upstream_error"}},
+            request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
+        ),
+    ],
+    ids=["non-json", "error-envelope"],
+)
+async def test_malformed_success_envelope_is_retried_once_with_same_alias(
+    malformed: httpx.Response,
+) -> None:
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.side_effect = [malformed, _success()]
+
+    result = await LLMGateway(_settings(), client=client).complete(
+        messages=[{"role": "user", "content": "test"}],
+        role=LLMTaskRole.CRITIC,
+        temperature=0,
+        max_tokens=100,
+        model_alias="strong-alias",
+    )
+
+    assert result.content == '{"ok":true}'
+    assert result.model_alias == "strong-alias"
+    assert result.attempt_count == 2
+    assert client.post.await_count == 2
+    first_payload = client.post.await_args_list[0].kwargs["json"]
+    second_payload = client.post.await_args_list[1].kwargs["json"]
+    assert first_payload == second_payload
+    assert first_payload["model"] == "strong-alias"
+
+
+@pytest.mark.asyncio
+async def test_valid_completion_with_invalid_editorial_json_is_not_gateway_retried() -> (
+    None
+):
+    valid_envelope = httpx.Response(
+        200,
+        json={
+            "choices": [
+                {"message": {"content": "not editorial json"}, "finish_reason": "stop"}
+            ]
+        },
+        request=httpx.Request("POST", "http://9router.test/v1/chat/completions"),
+    )
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.post.return_value = valid_envelope
+
+    result = await LLMGateway(_settings(), client=client).complete(
+        messages=[{"role": "user", "content": "test"}],
+        role=LLMTaskRole.CRITIC,
+        temperature=0,
+        max_tokens=100,
+        response_schema={"type": "object"},
+    )
+
+    assert result.content == "not editorial json"
     assert client.post.await_count == 1
 
 

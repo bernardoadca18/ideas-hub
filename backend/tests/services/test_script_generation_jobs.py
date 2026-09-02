@@ -37,6 +37,7 @@ from app.services.script_generation_jobs import (
     GenerationFailureCategory,
     GenerationJobError,
     ScriptGenerationJobService,
+    _audit_has_factual_blockers,
     _claim_extraction_max_tokens,
     _editorial_review_payload,
     _enforce_claim_language_assessments,
@@ -885,6 +886,59 @@ def test_attributed_official_observation_is_accepted_without_false_qualification
 
     assert checked.revision_required is False
     assert checked.issues == []
+
+
+def test_negative_factual_assertion_without_claim_is_a_blocking_audit_issue() -> None:
+    unsupported = SectionEditorialAuditOutput.model_validate(
+        {
+            "revision_required": True,
+            "issues": [
+                {
+                    "section_key": "section-001",
+                    "category": "unsupported_claim",
+                    "severity": "blocking",
+                    "actionable_feedback": (
+                        "Remova a afirmação de que a Rockstar ainda não mostrou "
+                        "Vice City ou forneça um claim aprovado que sustente essa ausência."
+                    ),
+                    "claim_ref": None,
+                    "excerpt": "A Rockstar ainda não mostrou Vice City.",
+                }
+            ],
+            "actual_claim_refs": [],
+            "actual_beats_covered": [],
+            "actual_summary": "A seção fez uma afirmação negativa sem suporte.",
+            "opened_loops": [],
+            "closed_loops": [],
+            "claim_language_assessments": [],
+        }
+    )
+
+    assert _audit_has_factual_blockers(unsupported) is True
+
+    supported = unsupported.model_copy(
+        update={
+            "revision_required": False,
+            "issues": [],
+            "actual_claim_refs": ["claim-negative-dated"],
+            "actual_summary": (
+                "Até a data coberta pela fonte, a Rockstar não havia anunciado Y."
+            ),
+        }
+    )
+    checked = _enforce_claim_language_assessments(
+        supported,
+        [
+            {
+                "id": "claim-negative-dated",
+                "claim_status": "confirmed",
+                "support_scope": "Ausência de anúncio somente até a data X.",
+            }
+        ],
+    )
+
+    assert _audit_has_factual_blockers(checked) is False
+    assert checked.revision_required is False
 
 
 @pytest.mark.asyncio
@@ -2465,11 +2519,17 @@ async def test_short_research_expands_before_claim_extraction_when_no_trusted_so
     )
     assert run.evidence_dossier["source_preselection_expansion"] == {
         "attempted": True,
+        "mode": "primary_required",
         "query": research.search.await_args_list[1].args[0],
         "new_candidates": 1,
         "trusted_candidates_found": 1,
+        "primary_candidates_found": 1,
     }
     assert research.search.await_args_list[1].args[0].endswith("site:rockstargames.com")
+    assert research.search.await_args_list[1].kwargs["include_domains"] == (
+        "rockstargames.com",
+        "youtube.com",
+    )
 
 
 @pytest.mark.asyncio
@@ -2544,6 +2604,208 @@ async def test_generic_gta_brief_continues_with_reliable_secondary_without_prima
     assert run.evidence_dossier["selected_source_count"] == 1
     assert run.evidence_dossier["claims"][0]["source_trust"] == "reliable_secondary"
     assert run.evidence_dossier["claims"][0]["claim_status"] == "reported"
+    assert "source_preselection_expansion" not in run.evidence_dossier
+    assert (
+        run.evidence_dossier["query_count"]
+        <= run.evidence_dossier["research_budget"]["total_queries"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_short_research_recovers_reliable_source_within_existing_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    community = ResearchSource(
+        source_id="external-reddit",
+        query="initial",
+        title="Community discussion about GTA VI",
+        url="https://www.reddit.com/r/GTA6/comments/example",
+        snippet="Players discuss a report about GTA VI.",
+        source_type="external_search_result",
+        retrieved_at="2026-09-02T00:00:00+00:00",
+        domain="reddit.com",
+    )
+    secondary = ResearchSource(
+        source_id="external-ign",
+        query="trusted recovery",
+        title="GTA VI report",
+        url="https://www.ign.com/articles/gta-vi-report",
+        snippet="IGN reports contextual information about GTA VI.",
+        source_type="external_search_result",
+        retrieved_at="2026-09-02T00:00:00+00:00",
+        domain="ign.com",
+    )
+    research = AsyncMock()
+    research.search.side_effect = [[community], [secondary]]
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), research_client=research, config=_config()
+    )
+    idea = SimpleNamespace(
+        titulo="Faça uma análise de GTA VI",
+        descricao_breve="Contextualize uma reportagem sem tratá-la como confirmação.",
+        nicho_id=None,
+        author_briefing=None,
+    )
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+        AsyncMock(return_value=idea),
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        production_profile="faceless_general",
+        target_duration_seconds=60,
+        target_words=145,
+        evidence_dossier={},
+        heartbeat_at=None,
+    )
+
+    async def extract_claims(current_run, _idea):
+        dossier = dict(current_run.evidence_dossier)
+        claims = [
+            {
+                "id": f"claim-reported-{index}",
+                "summary": f"IGN reports contextual information {index}.",
+                "source_refs": [secondary.source_id],
+                "source_fragment_id": secondary.source_id,
+                "source_trust": "reliable_secondary",
+                "claim_status": "reported",
+                "confidence": 0.7,
+                "qualification": "Segundo a reportagem.",
+                "support_scope": "Somente a informação reportada.",
+                "evidence_tier": "reliable_secondary",
+            }
+            for index in range(3)
+        ]
+        dossier["claims"] = claims
+        for fragment in dossier.get("fragments") or []:
+            fragment["claims"] = claims
+            fragment["claim_extraction_status"] = "completed"
+        current_run.evidence_dossier = dossier
+
+    service._extract_external_claims = AsyncMock(  # type: ignore[method-assign]
+        side_effect=extract_claims
+    )
+
+    await service._build_external_evidence_dossier(run)
+
+    assert research.search.await_count == 2
+    assert run.evidence_dossier["query_count"] == 2
+    assert (
+        run.evidence_dossier["query_count"]
+        <= run.evidence_dossier["research_budget"]["total_queries"]
+    )
+    assert run.evidence_dossier["selected_source_count"] == 1
+    assert run.evidence_dossier["fragments"][0]["source_trust"] == (
+        "reliable_secondary"
+    )
+    recovery = run.evidence_dossier["source_preselection_expansion"]
+    assert recovery["mode"] == "trusted_preference"
+    assert recovery["trusted_candidates_found"] == 1
+    hinted_domains = research.search.await_args_list[1].kwargs["include_domains"]
+    assert "rockstargames.com" in hinted_domains
+    assert "reuters.com" in hinted_domains
+    assert "ign.com" in hinted_domains
+
+
+@pytest.mark.asyncio
+async def test_short_research_continues_when_trusted_recovery_does_not_improve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    community = ResearchSource(
+        source_id="external-reddit",
+        query="initial",
+        title="GTA VI community report",
+        url="https://www.reddit.com/r/GTA6/comments/example",
+        snippet="Players report observations about GTA VI.",
+        source_type="external_search_result",
+        retrieved_at="2026-09-02T00:00:00+00:00",
+        domain="reddit.com",
+    )
+    unverified = ResearchSource(
+        source_id="external-unknown",
+        query="recovery",
+        title="GTA VI unofficial summary",
+        url="https://unknown.example/gta-vi",
+        snippet="An unofficial summary repeats GTA VI community reports.",
+        source_type="external_search_result",
+        retrieved_at="2026-09-02T00:00:00+00:00",
+        domain="unknown.example",
+    )
+    research = AsyncMock()
+    research.search.side_effect = [[community], [unverified]]
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), research_client=research, config=_config()
+    )
+    idea = SimpleNamespace(
+        titulo="Faça uma análise de GTA VI",
+        descricao_breve="Relatos da comunidade, com qualificação explícita.",
+        nicho_id=None,
+        author_briefing=None,
+    )
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+        AsyncMock(return_value=idea),
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        production_profile="faceless_general",
+        target_duration_seconds=60,
+        target_words=145,
+        evidence_dossier={},
+        heartbeat_at=None,
+    )
+
+    async def extract_claims(current_run, _idea):
+        dossier = dict(current_run.evidence_dossier)
+        claims = [
+            {
+                "id": f"claim-community-{index}",
+                "summary": f"Community members report observation {index}.",
+                "source_refs": [community.source_id],
+                "source_fragment_id": community.source_id,
+                "source_trust": "community",
+                "claim_status": "reported",
+                "confidence": 0.5,
+                "qualification": "Relato da comunidade.",
+                "support_scope": "Somente a existência do relato.",
+                "evidence_tier": "community",
+            }
+            for index in range(3)
+        ]
+        dossier["claims"] = claims
+        for fragment in dossier.get("fragments") or []:
+            fragment["claims"] = claims
+            fragment["claim_extraction_status"] = "completed"
+        current_run.evidence_dossier = dossier
+
+    service._extract_external_claims = AsyncMock(  # type: ignore[method-assign]
+        side_effect=extract_claims
+    )
+
+    await service._build_external_evidence_dossier(run)
+
+    assert research.search.await_count == 2
+    assert run.evidence_dossier["research_status"] == "completed"
+    assert run.evidence_dossier["primary_source_required"] is False
+    assert run.evidence_dossier["query_count"] == 2
+    assert (
+        run.evidence_dossier["query_count"]
+        <= run.evidence_dossier["research_budget"]["total_queries"]
+    )
+    assert {
+        fragment["source_trust"] for fragment in run.evidence_dossier["fragments"]
+    } == {
+        "community",
+        "unverified",
+    }
+    assert (
+        run.evidence_dossier["source_preselection_expansion"][
+            "trusted_candidates_found"
+        ]
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -2602,6 +2864,14 @@ async def test_explicit_official_only_brief_fails_after_one_bounded_recovery(
 
     assert research.search.await_count == 2
     assert research.search.await_args_list[1].args[0].endswith("site:rockstargames.com")
+    assert research.search.await_args_list[1].kwargs["include_domains"] == (
+        "rockstargames.com",
+        "youtube.com",
+    )
+    assert (
+        run.evidence_dossier["query_count"]
+        <= run.evidence_dossier["research_budget"]["total_queries"]
+    )
     service._extract_external_claims.assert_not_awaited()
     assert run.evidence_dossier["primary_source_required"] is True
     assert run.evidence_dossier["research_status"] == (
