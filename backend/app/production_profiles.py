@@ -46,7 +46,11 @@ class SourcePolicy:
         "take2games.com",
     )
     primary_sources: tuple[SourceMatchRule, ...] = (
-        SourceMatchRule(host="youtube.com", path_prefix="/@rockstargames"),
+        SourceMatchRule(
+            host="youtube.com",
+            path_prefix="/@rockstargames",
+            account="rockstargames",
+        ),
     )
     primary_search_rules: tuple[SourceSearchRule, ...] = (
         SourceSearchRule(
@@ -64,6 +68,11 @@ class SourcePolicy:
         "gamesindustry.biz",
         "ign.com",
         "digitalfoundry.net",
+    )
+    # A path may intentionally opt out of a host-wide authority rating. This keeps
+    # editorial articles and community-maintained areas on the same host distinct.
+    unverified_sources: tuple[SourceMatchRule, ...] = (
+        SourceMatchRule(host="ign.com", path_prefix="/wikis"),
     )
     reliable_sources: tuple[SourceMatchRule, ...] = (
         SourceMatchRule(host="eurogamer.net", path_prefix="/digitalfoundry"),

@@ -83,17 +83,25 @@ _MEDIA_TOPIC_SIGNALS = (
     "reception",
     "videos about",
 )
-_COMMUNITY_CLAIM_MARKERS = (
-    "the user says",
+_COMMUNITY_PREFERENCE_MARKERS = (
+    "the user says they like",
+    "the user says they prefer",
+    "the user says they want",
     "the user likes",
     "the user enjoys",
     "the user feels",
-    "the commenter says",
-    "o usuario diz",
+    "the user prefers",
+    "the user hopes",
+    "the commenter likes",
+    "the commenter prefers",
+    "o usuario diz que gosta",
+    "o usuario diz que prefere",
+    "o usuario diz que quer",
     "o usuario gosta",
     "o usuario prefere",
     "o usuario espera",
-    "o comentarista diz",
+    "o comentarista gosta",
+    "o comentarista prefere",
 )
 _COMMUNITY_TOPIC_SIGNALS = (
     "comunidade",
@@ -146,6 +154,9 @@ class SourcePolicyLike(Protocol):
 
     @property
     def reliable_domains(self) -> tuple[str, ...]: ...
+
+    @property
+    def unverified_sources(self) -> tuple[Any, ...]: ...
 
     @property
     def reliable_sources(self) -> tuple[Any, ...]: ...
@@ -221,6 +232,14 @@ def classify_source_trust(
             return SourceTrustTier.PRIMARY_OFFICIAL
     if _domain_matches(domain, policy.primary_domains):
         return SourceTrustTier.PRIMARY_OFFICIAL
+    for rule in getattr(policy, "unverified_sources", ()):
+        if _source_rule_matches(
+            domain=domain,
+            path=parsed.path,
+            account=source_account,
+            rule=rule,
+        ):
+            return SourceTrustTier.UNVERIFIED
     for rule in getattr(policy, "reliable_sources", ()):
         if _source_rule_matches(
             domain=domain,
@@ -249,9 +268,18 @@ def _source_rule_matches(
     if path_prefix and not path.casefold().startswith(str(path_prefix).casefold()):
         return False
     expected_account = getattr(rule, "account", None)
+    path_account = next(
+        (
+            segment.removeprefix("@").casefold()
+            for segment in path.split("/")
+            if segment.startswith("@") and len(segment) > 1
+        ),
+        None,
+    )
+    observed_account = (account or path_account or "").casefold()
     return (
         not expected_account
-        or (account or "").casefold() == str(expected_account).casefold()
+        or observed_account == str(expected_account).casefold().removeprefix("@")
     )
 
 
@@ -441,7 +469,8 @@ def select_planning_claims(
         isolated_community_preference = (
             claim.source_trust == SourceTrustTier.COMMUNITY.value
             and any(
-                marker in normalized_summary for marker in _COMMUNITY_CLAIM_MARKERS
+                marker in normalized_summary
+                for marker in _COMMUNITY_PREFERENCE_MARKERS
             )
         )
         eligible = True

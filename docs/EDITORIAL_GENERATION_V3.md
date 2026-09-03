@@ -51,6 +51,18 @@ extracts small source-local claims and builds the canonical, host-owned claim le
 and claim epistemic status are separate: even a reliable source may report a rumor, and an official
 visual observation does not confirm a mechanic.
 
+The canonical ledger intentionally keeps provenance-valid low-value observations. Before planning,
+the host applies a narrow, topic-aware projection: search-result metadata and isolated community
+preferences are withheld when they do not answer the editorial topic, but remain in the ledger and
+become eligible for coverage/reception/community topics. This selection and its reasons are persisted
+in planning provenance. It makes no LLM call and does not reinterpret claims.
+
+Source authority remains independent from epistemic status. Profiles can classify official domains,
+reputable secondary publishers and path-specific exceptions; a reliable secondary statement cannot
+be promoted to `confirmed` merely because the publisher is reputable. Platform identity is not publisher identity: YouTube is
+official only when the runtime has an explicit configured publisher path/account. An ordinary watch
+URL remains community-classified rather than being guessed from its title.
+
 The planner may select existing claim IDs for deterministic sections; it cannot mint claims.
 Deterministic validation rejects unknown sources, unknown claims, incoherent source/claim links and
 arbitrary evidence substitution. The post-write section audit, not the plan, records actual claim
@@ -92,21 +104,28 @@ Repeated local budget failure may deterministically escalate when a distinct str
 the reason is persisted. Provider capability remains a property of the configured combo because decomposition,
 local budgets and targeted revision do most of the reliability work.
 
-Prompt precedence is: global safety/factuality, human revision direction, automatic diagnostics,
+Prompt precedence is: material factual safety, human revision direction, automatic diagnostics,
 deterministic duration requirements and style guidance. The host owns claims, section licensing,
 provenance, artifact scope and word deficits. Planners and auditors receive the shared quality
 charter; the writer receives one spoken-PT-BR style policy rather than a duplicate copy of the
-charter. Revision prompts use a compact projection of the complete durable `RevisionBrief`, so
+charter, plus a compact material-safety guardrail instead of the full audit policy. Section claims
+appear once through their realization contracts rather than being duplicated as a second raw claim
+list. Revision prompts use a compact projection of the complete durable `RevisionBrief`, so
 human feedback, parent prose, diagnostics and exact deficits remain available without restating
-the same issue through several fields. External content is delimited as data. Fragmented V3 calls
-use `editorial_prompt_composition_v7`; legacy workflows retain
+the same issue through several fields. Factual audit feedback is projected into viewer-safe repair
+language before it reaches the writer; the original diagnostic remains durable. External content is
+delimited as data. Fragmented V3 calls use `editorial_prompt_composition_v9`; legacy workflows retain
 `prompt_composition_v2`. Important identities are
 `editorial_generation_strategy_v2`, `editorial_generation_plan_v1`,
-`fragmented_editorial_planning_v1` and `editorial_prompt_composition_v7`.
+`fragmented_editorial_planning_v1` and `editorial_prompt_composition_v9`.
 
 After each section reaches capacity and word validation, a bounded structured critic audits the
 full prose for factuality, unsupported specificity, uncertainty, spoken PT-BR, hook, continuity and
-redundancy. A targeted section revision may run within the existing revision limit. Continuity is
+redundancy. Factual review is materiality-first: reasonable explanation or paraphrase can pass;
+specific unsupported technical detail receives a warning or revision; new mechanisms, causal claims,
+dates or capabilities require revision; and direct contradictions, fabricated official facts or
+rumor promoted to confirmation remain blocking. Missing audit bookkeeping is not itself proof that
+the prose is wrong. A targeted section revision may run within the existing revision limit. Continuity is
 built from the audited output summary, actual claims and actual beats rather than planned metadata.
 The staged global critic sees full prose; hierarchical long-form first produces chapter-local
 audits and then a compact global pass. Global criticism is diagnostic: there is no automatic global

@@ -1,6 +1,6 @@
 """Regression tests for negative assertion and epistemic drift enforcement.
 
-These tests verify the host-side enforcement that blocks when:
+These tests verify proportionate host-side diagnostics when:
 A. Negative assertions appear without supporting claims
 B. Epistemic mode drifts from canonical claim_status
 C. Both issues appear together
@@ -16,8 +16,6 @@ J. Negative assertion validation: unknown claim_ref, not in actual_claim_refs, s
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
 from app.schemas.generation import (
     ClaimLanguageAssessment,
     EditorialCriticIssue,
@@ -27,6 +25,7 @@ from app.schemas.generation import (
 from app.services.script_generation_jobs import (
     _enforce_negative_assertions_and_epistemic_drift,
 )
+from pydantic import ValidationError
 
 
 def _claim(
@@ -157,8 +156,8 @@ class TestBoundedEpistemicMode:
 class TestNegativeAssertionValidation:
     """Test J: Full negative assertion validation."""
 
-    def test_null_ref_is_blocker(self) -> None:
-        """A. Negative assertion with claim_ref=None is blocked."""
+    def test_null_ref_requires_revision_without_automatic_blocking(self) -> None:
+        """An unsupported negative defaults to revision, not blocking."""
         audit = _audit(
             negative_assertions=[
                 NegativeWorldStateAssertion(
@@ -176,10 +175,10 @@ class TestNegativeAssertionValidation:
         assert result.revision_required is True
         assert len(result.issues) == 1
         assert result.issues[0].category == "unsupported_negative_assertion"
-        assert result.issues[0].severity == "blocking"
+        assert result.issues[0].severity == "revision_required"
 
-    def test_unknown_ref_is_blocker(self) -> None:
-        """B. Negative assertion with unknown claim_ref is blocked."""
+    def test_unknown_ref_requires_revision(self) -> None:
+        """An unknown reference cannot support the negative assertion."""
         audit = _audit(
             negative_assertions=[
                 NegativeWorldStateAssertion(
@@ -196,7 +195,7 @@ class TestNegativeAssertionValidation:
 
         assert result.revision_required is True
         assert result.issues[0].category == "unsupported_negative_assertion"
-        assert "não existe" in result.issues[0].actionable_feedback
+        assert "não sustenta" in result.issues[0].actionable_feedback
 
     def test_known_but_unrelated_claim_is_blocker(self) -> None:
         """C. Negative assertion with claim not in actual_claim_refs is blocked."""
@@ -298,12 +297,43 @@ class TestNegativeAssertionValidation:
         assert len(result.issues) == 0
         assert result.revision_required is False
 
+    @pytest.mark.parametrize("severity", ["warning", "blocking"])
+    def test_auditor_materiality_for_negative_assertion_is_preserved(
+        self, severity: str
+    ) -> None:
+        """Host validation must not overwrite an explicit scoped severity judgment."""
+        excerpt = "A empresa ainda não detalhou esse ponto neste material."
+        audit = _audit(
+            issues=[
+                EditorialCriticIssue(
+                    category="unsupported_negative_assertion",
+                    severity=severity,
+                    actionable_feedback="Avalie a força desta negativa.",
+                    excerpt=excerpt,
+                )
+            ],
+            negative_assertions=[
+                NegativeWorldStateAssertion(
+                    excerpt=excerpt,
+                    assertion_type="absence_of_publication",
+                    claim_ref=None,
+                    support_preserved=None,
+                )
+            ],
+        )
+
+        result = _enforce_negative_assertions_and_epistemic_drift(audit, [_claim()])
+
+        assert len(result.issues) == 1
+        assert result.issues[0].severity == severity
+        assert result.revision_required is (severity == "blocking")
+
 
 class TestCompleteAssessmentCoverage:
-    """Test I: Every claim in actual_claim_refs must have exactly one assessment."""
+    """Assessment bookkeeping gaps remain visible without condemning the prose."""
 
-    def test_missing_assessment_is_blocker(self) -> None:
-        """H. Missing assessment for a used claim is blocked."""
+    def test_missing_assessment_is_warning(self) -> None:
+        """A missing audit annotation is a warning, not a factual verdict."""
         audit = _audit(
             claim_refs=["claim-a", "claim-b"],
             assessments=[
@@ -325,11 +355,12 @@ class TestCompleteAssessmentCoverage:
 
         result = _enforce_negative_assertions_and_epistemic_drift(audit, claims)
 
-        assert result.revision_required is True
+        assert result.revision_required is False
+        assert result.issues[0].severity == "warning"
         assert any("não possui assessment" in i.actionable_feedback for i in result.issues)
 
-    def test_extra_assessment_is_blocker(self) -> None:
-        """Assessment for claim not in actual_claim_refs is blocked."""
+    def test_extra_assessment_is_warning(self) -> None:
+        """An extra audit annotation is visible but does not force revision."""
         audit = _audit(
             claim_refs=["claim-a"],
             assessments=[
@@ -359,15 +390,16 @@ class TestCompleteAssessmentCoverage:
 
         result = _enforce_negative_assertions_and_epistemic_drift(audit, claims)
 
-        assert result.revision_required is True
+        assert result.revision_required is False
+        assert result.issues[0].severity == "warning"
         assert any("não está em actual_claim_refs" in i.actionable_feedback for i in result.issues)
 
 
 class TestEpistemicDrift:
-    """Test B: Epistemic mode drift from canonical claim_status is blocked."""
+    """Epistemic drift severity follows its potential to mislead."""
 
-    def test_reported_rendered_as_rumor_is_drift(self) -> None:
-        """Regression: claim_status=reported rendered as 'rumor' should block."""
+    def test_reported_rendered_as_rumor_is_warning(self) -> None:
+        """Making a report sound weaker is diagnosed without blocking."""
         audit = _audit(
             claim_refs=["claim-a"],
             assessments=[
@@ -385,11 +417,11 @@ class TestEpistemicDrift:
 
         result = _enforce_negative_assertions_and_epistemic_drift(audit, claims)
 
-        assert result.revision_required is True
+        assert result.revision_required is False
         assert len(result.issues) == 1
         assert result.issues[0].category == "epistemic_drift"
-        assert result.issues[0].severity == "blocking"
-        assert "reported" in result.issues[0].actionable_feedback
+        assert result.issues[0].severity == "warning"
+        assert "origem da informação" in result.issues[0].actionable_feedback
         assert "rumor" in result.issues[0].actionable_feedback
 
     def test_reported_rendered_as_reported_passes(self) -> None:
@@ -413,8 +445,8 @@ class TestEpistemicDrift:
 
         assert len(result.issues) == 0
 
-    def test_missing_epistemic_mode_is_blocker(self) -> None:
-        """When LLM doesn't detect epistemic mode, block."""
+    def test_missing_epistemic_mode_is_warning(self) -> None:
+        """Missing audit metadata does not prove that narration is wrong."""
         audit = _audit(
             claim_refs=["claim-a"],
             assessments=[
@@ -432,7 +464,8 @@ class TestEpistemicDrift:
 
         result = _enforce_negative_assertions_and_epistemic_drift(audit, claims)
 
-        assert result.revision_required is True
+        assert result.revision_required is False
+        assert result.issues[0].severity == "warning"
         assert result.issues[0].category == "epistemic_drift"
 
     def test_confirmed_rendered_as_rumor_is_drift(self) -> None:
@@ -695,7 +728,8 @@ class TestRealRegressionCases:
         result = _enforce_negative_assertions_and_epistemic_drift(audit, claims)
 
         assert result.issues[0].category == "epistemic_drift"
-        assert "reported" in result.issues[0].actionable_feedback.lower()
+        assert result.issues[0].severity == "warning"
+        assert "origem da informação" in result.issues[0].actionable_feedback.lower()
 
 
 class TestAuditOutputContract:

@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-
 from app.production_profiles import SourceMatchRule, SourcePolicy, get_profile
 from app.prompts.editorial_v3 import compose_editorial_v3_prompt
 from app.services.editorial_evidence import (
@@ -15,6 +14,7 @@ from app.services.editorial_evidence import (
     build_canonical_claim_ledger,
     canonical_claim_id,
     classify_source_trust,
+    select_planning_claims,
 )
 from app.services.llm_gateway import LLMCallResult, LLMTaskRole
 from app.services.script_generation_jobs import (
@@ -84,6 +84,8 @@ def test_source_trust_is_deterministic_and_separate_from_claim_status() -> None:
         "https://www.theverge.com/games/rockstar-report",
         "https://www.gamesindustry.biz/rockstar-report",
         "https://www.ign.com/articles/gta-vi-report",
+        "https://www.digitalfoundry.net/technical-analysis",
+        "https://www.eurogamer.net/digitalfoundry-technical-analysis",
     ],
 )
 def test_default_policy_recognizes_small_reliable_secondary_registry(
@@ -142,6 +144,22 @@ def test_source_policy_can_distinguish_official_account_path_from_random_channel
         )
         is SourceTrustTier.COMMUNITY
     )
+    assert (
+        classify_source_trust(
+            url="https://youtube.com/watch?v=publisher-unknown",
+            source_type="external_search_result",
+            policy=policy,
+        )
+        is SourceTrustTier.COMMUNITY
+    )
+    assert (
+        classify_source_trust(
+            url="https://youtube.com/@rockstargamesfan/videos",
+            source_type="external_search_result",
+            policy=policy,
+        )
+        is SourceTrustTier.COMMUNITY
+    )
 
 
 def test_default_source_policy_recognizes_only_specific_rockstar_properties() -> None:
@@ -149,6 +167,14 @@ def test_default_source_policy_recognizes_only_specific_rockstar_properties() ->
     assert (
         classify_source_trust(
             url="https://www.rockstargames.com/VI",
+            source_type="external_search_result",
+            policy=policy,
+        )
+        is SourceTrustTier.PRIMARY_OFFICIAL
+    )
+    assert (
+        classify_source_trust(
+            url="https://www.take2games.com/ir/news",
             source_type="external_search_result",
             policy=policy,
         )
@@ -170,6 +196,99 @@ def test_default_source_policy_recognizes_only_specific_rockstar_properties() ->
         )
         is SourceTrustTier.COMMUNITY
     )
+    assert (
+        classify_source_trust(
+            url="https://unknown.example/report",
+            source_type="external_search_result",
+            policy=policy,
+        )
+        is SourceTrustTier.UNVERIFIED
+    )
+
+
+def _planning_claim(
+    *,
+    claim_id: str,
+    summary: str,
+    source_trust: str = "unverified",
+):
+    from app.schemas.generation import PlannedClaimOutput
+
+    return PlannedClaimOutput(
+        id=claim_id,
+        summary=summary,
+        evidence_tier="unverified",
+        source_refs=["source-1"],
+        confidence=0.5,
+        source_trust=source_trust,
+        claim_status="reported",
+    )
+
+
+def test_search_metadata_noise_is_contextually_excluded_only_from_planning() -> None:
+    metadata = _planning_claim(
+        claim_id="claim-metadata",
+        summary='The snippet lists a video titled "99 Details in GTA 6".',
+    )
+    substantive = _planning_claim(
+        claim_id="claim-substantive",
+        summary="The footage was captured in game on a current console.",
+        source_trust="reliable_secondary",
+    )
+    canonical = [metadata, substantive]
+
+    technical, provenance = select_planning_claims(
+        canonical,
+        topic="Análise técnica do material visual",
+    )
+
+    assert [claim.id for claim in technical] == ["claim-substantive"]
+    assert provenance["excluded_count"] == 1
+    assert provenance["canonical_claim_count"] == 2
+    assert canonical == [metadata, substantive]
+
+    reception, _ = select_planning_claims(
+        canonical,
+        topic="Como foi a recepção da imprensa e sua cobertura em vídeo",
+    )
+    assert {claim.id for claim in reception} == {
+        "claim-metadata",
+        "claim-substantive",
+    }
+
+
+def test_isolated_community_preference_is_contextually_planning_worthy() -> None:
+    preference = _planning_claim(
+        claim_id="claim-preference",
+        summary="The user says they like lax police during the first stars.",
+        source_trust="community",
+    )
+
+    technical, technical_provenance = select_planning_claims(
+        [preference],
+        topic="Análise técnica dos avanços visuais",
+    )
+    assert technical == []
+    assert technical_provenance["decisions"][0]["reason"] == (
+        "community_preference_not_relevant_to_topic"
+    )
+
+    community, _ = select_planning_claims(
+        [preference],
+        topic="Expectativas e preferências da comunidade",
+    )
+    assert community == [preference]
+
+    substantive_observation = _planning_claim(
+        claim_id="claim-community-observation",
+        summary="The user says the trailer shows reflections on the car.",
+        source_trust="community",
+    )
+    technical_observations, _ = select_planning_claims(
+        [substantive_observation],
+        topic="Análise técnica dos avanços visuais",
+    )
+    assert technical_observations == [substantive_observation]
 
 
 def test_unverified_source_cannot_promote_claim_to_confirmed() -> None:
@@ -181,6 +300,19 @@ def test_unverified_source_cannot_promote_claim_to_confirmed() -> None:
     )
     assert status is ClaimStatus.REPORTED
     assert confidence == 0.5
+    assert qualification and "não é uma fonte primária" in qualification
+
+
+def test_reliable_secondary_authority_does_not_become_official_status() -> None:
+    status, confidence, qualification = _calibrate_external_claim(
+        source_trust=SourceTrustTier.RELIABLE_SECONDARY,
+        claim_status=ClaimStatus.CONFIRMED,
+        confidence=0.99,
+        qualification=None,
+    )
+
+    assert status is ClaimStatus.REPORTED
+    assert confidence == 0.8
     assert qualification and "não é uma fonte primária" in qualification
 
 
@@ -346,10 +478,9 @@ def test_v3_writer_composition_uses_one_spoken_style_authority() -> None:
     assert "Listas e Explicações" in prompt.system
     assert "Separe fato oficial de teoria" in prompt.system
     assert "NARRAÇÃO PT-BR" in prompt.system
-    assert "Nunca invente especificidade" in prompt.system
-    assert (
-        "Ausência de evidência no dossiê nunca é evidência de ausência" in prompt.system
-    )
+    assert "Nunca preencha com detalhe inventado" in prompt.system
+    assert "Não engane materialmente o espectador" in prompt.system
+    assert "Não faça da checagem ou da classificação" in prompt.system
     assert "AUDIENCE PROMISE" in prompt.user
     assert "opinião e contexto editorial" in prompt.user
     assert "ignore rules" in prompt.user
@@ -363,10 +494,11 @@ def test_v3_audit_does_not_infer_absence_from_missing_evidence() -> None:
         task_prompt="Audite a seção contra o ledger aprovado.",
     )
 
-    assert "não foi anunciado" in prompt.system
-    assert "ledger não contiver um claim aprovado" in prompt.system
+    assert "evidência de ausência" in prompt.system
+    assert "exige um claim aprovado" in prompt.system
+    assert "enganar materialmente o espectador" in prompt.system
     assert prompt.trace["prompt_composition_version"] == (
-        "editorial_prompt_composition_v7"
+        "editorial_prompt_composition_v9"
     )
 
 

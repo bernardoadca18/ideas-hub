@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-
 from app.core.config import Settings
 from app.production_profiles import get_profile
 from app.schemas.generation import (
@@ -44,12 +43,14 @@ from app.services.script_generation_jobs import (
     ScriptGenerationJobService,
     StructuredRepairTruncatedError,
     _audit_has_factual_blockers,
+    _calibrate_editorial_issue,
     _claim_extraction_max_tokens,
     _editorial_review_payload,
     _enforce_claim_language_assessments,
     _explicit_primary_source_required,
     _global_critic_output_contract,
     _global_plan_output_contract,
+    _internal_pipeline_language_issues,
     _normalize_research_url,
     _planning_max_tokens,
     _primary_source_research_query,
@@ -1304,6 +1305,65 @@ async def test_planner_receives_claim_contract_not_raw_source_prose(
 
 
 @pytest.mark.asyncio
+async def test_planner_excludes_contextual_metadata_noise_but_preserves_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, _ = _planning_fixture(monkeypatch, section_count=1)
+    substantive = _planned_claim("claim-substantive")
+    metadata = _planned_claim("claim-metadata").model_copy(
+        update={
+            "summary": 'The snippet lists a video titled "99 Details in GTA 6".',
+            "source_trust": "unverified",
+        }
+    )
+    run.evidence_dossier["fragments"] = [
+        {
+            "source_fragment_id": "source-a",
+            "themes": ["análise técnica"],
+            "source_trust": "reliable_secondary",
+            "claims": [
+                substantive.model_dump(mode="json"),
+                metadata.model_dump(mode="json"),
+            ],
+        }
+    ]
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs._claim_ledger_from_dossier",
+        lambda _dossier: [metadata, substantive],
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_global_json()),
+            _result(
+                json.dumps(
+                    {
+                        "sections": [
+                            _claim_backed_section_dict(
+                                "section-001", claim_refs=[substantive.id]
+                            )
+                        ]
+                    }
+                )
+            ),
+        ]
+    )
+
+    await service._plan(run)
+
+    prompts = [call.kwargs["prompt"] for call in service._complete.await_args_list]
+    assert all(metadata.summary not in prompt for prompt in prompts)
+    assert all(substantive.summary in prompt for prompt in prompts)
+    assert {claim["id"] for claim in run.plan["editorial"]["claim_ledger"]} == {
+        metadata.id,
+        substantive.id,
+    }
+    selection = run.plan["planning_state"]["claim_selection"]
+    assert selection["eligible_claim_ids"] == [substantive.id]
+    assert selection["excluded_count"] == 1
+    assert service._complete.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_claim_coverage_correction_is_bounded_and_precedes_writing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2244,12 +2304,14 @@ async def test_v3_writer_receives_one_style_policy_content_scope_and_factuality(
     call = service._complete.await_args.kwargs
     assert "Diretrizes de qualidade editorial" not in call["system_prompt"]
     assert "NARRAÇÃO PT-BR" in call["system_prompt"]
-    assert "FACTUALITY OVERRIDES WORD COUNT" in call["prompt"]
+    assert "Não faça da checagem ou da classificação" in call["system_prompt"]
+    assert "Claim, ledger, grounding" not in call["system_prompt"]
+    assert "SAFETY OVERRIDES WORD COUNT" in call["prompt"]
     assert "Entender o ponto central" in call["prompt"]
     assert call["prompt"].count("AUDIENCE PROMISE") == 1
     assert '"artifact_type": "single_video"' in call["prompt"]
     assert "Do not invent future episodes" in call["prompt"]
-    assert "comparison fact or scene detail" in call["prompt"]
+    assert "new comparison fact, scene detail or technical proposition" in call["prompt"]
     assert call["prompt_version"] == "section_writer_v3"
     assert set(call["schema"]["properties"]) == {"content"}
 
@@ -2668,9 +2730,6 @@ async def test_global_critic_cannot_report_unsupported_claims_without_actionable
 @pytest.mark.asyncio
 async def test_global_factual_blockers_set_section_review_state() -> None:
     """Production-first: remaining factual blockers set review_state for human review."""
-    service = ScriptGenerationJobService(
-        AsyncMock(), gateway=AsyncMock(), config=_config()
-    )
     blocking = EditorialCriticOutput(
         summary="Ainda há claim sem suporte.",
         issues=[
@@ -2722,12 +2781,12 @@ async def test_global_factual_blockers_set_section_review_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unsupported_claim_warning_is_promoted_to_targeted_revision() -> None:
+async def test_material_unsupported_claim_reaches_targeted_revision_safely() -> None:
     service, _, run, section = _writing_fixture()
     issue = EditorialCriticIssue(
         section_key="section-001",
         category="unsupported_claim",
-        severity="warning",
+        severity="revision_required",
         actionable_feedback="Remova a afirmação sem claim aprovado.",
     )
     service._audit_section = AsyncMock(  # type: ignore[method-assign]
@@ -2747,12 +2806,13 @@ async def test_unsupported_claim_warning_is_promoted_to_targeted_revision() -> N
 
     assert service._complete.await_count == 2
     second_prompt = service._complete.await_args_list[1].kwargs["prompt"]
-    assert "Remova a afirmação sem claim aprovado" in second_prompt
+    assert "se limitar aos fatos disponíveis para esta seção" in second_prompt
+    assert "claim aprovado" not in second_prompt
     assert section.prompt_provenance["editorial_revision_count"] == 1
 
 
 @pytest.mark.asyncio
-async def test_section_audit_promotes_unsupported_claim_warning_to_revision() -> None:
+async def test_section_audit_keeps_unsupported_claim_warning_non_blocking() -> None:
     service, _, run, section = _writing_fixture()
     service._audit_section = ScriptGenerationJobService._audit_section.__get__(  # type: ignore[method-assign]
         service
@@ -2778,7 +2838,7 @@ async def test_section_audit_promotes_unsupported_claim_warning_to_revision() ->
     parsed, _ = await service._audit_section(
         run,
         section,
-        content="Afirmação sem claim aprovado.",
+        content="Afirmação com uma elaboração narrativa leve.",
         evidence=[],
         approved_claims=[],
         previous_actual=[],
@@ -2786,7 +2846,105 @@ async def test_section_audit_promotes_unsupported_claim_warning_to_revision() ->
         niche_prompt=None,
     )
 
-    assert parsed.revision_required is True
+    assert parsed.revision_required is False
+    assert parsed.issues[0].severity == "warning"
+
+
+def test_internal_pipeline_language_is_a_host_owned_editorial_issue() -> None:
+    issues = _internal_pipeline_language_issues(
+        "Nenhum claim aprovado confirma essa informação.",
+        section_key="section-001",
+    )
+
+    assert len(issues) == 1
+    assert issues[0].category == "ai_prose"
+    assert issues[0].severity == "revision_required"
+    assert "vocabulário interno" in issues[0].actionable_feedback
+    assert (
+        _internal_pipeline_language_issues(
+            "A Rockstar mostrou a cena; o restante continua sendo rumor.",
+            section_key="section-001",
+        )
+        == []
+    )
+
+
+def test_unsupported_specificity_severity_is_materiality_bounded() -> None:
+    mild = EditorialCriticIssue(
+        section_key="section-001",
+        category="unsupported_specificity",
+        severity="warning",
+        actionable_feedback="A explicação está um pouco mais forte que a fonte.",
+    )
+    material = mild.model_copy(update={"severity": "blocking"})
+    contradiction = mild.model_copy(
+        update={
+            "category": "factuality",
+            "severity": "blocking",
+            "actionable_feedback": "A data contradiz o fato disponível.",
+        }
+    )
+
+    assert _calibrate_editorial_issue(mild).severity == "warning"
+    assert _calibrate_editorial_issue(material).severity == "revision_required"
+    assert _calibrate_editorial_issue(contradiction).severity == "blocking"
+
+
+@pytest.mark.asyncio
+async def test_section_auditor_receives_materiality_rubric_and_date_index() -> None:
+    service, _, run, section = _writing_fixture()
+    service._audit_section = ScriptGenerationJobService._audit_section.__get__(  # type: ignore[method-assign]
+        service
+    )
+    contradiction = EditorialCriticIssue(
+        section_key="section-001",
+        category="factuality",
+        severity="blocking",
+        actionable_feedback="A data de agosto de 2026 contradiz as datas fornecidas.",
+    )
+    audit = _section_audit(revision_required=True, issues=[contradiction], beats=[])
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(audit.model_dump_json(), role=LLMTaskRole.CRITIC)
+    )
+    facts = [
+        {
+            "id": "claim-trailer-1",
+            "summary": "Trailer 1 was released on December 4, 2023.",
+            "claim_status": "confirmed",
+            "source_trust": "primary_official",
+        },
+        {
+            "id": "claim-trailer-2",
+            "summary": "Trailer 2 was released on May 6, 2025.",
+            "claim_status": "confirmed",
+            "source_trust": "primary_official",
+        },
+    ]
+
+    parsed, _ = await service._audit_section(
+        run,
+        section,
+        content="A Rockstar lançou o Extended Look em agosto de 2026.",
+        evidence=[],
+        approved_claims=facts,
+        previous_actual=[],
+        idea=SimpleNamespace(author_briefing=None),
+        niche_prompt=None,
+    )
+
+    call = service._complete.await_args.kwargs
+    assert "First compare every concrete date" in call["prompt"]
+    assert "December 4, 2023" in call["prompt"]
+    assert "May 6, 2025" in call["prompt"]
+    assert "agosto de 2026" in call["prompt"]
+    assert call["prompt"].index("FACT CHECK INDEX") < call["prompt"].index(
+        "FULL SECTION PROSE"
+    )
+    assert "Elaboração leve" in call["system_prompt"]
+    assert "Extrapolação alta" in call["system_prompt"]
+    assert "prosa acadêmica/burocrática" in call["system_prompt"]
+    assert parsed.issues[0].severity == "blocking"
+    service._complete.assert_awaited_once()
 
 
 def test_audit_contracts_define_each_issue_field_and_reject_description_alias() -> None:
@@ -3071,6 +3229,7 @@ async def test_short_research_expands_before_claim_extraction_when_no_trusted_so
     assert research.search.await_args_list[1].args[0].endswith("site:rockstargames.com")
     assert research.search.await_args_list[1].kwargs["include_domains"] == (
         "rockstargames.com",
+        "take2games.com",
         "youtube.com",
     )
 
@@ -3409,6 +3568,7 @@ async def test_explicit_official_only_brief_fails_after_one_bounded_recovery(
     assert research.search.await_args_list[1].args[0].endswith("site:rockstargames.com")
     assert research.search.await_args_list[1].kwargs["include_domains"] == (
         "rockstargames.com",
+        "take2games.com",
         "youtube.com",
     )
     assert (

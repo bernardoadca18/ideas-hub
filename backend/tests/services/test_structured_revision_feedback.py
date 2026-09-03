@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from app.schemas.generation import EditorialCriticIssue, SectionEditorialAuditOutput
 from app.services.script_generation_jobs import (
     StructuredRevisionIssue,
@@ -88,7 +87,8 @@ class TestTargetedRevisionFeedback:
         )
         result = feedback.to_prompt_text()
 
-        assert "unsupported_claim: Remove claim." in result
+        assert "se limitar aos fatos disponíveis para esta seção" in result
+        assert "Remove claim." not in result
         assert "Trecho:" not in result
 
 
@@ -198,13 +198,12 @@ class TestTargetedSectionFeedback:
         assert result.issues[0].claim_ref == "claim-b"
 
     def test_factual_blocker_included(self) -> None:
-        """Factual blocker issues are included regardless of severity."""
-        # Note: _issue_is_factual_blocker checks for specific categories
+        """A material factual issue is included when its severity requires revision."""
         audit = _audit(
             [
                 _issue(
                     category="unsupported_claim",
-                    severity="warning",
+                    severity="revision_required",
                     claim_ref="claim-a",
                 ),
             ]
@@ -213,8 +212,6 @@ class TestTargetedSectionFeedback:
 
         result = _targeted_section_feedback(validation, audit)
 
-        # unsupported_claim should be included even as warning
-        # (factual blockers are included)
         assert len(result.issues) == 1
 
     def test_no_audit_returns_empty_issues(self) -> None:
