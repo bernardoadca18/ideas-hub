@@ -412,10 +412,10 @@ class ApiClient {
     });
   }
 
-  async startRevisionGenerationRun(id: string, feedback: string, idempotencyKey: string): Promise<GenerationRun> {
+  async startRevisionGenerationRun(id: string, feedback: string | undefined, idempotencyKey: string): Promise<GenerationRun> {
     return this.request<GenerationRun>(`/roteiros/${id}/generation-runs`, {
       method: 'POST',
-      body: JSON.stringify({ feedback, idempotency_key: idempotencyKey }),
+      body: JSON.stringify({ ...(feedback ? { feedback } : {}), idempotency_key: idempotencyKey }),
     });
   }
 

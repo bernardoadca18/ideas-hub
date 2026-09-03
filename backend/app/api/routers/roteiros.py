@@ -172,7 +172,9 @@ async def regenerar_com_feedback(
     try:
         fallback_key = (
             "legacy-revision-"
-            + hashlib.sha256(f"{roteiro_id}:{payload.feedback}".encode()).hexdigest()
+            + hashlib.sha256(
+                f"{roteiro_id}:{payload.feedback or ''}".encode()
+            ).hexdigest()
         )
         return await ScriptGenerationJobService(db).enqueue_revision(
             roteiro_id,

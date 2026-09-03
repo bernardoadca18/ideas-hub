@@ -179,16 +179,17 @@ class ScriptEditRevisionRequest(BaseModel):
 class ScriptRegenerationRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
-    feedback: str = Field(min_length=1, max_length=10_000)
+    feedback: str | None = Field(default=None, max_length=10_000)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
     model_strategy: Literal["flash_only", "standard", "hybrid", "strong"] = "standard"
 
     @field_validator("feedback")
     @classmethod
-    def non_blank_feedback(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("feedback must not be blank")
-        return value
+    def normalize_optional_feedback(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
 
 class RoteiroResponse(RoteiroBase):

@@ -120,10 +120,10 @@ export default function Roteiros() {
 
   async function regenerate(e: React.FormEvent) {
     e.preventDefault();
-    if (!selected || !feedback.trim()) return;
+    if (!selected) return;
     setRegenerating(true);
     try {
-      let run = await api.startRevisionGenerationRun(selected.id, feedback, crypto.randomUUID());
+      let run = await api.startRevisionGenerationRun(selected.id, feedback.trim() || undefined, crypto.randomUUID());
       setRevisionRun(run);
       let delayMs = 1500;
       while (!['completed', 'failed', 'cancelled'].includes(run.status)) {
@@ -326,11 +326,12 @@ export default function Roteiros() {
                   ))}
                 </div>
                 <div className="revision-actions">
-                  <button className="btn btn-secondary" onClick={() => beginEdit(selected)}>Editar como nova versão</button>
+                  <button className="btn btn-secondary" onClick={() => beginEdit(selected)}>Editar</button>
                   <form onSubmit={regenerate} className="feedback-form">
-                    <label htmlFor="revision-feedback"><strong>Regenerar com feedback</strong></label>
-                    <textarea id="revision-feedback" rows={3} value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="Ex.: A introdução está longa; mantenha o trecho sobre Z e não afirme Y." />
-                    <button className="btn btn-primary" disabled={regenerating || !feedback.trim()} type="submit">{regenerating ? 'Regenerando…' : 'Criar nova versão'}</button>
+                    <label htmlFor="revision-feedback"><strong>Melhorar / Regenerar</strong></label>
+                    <textarea id="revision-feedback" rows={3} value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="Feedback adicional (opcional). Ex.: preserve a introdução e torne a seção 2 mais concreta." />
+                    <p className="form-help">O sistema usará automaticamente os diagnósticos editoriais globais, as auditorias por seção e o contrato de duração atual.</p>
+                    <button className="btn btn-primary" disabled={regenerating} type="submit">{regenerating ? 'Melhorando…' : 'Criar nova versão melhorada'}</button>
                     {revisionRun && regenerating && <span className="form-help">{revisionRun.phase} · {revisionRun.completed_sections}/{revisionRun.total_sections} seções</span>}
                   </form>
                   {selected.estrutura.editorial_review?.audit_status !== 'completed' && <button className="btn btn-primary" disabled={regenerating} onClick={() => void reaudit(selected)}>Revalidar texto atual</button>}

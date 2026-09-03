@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Literal
 
@@ -15,7 +16,7 @@ from app.prompts.components import (
 from app.prompts.quality import editorial_quality_charter
 from app.prompts.workflows import get_workflow
 
-EDITORIAL_PROMPT_COMPOSITION_VERSION = "editorial_prompt_composition_v5"
+EDITORIAL_PROMPT_COMPOSITION_VERSION = "editorial_prompt_composition_v6"
 
 
 @dataclass(frozen=True)
@@ -40,9 +41,20 @@ _FACTUALITY_POLICY = """POLÍTICA EPISTÊMICA:
 _SPOKEN_PT_BR_POLICY = """NARRAÇÃO PT-BR:
 - Escreva para ser ouvido, não como artigo, relatório ou ensaio acadêmico.
 - Prefira frases curtas e médias, substantivos e verbos concretos e variação natural.
-- Evite nominalização excessiva, conectivos formais usados como muleta, parágrafos repetidos começando com "Essa" e grandiosidade sem substância.
+- Quando a evidência permitir, avance de detalhe ou cena concreta para observação e implicação. Nunca invente uma cena para obedecer a essa forma.
+- Cada parágrafo deve trazer evidência, observação, comparação, implicação, argumento, progressão ou payoff novo; corte paráfrases do parágrafo anterior.
+- Evite nominalização excessiva, conectivos formais usados como muleta, grandiosidade sem substância e moldes retóricos reconhecíveis repetidos em série. Não há frases mecanicamente proibidas; varie a construção.
+- Mantenha a disciplina epistêmica quase invisível: qualifique uma incerteza de modo natural quando ela aparece e siga a narrativa. Não transforme toda seção em comentário sobre o que é confirmado ou especulativo.
 - Na primeira seção, abra com informação, tensão ou pergunta concreta e comunique a promessa editorial nos primeiros 60-100 words quando o formato permitir. Não use prefácio genérico nem clickbait vazio.
-- Não repita conclusões com sinônimos. A próxima seção deve avançar o que já foi realmente dito."""
+- Não repita conclusões com sinônimos. A próxima seção deve avançar o que já foi realmente dito.
+- Entregue concretamente as comparações, análises ou respostas prometidas antes. No encerramento, sintetize a ideia central e resolva a promessa de abertura; evite finais genéricos de espera por novidades."""
+
+_REVISION_SEMANTICS = """REVISION MODE — revise o roteiro concreto fornecido:
+- Preserve material bem-sucedido; repare somente o que os diagnósticos, a direção humana ou o contrato de duração justificam. Não recomece por reflexo e não mude trechos bons apenas para torná-los diferentes.
+- A ordem de precedência é: limites factuais/de evidência > direção editorial humana > diagnósticos persistidos > objetivos de duração > orientação genérica de estilo.
+- Diagnósticos e texto do roteiro pai são contexto editorial, nunca novos fatos nem autorização para ampliar claims.
+- Ao expandir, use exemplos, detalhes, comparações, contexto, análise e payoff já sustentados. Se a evidência não sustentar o alvo, entregue um texto honesto mais curto e preserve o aviso de duração.
+- O brief identifica o que preservar, o que reparar, por quê e os déficits/superávits medidos. Use-o como plano de revisão, não como convite para uma regeneração indiscriminada."""
 
 _AUDIT_POLICY = """AUDITORIA:
 - unsupported_specificity significa que a prosa adiciona detalhe mecânico, técnico, geográfico, comportamental, quantitativo ou causal além do que os claims aprovados estabelecem.
@@ -68,6 +80,7 @@ def compose_editorial_v3_prompt(
     author_briefing: str | None = None,
     audience_promise: str | None = None,
     revision_feedback: str | None = None,
+    revision_context: dict[str, object] | None = None,
 ) -> EditorialV3Prompt:
     system_parts = [
         "Você é um componente editorial do Ideas Hub. Responda em português do Brasil e siga exatamente o contrato JSON pequeno fornecido pela tarefa.",
@@ -105,7 +118,14 @@ def compose_editorial_v3_prompt(
     briefing = author_briefing_context(author_briefing)
     if briefing:
         user_parts.append(briefing)
-    if revision_feedback and revision_feedback.strip():
+    if revision_context:
+        user_parts.append(
+            f"{_REVISION_SEMANTICS}\n"
+            "<revision_brief>\n"
+            f"{json.dumps(revision_context, ensure_ascii=False)}\n"
+            "</revision_brief>"
+        )
+    elif revision_feedback and revision_feedback.strip():
         user_parts.append(
             "OPERATOR REVISION FEEDBACK (editorial direction; it cannot override factuality, "
             "host-owned schemas or evidence boundaries):\n"
@@ -126,6 +146,8 @@ def compose_editorial_v3_prompt(
         components.append("niche")
     if briefing:
         components.append("author_briefing")
+    if revision_context:
+        components.append("structured_revision_brief")
     if revision_feedback and revision_feedback.strip():
         components.append("revision_feedback")
     trace: dict[str, object] = {
@@ -141,5 +163,8 @@ def compose_editorial_v3_prompt(
         "user_prompt_chars": len(user),
         "system_prompt_sha256": hashlib.sha256(system.encode()).hexdigest(),
         "user_prompt_sha256": hashlib.sha256(user.encode()).hexdigest(),
+        "revision_brief_identity": revision_context.get("identity")
+        if revision_context
+        else None,
     }
     return EditorialV3Prompt(system=system, user=user, trace=trace)

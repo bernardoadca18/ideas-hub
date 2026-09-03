@@ -131,6 +131,8 @@ def test_local_section_validation_catches_half_written_output() -> None:
     report = validate_section_words(round((section.target_words or 0) / 2), section)
     assert report["status"] == "severely_under_budget"
     assert report["revision_required"] is True
+    assert report["word_deficit"] == (section.target_words or 0) - report["actual_words"]
+    assert report["word_surplus"] == 0
 
 
 def test_945_word_gta_regression_is_not_accepted_for_twelve_minutes() -> None:

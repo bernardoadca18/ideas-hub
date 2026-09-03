@@ -77,6 +77,83 @@ def count_words(text: str) -> int:
     return len(_WORD_RE.findall(text))
 
 
+def revision_duration_diagnostics(
+    contract: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Expose revision deltas from an already-evaluated duration contract.
+
+    Status and tolerance remain owned by ``evaluate_duration`` and the active
+    production profile. This helper only makes the persisted measurements explicit
+    for a later revision run, including compatibility with older contract payloads.
+    """
+
+    value = contract or {}
+    target_words = _optional_int(value.get("target_words"))
+    actual_words = _optional_int(value.get("speakable_words"))
+    target_seconds = _optional_number(value.get("target_duration_seconds"))
+    predicted_seconds = _optional_number(value.get("predicted_duration_seconds"))
+    sections: list[dict[str, Any]] = []
+    for fallback_index, section in enumerate(value.get("sections") or []):
+        index = _optional_int(section.get("index"))
+        if index is None:
+            index = fallback_index
+        section_target = _optional_int(section.get("target_words"))
+        section_actual = _optional_int(section.get("actual_words"))
+        sections.append(
+            {
+                "section_key": f"section-{index + 1:03d}",
+                "index": index,
+                "type": section.get("type"),
+                "target_duration_seconds": _optional_number(
+                    section.get("target_duration_seconds")
+                ),
+                "predicted_duration_seconds": _optional_number(
+                    section.get("predicted_duration_seconds")
+                ),
+                "target_words": section_target,
+                "actual_words": section_actual,
+                "word_deficit": _positive_difference(section_target, section_actual),
+                "word_surplus": _positive_difference(section_actual, section_target),
+                "ratio": section.get("ratio"),
+                "status": section.get("status") or "unavailable",
+            }
+        )
+    return {
+        "target_seconds": target_seconds,
+        "predicted_seconds": predicted_seconds,
+        "seconds_deficit": _positive_difference(target_seconds, predicted_seconds),
+        "seconds_surplus": _positive_difference(predicted_seconds, target_seconds),
+        "target_words": target_words,
+        "actual_words": actual_words,
+        "word_deficit": _positive_difference(target_words, actual_words),
+        "word_surplus": _positive_difference(actual_words, target_words),
+        "ratio": value.get("ratio"),
+        "status": value.get("status") or "unavailable",
+        "revision_required": bool(value.get("revision_required")),
+        "sections": sections,
+    }
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
+def _optional_number(value: Any) -> int | float | None:
+    if value is None:
+        return None
+    return value if isinstance(value, (int, float)) else float(value)
+
+
+def _positive_difference(
+    minuend: int | float | None, subtrahend: int | float | None
+) -> int | float | None:
+    if minuend is None or subtrahend is None:
+        return None
+    return max(0, minuend - subtrahend)
+
+
 @dataclass(frozen=True)
 class DurationCalibration:
     version: str

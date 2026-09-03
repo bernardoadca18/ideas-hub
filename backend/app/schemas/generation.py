@@ -344,14 +344,15 @@ class GenerationRunCreate(BaseModel):
 
 
 class RevisionGenerationRunCreate(GenerationRunCreate):
-    feedback: str = Field(min_length=1, max_length=10_000)
+    feedback: str | None = Field(default=None, max_length=10_000)
 
     @field_validator("feedback")
     @classmethod
-    def non_blank_feedback(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("feedback must not be blank")
-        return value
+    def normalize_optional_feedback(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
 
 class GameGenerationRunCreate(AnaliseJogoRequest):

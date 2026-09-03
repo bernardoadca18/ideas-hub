@@ -301,6 +301,12 @@ def validate_section_words(actual_words: int, budget: SectionBudget) -> dict[str
         "section_key": budget.key,
         "actual_words": actual_words,
         "target_words": budget.target_words,
+        "word_deficit": max(0, budget.target_words - actual_words)
+        if budget.target_words is not None
+        else None,
+        "word_surplus": max(0, actual_words - budget.target_words)
+        if budget.target_words is not None
+        else None,
         "min_words": budget.min_words,
         "max_words": budget.max_words,
         "status": status,

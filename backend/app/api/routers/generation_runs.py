@@ -124,7 +124,7 @@ async def start_revision_generation_run(
     payload: RevisionGenerationRunCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Regenerate from operator feedback through the durable Editorial V3 pipeline."""
+    """Revise through durable V3 diagnostics plus optional operator direction."""
 
     try:
         return await ScriptGenerationJobService(db).enqueue_revision(

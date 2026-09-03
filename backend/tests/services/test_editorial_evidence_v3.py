@@ -365,7 +365,7 @@ def test_v3_audit_does_not_infer_absence_from_missing_evidence() -> None:
     assert "não foi anunciado" in prompt.system
     assert "ledger não contiver um claim aprovado" in prompt.system
     assert prompt.trace["prompt_composition_version"] == (
-        "editorial_prompt_composition_v5"
+        "editorial_prompt_composition_v6"
     )
 
 

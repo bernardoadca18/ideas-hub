@@ -169,6 +169,8 @@ class TestTargetedSectionFeedback:
             "revision_required": True,
             "actual_words": 50,
             "target_words": 100,
+            "word_deficit": 50,
+            "word_surplus": 0,
             "status": "under",
         }
 
@@ -177,6 +179,7 @@ class TestTargetedSectionFeedback:
         assert result.word_feedback is not None
         assert "actual=50" in result.word_feedback
         assert "target=100" in result.word_feedback
+        assert "deficit=50" in result.word_feedback
 
     def test_warning_issues_not_included(self) -> None:
         """Warning severity issues are not included in revision feedback."""

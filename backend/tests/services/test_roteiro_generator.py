@@ -6,6 +6,7 @@ import pytest
 from app.agents.roteirista import BlocoNarrativo, RoteiroEstruturado
 from app.api.routers.roteiros import regenerar_com_feedback
 from app.schemas.analise_jogo import AnaliseJogoRequest
+from app.schemas.generation import RevisionGenerationRunCreate
 from app.schemas.llm_outputs import LLMOutputError
 from app.schemas.roteiro import (
     RoteiroEstrutura,
@@ -450,6 +451,14 @@ async def test_regeneration_compatibility_route_delegates_to_v3_run() -> None:
     assert result is expected
     enqueue.assert_awaited_once()
     legacy_writer.assert_not_awaited()
+
+
+def test_revision_requests_accept_absent_or_blank_human_feedback() -> None:
+    durable = RevisionGenerationRunCreate(idempotency_key="diagnostics-only")
+    compatibility = ScriptRegenerationRequest(feedback="   ")
+
+    assert durable.feedback is None
+    assert compatibility.feedback is None
 
 
 def test_absent_explicit_duration_remains_estimate_only() -> None:
