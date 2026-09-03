@@ -31,7 +31,7 @@ class PlannedSectionV2Output(BaseModel):
     key: str = Field(min_length=1, max_length=64)
     title: str = Field(min_length=1, max_length=200)
     purpose: str = Field(min_length=1, max_length=1000)
-    narrative_role: str = Field(min_length=1, max_length=100)
+    narrative_role: str = Field(min_length=1, max_length=240)
     beat_contracts: list[PlannedBeatOutput] = Field(min_length=1, max_length=12)
     must_not_repeat: list[str] = Field(default_factory=list, max_length=20)
     transition_target: str | None = Field(default=None, max_length=500)
@@ -43,7 +43,7 @@ class PlannedSectionOutput(BaseModel):
     key: str = Field(min_length=1, max_length=64)
     title: str = Field(min_length=1, max_length=200)
     purpose: str = Field(min_length=1, max_length=1000)
-    narrative_role: str = Field(min_length=1, max_length=100)
+    narrative_role: str = Field(min_length=1, max_length=240)
     beats: list[str] = Field(min_length=1, max_length=12)
     evidence_refs: list[str] = Field(default_factory=list, max_length=30)
     claim_refs: list[str] = Field(default_factory=list, max_length=50)
@@ -256,20 +256,23 @@ class ClaimLanguageAssessment(BaseModel):
     attribution_present: bool
     qualification_present: bool
     scope_preserved: bool
-    observed_epistemic_mode: Literal[
-        "confirmed",
-        "official_observation",
-        "reported",
-        "strongly_supported",
-        "interpretation",
-        "inference",
-        "rumor",
-        "leak",
-        "speculation",
-        "unknown",
-        "author_opinion",
-        "gameplay_observation",
-    ] | None = Field(
+    observed_epistemic_mode: (
+        Literal[
+            "confirmed",
+            "official_observation",
+            "reported",
+            "strongly_supported",
+            "interpretation",
+            "inference",
+            "rumor",
+            "leak",
+            "speculation",
+            "unknown",
+            "author_opinion",
+            "gameplay_observation",
+        ]
+        | None
+    ) = Field(
         default=None,
         description="Epistemic mode observed in prose. Must match canonical claim_status. "
         "Used to detect drift from canonical claim_status.",
@@ -289,7 +292,9 @@ class NegativeWorldStateAssertion(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    excerpt: str = Field(min_length=1, max_length=500, description="The negative assertion text")
+    excerpt: str = Field(
+        min_length=1, max_length=500, description="The negative assertion text"
+    )
     assertion_type: Literal[
         "absence_of_confirmation",
         "absence_of_announcement",

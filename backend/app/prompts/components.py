@@ -3,19 +3,30 @@
 from app.production_profiles import ProductionProfile
 
 
-def production_profile_context(profile: ProductionProfile) -> str:
+def production_profile_context(
+    profile: ProductionProfile, *, include_ideation_guidance: bool = True
+) -> str:
     partes = [
         f"Perfil de produção ativo: {profile.nome}.",
         profile.descricao,
         "",
         f"Estrutura/formato para este perfil: {profile.estrutura_guidance}",
-        "",
-        f"Diretrizes de ideação para este perfil: {profile.ideacao_guidance}",
-        "",
-        f"Uso de pesquisa/grounding para este perfil: {profile.pesquisa_guidance}",
-        "",
-        f"Política de duração: {profile.duracao.as_prompt_text()}",
     ]
+    if include_ideation_guidance:
+        partes.extend(
+            [
+                "",
+                f"Diretrizes de ideação para este perfil: {profile.ideacao_guidance}",
+            ]
+        )
+    partes.extend(
+        [
+            "",
+            f"Uso de pesquisa/grounding para este perfil: {profile.pesquisa_guidance}",
+            "",
+            f"Política de duração: {profile.duracao.as_prompt_text()}",
+        ]
+    )
     if profile.regras_editoriais:
         partes.append("")
         partes.append("Regras editoriais específicas deste perfil:")

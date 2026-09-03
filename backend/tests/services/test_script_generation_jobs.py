@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+
 from app.core.config import Settings
 from app.production_profiles import get_profile
 from app.schemas.generation import (
@@ -17,6 +18,7 @@ from app.schemas.generation import (
     GlobalEditorialPlanOutput,
     PlannedClaimOutput,
     PlannedSectionBatchOutput,
+    PlannedSectionV2Output,
     SectionEditorialAuditOutput,
     WrittenSectionOutput,
 )
@@ -40,6 +42,7 @@ from app.services.script_generation_jobs import (
     GenerationFailureCategory,
     GenerationJobError,
     ScriptGenerationJobService,
+    StructuredRepairTruncatedError,
     _audit_has_factual_blockers,
     _claim_extraction_max_tokens,
     _editorial_review_payload,
@@ -80,6 +83,7 @@ def _result(
     finish_reason: str = "stop",
     max_tokens: int = 3000,
     completion_tokens: int = 300,
+    reasoning_tokens: int | None = None,
 ) -> LLMCallResult:
     return LLMCallResult(
         content=content,
@@ -98,6 +102,7 @@ def _result(
         latency_seconds=0.01,
         attempt_count=1,
         finish_reason=finish_reason,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -365,9 +370,15 @@ async def test_enqueue_reaudit_refreshes_run_before_response_serialization() -> 
     service = ScriptGenerationJobService(session, gateway=AsyncMock(), config=_config())
     service.enqueue = AsyncMock(return_value=run)  # type: ignore[method-assign]
 
-    with patch(
-        "app.services.script_generation_jobs.RoteiroRepository",
-        return_value=repository,
+    with (
+        patch(
+            "app.services.script_generation_jobs.RoteiroRepository",
+            return_value=repository,
+        ),
+        patch(
+            "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+            AsyncMock(return_value=source.ideia),
+        ),
     ):
         result = await service.enqueue_reaudit(
             source.id,
@@ -1071,6 +1082,45 @@ async def test_external_claim_confidence_labels_are_normalized_without_llm_repai
 
 
 @pytest.mark.asyncio
+async def test_planning_string_must_not_repeat_is_losslessly_normalized_locally() -> (
+    None
+):
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    service._complete = AsyncMock()  # type: ignore[method-assign]
+    section = _section_dict("section-001")
+    section["must_not_repeat"] = "Não repetir a mesma ressalva."
+    section["narrative_role"] = (
+        "Ponte analítica que preserva o foco e entrega o payoff."
+    )
+    result = _result(json.dumps({"sections": [section]}))
+
+    parsed, provenance = await service._parse_or_repair(
+        SimpleNamespace(), result, PlannedSectionBatchOutput
+    )
+
+    assert parsed.sections[0].must_not_repeat == ["Não repetir a mesma ressalva."]
+    assert provenance["local_shape_normalizations"] == [
+        "sections.0.must_not_repeat:string_to_singleton_list"
+    ]
+    service._complete.assert_not_awaited()
+
+
+def test_narrative_role_stays_bounded_without_an_arbitrary_100_character_limit() -> (
+    None
+):
+    payload = _section_dict("section-001")
+    payload["narrative_role"] = "r" * 180
+
+    assert PlannedSectionV2Output.model_validate(payload).narrative_role == "r" * 180
+
+    payload["narrative_role"] = "r" * 241
+    with pytest.raises(ValueError):
+        PlannedSectionV2Output.model_validate(payload)
+
+
+@pytest.mark.asyncio
 async def test_global_wrong_root_uses_global_only_repair() -> None:
     service = ScriptGenerationJobService(
         AsyncMock(), gateway=AsyncMock(), config=_config()
@@ -1141,6 +1191,32 @@ async def test_fragment_repair_is_bounded_and_truncation_is_terminal() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reasoning_budget_repair_truncation_is_explicit() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(
+            "{",
+            role=LLMTaskRole.REPAIR,
+            finish_reason="max_tokens",
+            max_tokens=4225,
+            completion_tokens=2264,
+            reasoning_tokens=1957,
+        )
+    )
+
+    with pytest.raises(StructuredRepairTruncatedError) as captured:
+        await service._parse_or_repair(
+            SimpleNamespace(), _result("{"), PlannedSectionBatchOutput
+        )
+
+    assert captured.value.category is LLMFailureCategory.FORMAT
+    assert "reasoning_tokens=1957" in str(captured.value)
+    service._complete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_three_sections_assemble_exact_host_owned_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1176,6 +1252,55 @@ async def test_three_sections_assemble_exact_host_owned_plan(
         call.kwargs["structured_mode"] == "json_schema"
         for call in service._complete.await_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_planner_receives_claim_contract_not_raw_source_prose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, _ = _planning_fixture(monkeypatch, section_count=1)
+    claim = _planned_claim()
+    raw_marker = "RAW_SOURCE_DETAIL_NOT_LICENSED_BY_THE_CLAIM"
+    run.evidence_dossier["fragments"] = [
+        {
+            "source_fragment_id": "source-a",
+            "themes": ["tema"],
+            "snippet": raw_marker,
+            "source_trust": "reliable_secondary",
+            "claims": [claim.model_dump(mode="json")],
+        }
+    ]
+    monkeypatch.setattr(
+        "app.services.script_generation_jobs._claim_ledger_from_dossier",
+        lambda _dossier: [claim],
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_global_json()),
+            _result(
+                json.dumps(
+                    {
+                        "sections": [
+                            _claim_backed_section_dict(
+                                "section-001", claim_refs=[claim.id]
+                            )
+                        ]
+                    }
+                )
+            ),
+        ]
+    )
+
+    await service._plan(run)
+
+    global_prompt = service._complete.await_args_list[0].kwargs["prompt"]
+    section_prompt = service._complete.await_args_list[1].kwargs["prompt"]
+    assert raw_marker not in global_prompt
+    assert raw_marker not in section_prompt
+    assert claim.summary in global_prompt
+    assert claim.summary in section_prompt
+    assert section_prompt.count("AUDIENCE PROMISE") == 1
+    assert '"artifact_type": "single_video"' in section_prompt
 
 
 @pytest.mark.asyncio
@@ -1450,6 +1575,73 @@ async def test_truncated_multi_section_batch_splits_deterministically(
 
 
 @pytest.mark.asyncio
+async def test_truncated_multi_section_repair_reuses_bounded_batch_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, _ = _planning_fixture(monkeypatch)
+    invalid = json.loads(_batch_json(["section-001", "section-002", "section-003"]))
+    invalid["sections"][0]["purpose"] = ""
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_global_json()),
+            _result(json.dumps(invalid), completion_tokens=2225),
+            _result(
+                "{",
+                role=LLMTaskRole.REPAIR,
+                finish_reason="max_tokens",
+                max_tokens=6000,
+                completion_tokens=4000,
+                reasoning_tokens=1990,
+            ),
+            _result(_batch_json(["section-001"])),
+            _result(_batch_json(["section-002", "section-003"])),
+        ]
+    )
+
+    await service._plan(run)
+
+    assert service._complete.await_count == 5
+    state = run.plan["planning_state"]
+    assert len(state["repair_truncated_batches"]) == 1
+    assert state["repair_truncated_batches"][0]["recovery"] == (
+        "batch_split_after_repair_truncation"
+    )
+    assert len(state["accepted_batches"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_singleton_repair_truncation_remains_terminal_format(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, rows = _planning_fixture(monkeypatch, section_count=1)
+    invalid = json.loads(_batch_json(["section-001"]))
+    invalid["sections"][0]["purpose"] = ""
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_global_json()),
+            _result(json.dumps(invalid), completion_tokens=900),
+            _result(
+                "{",
+                role=LLMTaskRole.REPAIR,
+                finish_reason="max_tokens",
+                max_tokens=4948,
+                completion_tokens=2950,
+                reasoning_tokens=1990,
+            ),
+        ]
+    )
+
+    with pytest.raises(StructuredRepairTruncatedError) as captured:
+        await service._plan(run)
+
+    assert captured.value.category is LLMFailureCategory.FORMAT
+    assert rows[0].status == "planning"
+    event = run.plan["planning_state"]["repair_truncated_batches"][0]
+    assert event["recovery"] == "terminal_structured_failure"
+    assert service._complete.await_count == 3
+
+
+@pytest.mark.asyncio
 async def test_singleton_batch_truncation_is_terminal_format(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1555,7 +1747,7 @@ def test_planning_and_repair_token_budgets_remain_bounded() -> None:
         _planning_max_tokens(0)
     assert (
         _repair_max_tokens(_result("{}", completion_tokens=1519, max_tokens=4000))
-        == 3519
+        == 5567
     )
     assert (
         _repair_max_tokens(_result("{}", completion_tokens=5000, max_tokens=6000))
@@ -2034,7 +2226,7 @@ def test_datetime_now_utc_produces_timezone_aware_values() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v3_writer_receives_policy_audience_and_factuality_over_word_pressure() -> (
+async def test_v3_writer_receives_one_style_policy_content_scope_and_factuality() -> (
     None
 ):
     service, _, run, section = _writing_fixture()
@@ -2050,10 +2242,14 @@ async def test_v3_writer_receives_policy_audience_and_factuality_over_word_press
     await service._write_section(run, section)
 
     call = service._complete.await_args.kwargs
-    assert "Diretrizes de qualidade editorial" in call["system_prompt"]
+    assert "Diretrizes de qualidade editorial" not in call["system_prompt"]
     assert "NARRAÇÃO PT-BR" in call["system_prompt"]
     assert "FACTUALITY OVERRIDES WORD COUNT" in call["prompt"]
     assert "Entender o ponto central" in call["prompt"]
+    assert call["prompt"].count("AUDIENCE PROMISE") == 1
+    assert '"artifact_type": "single_video"' in call["prompt"]
+    assert "Do not invent future episodes" in call["prompt"]
+    assert "comparison fact or scene detail" in call["prompt"]
     assert call["prompt_version"] == "section_writer_v3"
     assert set(call["schema"]["properties"]) == {"content"}
 
@@ -2175,7 +2371,9 @@ async def test_qualified_community_estimate_can_pass_section_audit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_section_audit_soft_reviews_unknown_claim_and_drops_unobserved_beats() -> None:
+async def test_section_audit_soft_reviews_unknown_claim_and_drops_unobserved_beats() -> (
+    None
+):
     """Production-first: unknown claims become review warnings, not hard failures."""
     service, _, run, section = _writing_fixture()
     service._audit_section = ScriptGenerationJobService._audit_section.__get__(  # type: ignore[method-assign]
@@ -2204,7 +2402,8 @@ async def test_section_audit_soft_reviews_unknown_claim_and_drops_unobserved_bea
     assert section.output is not None
     assert section.output.get("review_warnings") is not None
     assert any(
-        w["type"] == "hallucinated_claim_refs" for w in section.output["review_warnings"]
+        w["type"] == "hallucinated_claim_refs"
+        for w in section.output["review_warnings"]
     )
 
     service._complete = AsyncMock(  # type: ignore[method-assign]
@@ -2296,7 +2495,12 @@ async def test_global_critic_receives_full_staged_content_and_section_audits() -
         section_key="section-001",
         section_order=0,
         chapter_order=0,
-        section_plan={"purpose": "Explicar", "must_cover": [], "must_not_repeat": []},
+        section_plan={
+            "purpose": "Explicar",
+            "must_cover": [],
+            "must_not_repeat": [],
+            "claim_refs": ["claim-licensed"],
+        },
         local_validation={"status": "within_budget"},
         output={
             "content": "abertura " + ("x" * 700) + marker,
@@ -2315,7 +2519,19 @@ async def test_global_critic_receives_full_staged_content_and_section_audits() -
                 "thesis": "Tese",
                 "audience_promise": "Promessa",
                 "open_loops": [],
-                "claim_ledger": [],
+                "claim_ledger": [
+                    {
+                        "id": "claim-licensed",
+                        "summary": "Detalhe permitido nesta seção.",
+                        "claim_status": "reported",
+                        "support_scope": "Somente o detalhe relatado.",
+                    },
+                    {
+                        "id": "claim-global-only",
+                        "summary": "Gloriana aparece apenas em outro escopo.",
+                        "claim_status": "reported",
+                    },
+                ],
             }
         },
     )
@@ -2326,7 +2542,51 @@ async def test_global_critic_receives_full_staged_content_and_section_audits() -
     assert payload["mode"] == "full_staged_prose"
     assert marker in payload["sections"][0]["full_content"]
     assert payload["sections"][0]["section_audit"]["actual_summary"] == "Resumo real"
+    assert [item["id"] for item in payload["sections"][0]["licensed_claims"]] == [
+        "claim-licensed"
+    ]
+    assert [item["id"] for item in payload["global_claim_index"]] == [
+        "claim-licensed",
+        "claim-global-only",
+    ]
+    assert "claim_ledger" not in payload
+    assert payload["content_contract"]["artifact_type"] == "single_video"
     assert run.plan["global_critic"]["summary"] == "Sem bloqueadores."
+
+
+@pytest.mark.asyncio
+async def test_global_critic_prompt_distinguishes_missing_from_unlicensed_claims() -> (
+    None
+):
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    critic = EditorialCriticOutput(
+        summary="Diagnóstico.",
+        issues=[],
+        open_loops_closed=True,
+        unsupported_claims_detected=False,
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(critic.model_dump_json(), role=LLMTaskRole.CRITIC)
+    )
+    run = SimpleNamespace(
+        production_profile="faceless_general",
+        plan={"editorial": {"audience_promise": "Promessa"}},
+    )
+
+    await service._global_critic_call(
+        run,
+        idea=SimpleNamespace(author_briefing=None),
+        niche_prompt=None,
+        payload={"global_claim_index": [], "sections": []},
+        audit_scope="test",
+    )
+
+    prompt = service._complete.await_args.kwargs["prompt"]
+    assert "present globally but not licensed for this section" in prompt
+    assert "Never say a detail is absent from the ledger" in prompt
+    assert prompt.count("AUDIENCE PROMISE") == 0
 
 
 @pytest.mark.asyncio
@@ -2399,14 +2659,14 @@ async def test_global_critic_cannot_report_unsupported_claims_without_actionable
     # SOFT REVIEW: No longer raises error - adds warning issue instead
     result = await service._run_global_critic(run, audit_scope="initial")
     # Verify a warning issue was added
-    assert any(issue.category == "unsupported_claim" and issue.severity == "warning"
-               for issue in result.issues)
+    assert any(
+        issue.category == "unsupported_claim" and issue.severity == "warning"
+        for issue in result.issues
+    )
 
 
 @pytest.mark.asyncio
-async def test_global_factual_blockers_set_section_review_state() -> (
-    None
-):
+async def test_global_factual_blockers_set_section_review_state() -> None:
     """Production-first: remaining factual blockers set review_state for human review."""
     service = ScriptGenerationJobService(
         AsyncMock(), gateway=AsyncMock(), config=_config()
@@ -2440,18 +2700,20 @@ async def test_global_factual_blockers_set_section_review_state() -> (
     if blocking and _critic_factual_blockers(blocking):
         for issue in _critic_factual_blockers(blocking):
             if issue.section_key:
-                for s in (run.sections or []):
+                for s in run.sections or []:
                     if s.section_key == issue.section_key:
                         s.review_state = "high_factual_risk"
                         if not s.output:
                             s.output = {}
                         if not s.output.get("review_warnings"):
                             s.output["review_warnings"] = []
-                        s.output["review_warnings"].append({
-                            "type": "global_factual_issue",
-                            "message": issue.actionable_feedback,
-                            "severity": issue.severity,
-                        })
+                        s.output["review_warnings"].append(
+                            {
+                                "type": "global_factual_issue",
+                                "message": issue.actionable_feedback,
+                                "severity": issue.severity,
+                            }
+                        )
 
     # Section should have review_state set for human review
     assert section.review_state == "high_factual_risk"

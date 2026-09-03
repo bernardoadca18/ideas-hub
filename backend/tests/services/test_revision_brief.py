@@ -22,7 +22,7 @@ from app.services.duration_contract import (
     revision_duration_diagnostics,
 )
 from app.services.llm_gateway import LLMCallResult, LLMTaskRole
-from app.services.revision_brief import build_revision_brief
+from app.services.revision_brief import build_revision_brief, scoped_revision_context
 from app.services.script_generation_jobs import (
     FACTUAL_BLOCKING_CATEGORIES,
     FRAGMENTED_PLANNING_VERSION,
@@ -219,7 +219,9 @@ def _passing_audit() -> SectionEditorialAuditOutput:
     )
 
 
-def test_duration_revision_diagnostics_exposes_exact_total_and_section_deficits() -> None:
+def test_duration_revision_diagnostics_exposes_exact_total_and_section_deficits() -> (
+    None
+):
     diagnostics = revision_duration_diagnostics(_parent_structure().duration_contract)
 
     assert diagnostics["target_words"] == 1740
@@ -233,7 +235,9 @@ def test_duration_revision_diagnostics_exposes_exact_total_and_section_deficits(
     ]
 
 
-def test_revision_brief_combines_parent_text_editorial_audits_and_human_feedback() -> None:
+def test_revision_brief_combines_parent_text_editorial_audits_and_human_feedback() -> (
+    None
+):
     brief = _brief(
         " Preserve a introdução. Torne a seção 2 concreta e evite meta-comentário. "
     )
@@ -258,9 +262,7 @@ def test_revision_brief_combines_parent_text_editorial_audits_and_human_feedback
         item["rank"] for item in brief["revision_priorities"]
     )
     critic_priority = next(
-        item
-        for item in brief["revision_priorities"]
-        if item["category"] == "payoff"
+        item for item in brief["revision_priorities"] if item["category"] == "payoff"
     )
     assert critic_priority["diagnostic_only"] is True
     assert critic_priority["source"] == "global_critic"
@@ -301,8 +303,38 @@ def test_revision_priorities_keep_factual_boundaries_above_human_direction() -> 
     assert human["rank"] == 2
 
 
+def test_prompt_projection_keeps_diagnostics_once_and_durable_brief_unchanged() -> None:
+    feedback = "Preserve a introdução e torne a análise concreta."
+    brief = _brief(feedback)
+
+    prompt_context = scoped_revision_context(brief, section_keys={"section-002"})
+
+    assert prompt_context is not None
+    assert prompt_context["human_feedback"] == feedback
+    assert "global_issues" not in prompt_context["editorial"]
+    assert "audit_issues" not in prompt_context["sections"][0]
+    assert "duration" not in prompt_context["sections"][0]
+    assert all(
+        item["source"]
+        not in {"human_feedback", "duration_contract", "revision_semantics"}
+        for item in prompt_context["revision_priorities"]
+    )
+    assert all(
+        not item.get("section_key") or item["section_key"] == "section-002"
+        for item in prompt_context["revision_priorities"]
+    )
+    assert len(prompt_context["parent"]["blocks"]) == 1
+    # Full diagnostics remain on the durable provenance object.
+    assert brief["editorial"]["global_issues"]
+    assert any(
+        item["source"] == "human_feedback" for item in brief["revision_priorities"]
+    )
+
+
 @pytest.mark.asyncio
-async def test_enqueue_revision_without_human_feedback_persists_diagnostics_and_evidence() -> None:
+async def test_enqueue_revision_without_human_feedback_persists_diagnostics_and_evidence() -> (
+    None
+):
     structure = _parent_structure()
     source = SimpleNamespace(
         id=uuid4(),
@@ -319,9 +351,15 @@ async def test_enqueue_revision_without_human_feedback_persists_diagnostics_and_
     service = ScriptGenerationJobService(AsyncMock(), config=Settings())
     service.enqueue = AsyncMock(return_value=expected_run)  # type: ignore[method-assign]
 
-    with patch(
-        "app.services.script_generation_jobs.RoteiroRepository",
-        return_value=repository,
+    with (
+        patch(
+            "app.services.script_generation_jobs.RoteiroRepository",
+            return_value=repository,
+        ),
+        patch(
+            "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
+            AsyncMock(return_value=source.ideia),
+        ),
     ):
         result = await service.enqueue_revision(
             source.id,
@@ -467,13 +505,15 @@ async def test_section_planner_receives_scoped_parent_diagnostics() -> None:
     assert "REVISION MODE" in prompt
     assert "SECAO_VISUAL_GENERICA" in prompt
     assert "ABERTURA_CONCRETA" not in prompt
-    assert "word_deficit\": 265" in prompt
+    assert 'word_deficit": 265' in prompt
     assert "structured_revision_brief" in trace["components"]
     assert trace["revision_brief_identity"] == brief["identity"]
 
 
 @pytest.mark.asyncio
-async def test_revision_writer_receives_parent_text_priorities_and_exact_deficit() -> None:
+async def test_revision_writer_receives_parent_text_priorities_and_exact_deficit() -> (
+    None
+):
     section = SimpleNamespace(
         section_key="section-002",
         section_order=1,
@@ -550,7 +590,7 @@ async def test_revision_writer_receives_parent_text_priorities_and_exact_deficit
     system_prompt = service._complete.await_args.kwargs["system_prompt"]
     assert "SECAO_VISUAL_GENERICA" in prompt
     assert "ABERTURA_CONCRETA" not in prompt
-    assert "word_deficit\": 265" in prompt
+    assert 'word_deficit": 265' in prompt
     assert "Preserve a abertura." in prompt
     assert "detalhe ou cena concreta" in system_prompt
     assert "disciplina epistêmica quase invisível" in system_prompt
@@ -569,7 +609,9 @@ def test_prompt_without_revision_brief_keeps_initial_generation_semantics() -> N
 
 
 @pytest.mark.asyncio
-async def test_revision_assembly_persists_linked_v2_despite_editorial_and_duration_miss() -> None:
+async def test_revision_assembly_persists_linked_v2_despite_editorial_and_duration_miss() -> (
+    None
+):
     parent_id = uuid4()
     run_id = uuid4()
     issue = EditorialCriticIssue(
@@ -637,7 +679,7 @@ async def test_revision_assembly_persists_linked_v2_despite_editorial_and_durati
                         "source_refs": ["source-official"],
                     }
                 ],
-            }
+            },
         },
         evidence_dossier={
             "version": "evidence_dossier_v3",
@@ -685,9 +727,18 @@ async def test_revision_assembly_persists_linked_v2_despite_editorial_and_durati
     assert kwargs["revision_feedback"] is None
     assert kwargs["estrutura"].duration_contract["revision_required"] is True
     assert kwargs["estrutura"].editorial_review["editorial_status"] == "needs_revision"
-    assert kwargs["estrutura"].evidence_provenance["claim_ledger"][0]["id"] == "claim-scene"
-    assert kwargs["estrutura"].evidence_provenance["source_generation_run_id"] == "source-generation-run"
-    assert kwargs["estrutura"].evidence_provenance["revision_brief_identity"] == "brief-identity"
+    assert (
+        kwargs["estrutura"].evidence_provenance["claim_ledger"][0]["id"]
+        == "claim-scene"
+    )
+    assert (
+        kwargs["estrutura"].evidence_provenance["source_generation_run_id"]
+        == "source-generation-run"
+    )
+    assert (
+        kwargs["estrutura"].evidence_provenance["revision_brief_identity"]
+        == "brief-identity"
+    )
     assert kwargs["estrutura"].generation_run_id == str(run_id)
     assert kwargs["estrutura"].prompt_trace["generation_intent"] == "revision"
     assert kwargs["estrutura"].prompt_trace["parent_roteiro_id"] == str(parent_id)

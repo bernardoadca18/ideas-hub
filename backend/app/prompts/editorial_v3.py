@@ -16,7 +16,7 @@ from app.prompts.components import (
 from app.prompts.quality import editorial_quality_charter
 from app.prompts.workflows import get_workflow
 
-EDITORIAL_PROMPT_COMPOSITION_VERSION = "editorial_prompt_composition_v6"
+EDITORIAL_PROMPT_COMPOSITION_VERSION = "editorial_prompt_composition_v7"
 
 
 @dataclass(frozen=True)
@@ -91,8 +91,13 @@ def compose_editorial_v3_prompt(
             f"POLÍTICA DE PESQUISA DO PERFIL {profile.id}: {profile.pesquisa_guidance}"
         )
     else:
-        system_parts.extend(
-            [editorial_quality_charter(), production_profile_context(profile)]
+        # The spoken policy is the writer's single style authority. The broader
+        # charter remains useful to planners and auditors, but repeating it for
+        # writing diluted the concrete, voice-first instructions below.
+        if phase != "writing":
+            system_parts.append(editorial_quality_charter())
+        system_parts.append(
+            production_profile_context(profile, include_ideation_guidance=False)
         )
         workflow = get_workflow(profile.workflow_roteiro)
         if workflow.editorial_guidance:
@@ -133,9 +138,10 @@ def compose_editorial_v3_prompt(
         )
     user = "\n\n".join(user_parts)
     components = ["factuality", f"profile:{profile.id}"]
-    components.append(
-        "research_policy" if phase == "claim_extraction" else "editorial_quality"
-    )
+    if phase == "claim_extraction":
+        components.append("research_policy")
+    elif phase != "writing":
+        components.append("editorial_quality")
     if phase != "claim_extraction" and workflow.editorial_guidance:
         components.append(f"workflow:{workflow.id}:{workflow.prompt_version}")
     if phase == "writing" or phase in {"section_audit", "global_critic"}:

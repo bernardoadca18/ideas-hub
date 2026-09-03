@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Set
 from dataclasses import asdict, dataclass
-from typing import AbstractSet, Any
+from typing import Any
 from uuid import UUID
 
 from app.schemas.roteiro import RoteiroEstrutura, script_content_identity
@@ -39,7 +40,7 @@ def build_revision_brief(
     structure: RoteiroEstrutura,
     human_feedback: str | None,
     evidence_provenance: dict[str, Any],
-    factual_issue_categories: AbstractSet[str],
+    factual_issue_categories: Set[str],
 ) -> RevisionBrief:
     """Build a durable revision brief exclusively from persisted parent data."""
 
@@ -131,9 +132,7 @@ def build_revision_brief(
         "revision_kind": parent_revision_kind,
         "generation_run_id": structure.generation_run_id,
         "source_generation_run_id": structure.source_generation_run_id,
-        "strategy_identity": (structure.prompt_trace or {}).get(
-            "strategy_identity"
-        ),
+        "strategy_identity": (structure.prompt_trace or {}).get("strategy_identity"),
         "content_identity": script_content_identity(structure),
         "title": structure.titulo,
         "blocks": parent_blocks,
@@ -183,48 +182,107 @@ def scoped_revision_context(
     *,
     section_keys: set[str] | None = None,
 ) -> dict[str, Any] | None:
-    """Return the full brief or a compact section-scoped prompt projection."""
+    """Return a compact prompt projection without changing durable provenance.
+
+    The persisted brief deliberately keeps raw reviews plus ranked priorities. Prompts
+    need each fact once: human feedback comes from its dedicated field, duration from
+    its deterministic contract, and editorial issues from the ranked priorities.
+    """
 
     if not brief:
         return None
-    if section_keys is None:
-        return brief
     parent = dict(brief.get("parent") or {})
-    parent["blocks"] = [
-        item
-        for item in parent.get("blocks") or []
-        if item.get("section_key") in section_keys
-    ]
+    if section_keys is not None:
+        parent["blocks"] = [
+            item
+            for item in parent.get("blocks") or []
+            if item.get("section_key") in section_keys
+        ]
     duration = dict(brief.get("duration") or {})
-    duration["sections"] = [
-        item
-        for item in duration.get("sections") or []
-        if item.get("section_key") in section_keys
-    ]
-    sections = [
-        item
-        for item in brief.get("sections") or []
-        if item.get("section_key") in section_keys
-    ]
-    priorities = [
-        item
-        for item in brief.get("revision_priorities") or []
-        if not item.get("section_key") or item.get("section_key") in section_keys
-    ]
+    if section_keys is not None:
+        duration["sections"] = [
+            item
+            for item in duration.get("sections") or []
+            if item.get("section_key") in section_keys
+        ]
+    sections = []
+    for raw_section in brief.get("sections") or []:
+        if (
+            section_keys is not None
+            and raw_section.get("section_key") not in section_keys
+        ):
+            continue
+        # Exact issues and duration are already represented authoritatively below.
+        sections.append(
+            {
+                key: value
+                for key, value in raw_section.items()
+                if key not in {"audit_issues", "duration"}
+            }
+        )
+    priorities = _prompt_revision_priorities(
+        list(brief.get("revision_priorities") or []), section_keys=section_keys
+    )
     preserve = [
         item
         for item in brief.get("preserve") or []
-        if not item.get("section_key") or item.get("section_key") in section_keys
+        if section_keys is None
+        or not item.get("section_key")
+        or item.get("section_key") in section_keys
     ]
+    editorial = {
+        key: value
+        for key, value in dict(brief.get("editorial") or {}).items()
+        if key != "global_issues"
+    }
     return {
-        **brief,
-        "scope": sorted(section_keys),
+        "version": brief.get("version"),
+        "identity": brief.get("identity"),
+        "scope": sorted(section_keys) if section_keys is not None else "global",
         "parent": parent,
+        "human_feedback": brief.get("human_feedback"),
+        "editorial": editorial,
         "duration": duration,
         "sections": sections,
         "revision_priorities": priorities,
         "preserve": preserve,
+        "evidence_reuse": brief.get("evidence_reuse") or {},
     }
+
+
+def _prompt_revision_priorities(
+    priorities: list[dict[str, Any]], *, section_keys: set[str] | None
+) -> list[dict[str, Any]]:
+    """Keep diagnostic priorities once in prompt context.
+
+    Human feedback, duration and generic style already have authoritative prompt
+    surfaces. Persisted priority entries remain untouched for later inspection.
+    """
+
+    excluded_sources = {"human_feedback", "duration_contract", "revision_semantics"}
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for item in priorities:
+        if item.get("source") in excluded_sources:
+            continue
+        if (
+            section_keys is not None
+            and item.get("section_key")
+            and item.get("section_key") not in section_keys
+        ):
+            continue
+        signature = (
+            item.get("section_key"),
+            item.get("category"),
+            item.get("action"),
+            item.get("excerpt"),
+            item.get("claim_ref"),
+        )
+        if signature in seen:
+            continue
+        seen.add(signature)
+        result.append(item)
+    return result
 
 
 def _revision_priorities(
@@ -233,7 +291,7 @@ def _revision_priorities(
     global_issues: list[dict[str, Any]],
     sections: list[dict[str, Any]],
     duration: dict[str, Any],
-    factual_issue_categories: AbstractSet[str],
+    factual_issue_categories: Set[str],
 ) -> list[dict[str, Any]]:
     issue_entries: list[tuple[str, dict[str, Any]]] = [
         ("global_critic", issue) for issue in global_issues
@@ -248,9 +306,7 @@ def _revision_priorities(
     editorial: list[dict[str, Any]] = []
     for source, issue in issue_entries:
         entry = {
-            "rank": 1
-            if issue.get("category") in factual_issue_categories
-            else 3,
+            "rank": 1 if issue.get("category") in factual_issue_categories else 3,
             "source": source,
             "section_key": issue.get("section_key"),
             "category": issue.get("category") or "editorial",
@@ -342,7 +398,7 @@ def _section_review_state(
     raw_audit: Any,
     issues: list[dict[str, Any]],
     *,
-    factual_issue_categories: AbstractSet[str],
+    factual_issue_categories: Set[str],
 ) -> str:
     if not isinstance(raw_audit, dict):
         return "audit_unavailable"

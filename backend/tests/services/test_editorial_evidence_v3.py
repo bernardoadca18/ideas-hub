@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+
 from app.production_profiles import SourceMatchRule, SourcePolicy, get_profile
 from app.prompts.editorial_v3 import compose_editorial_v3_prompt
 from app.services.editorial_evidence import (
@@ -332,7 +333,7 @@ def test_legacy_evidence_tier_is_mapped_without_being_discarded() -> None:
     assert claim.claim_status == "gameplay_observation"
 
 
-def test_v3_writer_composition_reuses_quality_profile_niche_and_author_policy() -> None:
+def test_v3_writer_composition_uses_one_spoken_style_authority() -> None:
     prompt = compose_editorial_v3_prompt(
         phase="writing",
         profile=get_profile("faceless_pop_culture_lists"),
@@ -341,7 +342,7 @@ def test_v3_writer_composition_reuses_quality_profile_niche_and_author_policy() 
         author_briefing="Minha leitura é cética.",
         audience_promise="Separar confirmações de estimativas.",
     )
-    assert "Diretrizes de qualidade editorial" in prompt.system
+    assert "Diretrizes de qualidade editorial" not in prompt.system
     assert "Listas e Explicações" in prompt.system
     assert "Separe fato oficial de teoria" in prompt.system
     assert "NARRAÇÃO PT-BR" in prompt.system
@@ -365,7 +366,7 @@ def test_v3_audit_does_not_infer_absence_from_missing_evidence() -> None:
     assert "não foi anunciado" in prompt.system
     assert "ledger não contiver um claim aprovado" in prompt.system
     assert prompt.trace["prompt_composition_version"] == (
-        "editorial_prompt_composition_v6"
+        "editorial_prompt_composition_v7"
     )
 
 
