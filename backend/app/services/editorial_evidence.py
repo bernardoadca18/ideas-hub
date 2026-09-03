@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from enum import StrEnum
 from typing import Any, Protocol
 from urllib.parse import urlparse
@@ -12,6 +13,7 @@ from app.schemas.generation import PlannedClaimOutput
 
 EVIDENCE_DOSSIER_VERSION = "evidence_dossier_v3"
 CLAIM_LEDGER_VERSION = "canonical_claim_ledger_v1"
+PLANNING_CLAIM_SELECTION_VERSION = "planning_claim_selection_v1"
 
 
 class SourceTrustTier(StrEnum):
@@ -52,6 +54,87 @@ _CLAIM_STATUS_CONSERVATIVE_ORDER = (
     ClaimStatus.STRONGLY_SUPPORTED,
     ClaimStatus.CONFIRMED,
 )
+
+_METADATA_CLAIM_MARKERS = (
+    "snippet lists a video titled",
+    "snippet lists an article titled",
+    "search result lists a video",
+    "search result contains a link",
+    "the snippet contains a link titled",
+    "o trecho lista um video",
+    "o trecho lista um artigo",
+    "o resultado lista um video",
+    "o resultado contem um link",
+    "a pagina lista um video",
+)
+_MEDIA_TOPIC_SIGNALS = (
+    "cobertura",
+    "imprensa",
+    "midia",
+    "manchete",
+    "recepcao",
+    "repercussao",
+    "publicacoes",
+    "videos sobre",
+    "coverage",
+    "press",
+    "headlines",
+    "media reaction",
+    "reception",
+    "videos about",
+)
+_COMMUNITY_CLAIM_MARKERS = (
+    "the user says",
+    "the user likes",
+    "the user enjoys",
+    "the user feels",
+    "the commenter says",
+    "o usuario diz",
+    "o usuario gosta",
+    "o usuario prefere",
+    "o usuario espera",
+    "o comentarista diz",
+)
+_COMMUNITY_TOPIC_SIGNALS = (
+    "comunidade",
+    "fandom",
+    "fas",
+    "jogadores",
+    "reacao",
+    "recepcao",
+    "expectativa",
+    "preferencia",
+    "community",
+    "fans",
+    "players",
+    "reactions",
+    "reception",
+    "expectations",
+    "preferences",
+)
+_PLANNING_TOKEN_STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "da",
+    "das",
+    "de",
+    "do",
+    "dos",
+    "em",
+    "for",
+    "from",
+    "in",
+    "o",
+    "of",
+    "os",
+    "the",
+    "to",
+    "um",
+    "uma",
+}
 
 
 class SourcePolicyLike(Protocol):
@@ -319,3 +402,98 @@ def build_canonical_claim_ledger(
             }
         )
     return [claims[key] for key in sorted(claims)]
+
+
+def select_planning_claims(
+    claims: list[PlannedClaimOutput],
+    *,
+    topic: str,
+) -> tuple[list[PlannedClaimOutput], dict[str, Any]]:
+    """Rank claims for planning and hide only clearly low-value contextual noise.
+
+    The canonical ledger remains untouched. Metadata-only propositions and isolated
+    community preferences become eligible when the topic is actually about coverage,
+    reception or community expectations; otherwise they stay available in provenance
+    but are not offered as material for the planner.
+    """
+
+    normalized_topic = _planning_normalize(topic)
+    topic_tokens = _planning_tokens(normalized_topic)
+    media_topic = any(signal in normalized_topic for signal in _MEDIA_TOPIC_SIGNALS)
+    community_topic = any(
+        signal in normalized_topic for signal in _COMMUNITY_TOPIC_SIGNALS
+    )
+    trust_rank = {
+        SourceTrustTier.PRIMARY_OFFICIAL.value: 5,
+        SourceTrustTier.RELIABLE_SECONDARY.value: 4,
+        SourceTrustTier.GAMEPLAY_EVIDENCE.value: 4,
+        SourceTrustTier.HUMAN_AUTHOR.value: 4,
+        SourceTrustTier.UNVERIFIED.value: 1,
+        SourceTrustTier.COMMUNITY.value: 0,
+    }
+    ranked: list[tuple[int, str, PlannedClaimOutput]] = []
+    decisions: list[dict[str, Any]] = []
+    for claim in claims:
+        normalized_summary = _planning_normalize(claim.summary)
+        metadata_only = any(
+            marker in normalized_summary for marker in _METADATA_CLAIM_MARKERS
+        )
+        isolated_community_preference = (
+            claim.source_trust == SourceTrustTier.COMMUNITY.value
+            and any(
+                marker in normalized_summary for marker in _COMMUNITY_CLAIM_MARKERS
+            )
+        )
+        eligible = True
+        reason = "substantive_proposition"
+        if metadata_only and not media_topic:
+            eligible = False
+            reason = "search_metadata_not_relevant_to_topic"
+        elif isolated_community_preference and not community_topic:
+            eligible = False
+            reason = "community_preference_not_relevant_to_topic"
+        elif metadata_only:
+            reason = "search_metadata_relevant_to_media_topic"
+        elif isolated_community_preference:
+            reason = "community_preference_relevant_to_topic"
+        overlap = len(topic_tokens.intersection(_planning_tokens(normalized_summary)))
+        score = overlap * 10 + trust_rank.get(claim.source_trust, 0)
+        decisions.append(
+            {
+                "claim_id": claim.id,
+                "planning_eligible": eligible,
+                "reason": reason,
+                "relevance_overlap": overlap,
+                "source_trust": claim.source_trust,
+                "planning_score": score,
+            }
+        )
+        if eligible:
+            ranked.append((score, claim.id, claim))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    selected = [item[2] for item in ranked]
+    return selected, {
+        "version": PLANNING_CLAIM_SELECTION_VERSION,
+        "topic_identity": hashlib.sha256(topic.encode("utf-8")).hexdigest(),
+        "canonical_claim_count": len(claims),
+        "planning_eligible_count": len(selected),
+        "excluded_count": len(claims) - len(selected),
+        "eligible_claim_ids": [claim.id for claim in selected],
+        "decisions": decisions,
+    }
+
+
+def _planning_normalize(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value.casefold())
+    ascii_value = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    )
+    return " ".join(ascii_value.split())
+
+
+def _planning_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]{2,}", value)
+        if token not in _PLANNING_TOKEN_STOP_WORDS
+    }

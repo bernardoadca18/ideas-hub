@@ -39,9 +39,12 @@ class SourcePolicy:
     judgments. An empty list means "unknown", never implicitly trustworthy.
     """
 
-    # Small cross-profile official registry. It is deliberately conservative:
-    # YouTube is official only for the unique Rockstar handle, never by host alone.
-    primary_domains: tuple[str, ...] = ("rockstargames.com",)
+    # Small configurable official registry for the current production vertical.
+    # YouTube is official only for an explicit publisher path, never by host alone.
+    primary_domains: tuple[str, ...] = (
+        "rockstargames.com",
+        "take2games.com",
+    )
     primary_sources: tuple[SourceMatchRule, ...] = (
         SourceMatchRule(host="youtube.com", path_prefix="/@rockstargames"),
     )
@@ -51,7 +54,7 @@ class SourcePolicy:
             query_suffix="site:rockstargames.com",
         ),
     )
-    # Small, host-owned baseline for the first production domain. These outlets
+    # Small, host-owned baseline for the current production vertical. These outlets
     # may support reported claims; they never promote a claim to confirmed.
     reliable_domains: tuple[str, ...] = (
         "reuters.com",
@@ -59,9 +62,11 @@ class SourcePolicy:
         "bbc.com",
         "theverge.com",
         "gamesindustry.biz",
+        "ign.com",
+        "digitalfoundry.net",
     )
     reliable_sources: tuple[SourceMatchRule, ...] = (
-        SourceMatchRule(host="ign.com", path_prefix="/articles"),
+        SourceMatchRule(host="eurogamer.net", path_prefix="/digitalfoundry"),
     )
     community_domains: tuple[str, ...] = (
         "reddit.com",
@@ -73,7 +78,7 @@ class SourcePolicy:
     unknown_default: str = "unverified"
     grounding_required: bool = True
     minimum_claims: int = 1
-    version: str = "source_policy_v5"
+    version: str = "source_policy_v6"
 
 
 @dataclass(frozen=True)
