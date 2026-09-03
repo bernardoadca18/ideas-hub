@@ -27,10 +27,9 @@ function auditStatusColor(status?: string) {
 }
 
 function approvalIsBlocked(script: Roteiro) {
-  // Manual approval is sovereign - only block if no review exists
+  // Manual approval is sovereign - never block based on review state
   // Review warnings are displayed but don't block approval
-  const review = script.estrutura.editorial_review;
-  return !review;
+  return false;
 }
 
 function hasReviewWarnings(script: Roteiro): boolean {

@@ -291,7 +291,8 @@ async def test_stale_draft_rejection_cannot_reset_idea_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unresolved_factual_blocker_blocks_normal_approval() -> None:
+async def test_factual_warnings_do_not_block_manual_approval() -> None:
+    """Manual approval is sovereign - review warnings are displayed but don't block."""
     generator = RoteiroGenerator(AsyncMock())
     script_id = uuid4()
     structure = {
@@ -302,7 +303,7 @@ async def test_unresolved_factual_blocker_blocks_normal_approval() -> None:
             "audit_status": "completed",
             "editorial_status": "pass",
             "factuality_status": "blocking",
-            "approval_blocked": True,
+            "approval_blocked": True,  # Review says blocked, but manual approval overrides
         },
     }
     structure["editorial_review"]["audit_content_identity"] = script_content_identity(
@@ -315,13 +316,15 @@ async def test_unresolved_factual_blocker_blocks_normal_approval() -> None:
         estrutura=structure,
     )
     generator.roteiro_repo = AsyncMock()
+    generator.ideia_repo = AsyncMock()
     generator.roteiro_repo.get_by_id.return_value = script
     generator.roteiro_repo.get_latest_version_by_ideia.return_value = script
+    generator.roteiro_repo.update.return_value = SimpleNamespace(status="aprovado")
 
-    with pytest.raises(ValueError, match="bloqueadores factuais"):
-        await generator.aprovar_roteiro(script_id)
+    result = await generator.aprovar_roteiro(script_id)
 
-    generator.roteiro_repo.update.assert_not_awaited()
+    assert result["status"] == "aprovado"
+    generator.roteiro_repo.update.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -361,7 +364,8 @@ async def test_style_warning_does_not_block_human_approval() -> None:
 
 
 @pytest.mark.asyncio
-async def test_new_v3_script_without_current_audit_cannot_be_approved() -> None:
+async def test_new_v3_script_without_current_audit_can_be_manually_approved() -> None:
+    """Manual approval is sovereign - audit unavailability doesn't block approval."""
     generator = RoteiroGenerator(AsyncMock())
     script = SimpleNamespace(
         id=uuid4(),
@@ -376,15 +380,20 @@ async def test_new_v3_script_without_current_audit_cannot_be_approved() -> None:
         },
     )
     generator.roteiro_repo = AsyncMock()
+    generator.ideia_repo = AsyncMock()
     generator.roteiro_repo.get_by_id.return_value = script
     generator.roteiro_repo.get_latest_version_by_ideia.return_value = script
+    generator.roteiro_repo.update.return_value = SimpleNamespace(status="aprovado")
 
-    with pytest.raises(ValueError, match="exigem auditoria"):
-        await generator.aprovar_roteiro(script.id)
+    result = await generator.aprovar_roteiro(script.id)
+
+    assert result["status"] == "aprovado"
+    generator.roteiro_repo.update.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_completed_audit_for_different_content_is_stale() -> None:
+async def test_stale_audit_does_not_block_manual_approval() -> None:
+    """Manual approval is sovereign - stale audit doesn't block approval."""
     generator = RoteiroGenerator(AsyncMock())
     script = SimpleNamespace(
         id=uuid4(),
@@ -405,11 +414,15 @@ async def test_completed_audit_for_different_content_is_stale() -> None:
         },
     )
     generator.roteiro_repo = AsyncMock()
+    generator.ideia_repo = AsyncMock()
     generator.roteiro_repo.get_by_id.return_value = script
     generator.roteiro_repo.get_latest_version_by_ideia.return_value = script
+    generator.roteiro_repo.update.return_value = SimpleNamespace(status="aprovado")
 
-    with pytest.raises(ValueError, match="não corresponde ao conteúdo atual"):
-        await generator.aprovar_roteiro(script.id)
+    result = await generator.aprovar_roteiro(script.id)
+
+    assert result["status"] == "aprovado"
+    generator.roteiro_repo.update.assert_awaited_once()
 
 
 @pytest.mark.asyncio

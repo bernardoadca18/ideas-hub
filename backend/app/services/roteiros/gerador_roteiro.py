@@ -678,44 +678,8 @@ class RoteiroGenerator:
             )
 
         estrutura = RoteiroEstrutura.model_validate(roteiro.estrutura)
-        review = estrutura.editorial_review
-        revision_kind = getattr(roteiro, "revision_kind", "legacy")
-        if not review:
-            if revision_kind == "legacy":
-                raise ValueError(
-                    "Roteiro histórico legacy/unvalidated permanece legível, mas não "
-                    "pode ser aprovado pelo fluxo V3 sem re-audit."
-                )
-            raise ValueError(
-                "Roteiros novos exigem auditoria editorial/factual atual antes da aprovação."
-            )
-        contract = estrutura.duration_contract
-        if revision_kind != "legacy" and not contract:
-            raise ValueError(
-                "Roteiros novos exigem contrato de duração validado antes da aprovação."
-            )
-        if contract and contract.get("revision_required"):
-            target = contract.get("target_duration_seconds")
-            predicted = contract.get("predicted_duration_seconds")
-            raise ValueError(
-                "O contrato de duração exige revisão antes da aprovação "
-                f"(target={target}s, predicted={predicted}s, status={contract.get('status')})."
-            )
-        if review.get("audit_status") != "completed":
-            raise ValueError(
-                "A auditoria editorial/factual não foi concluída; aprovação normal bloqueada."
-            )
-        if review.get("audit_content_identity") != script_content_identity(estrutura):
-            raise ValueError(
-                "A auditoria não corresponde ao conteúdo atual; re-audit obrigatório."
-            )
-        if (
-            review.get("approval_blocked")
-            or review.get("factuality_status") == "blocking"
-        ):
-            raise ValueError(
-                "Há bloqueadores factuais não resolvidos; revise o roteiro antes da aprovação."
-            )
+        # Manual approval is sovereign - no review hard gates.
+        # Warnings remain metadata only for human decision-making.
 
         updated = await self.roteiro_repo.update(
             roteiro_id, RoteiroUpdate(status="aprovado")

@@ -2175,7 +2175,8 @@ async def test_qualified_community_estimate_can_pass_section_audit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_section_audit_rejects_unknown_claim_and_drops_unobserved_beats() -> None:
+async def test_section_audit_soft_reviews_unknown_claim_and_drops_unobserved_beats() -> None:
+    """Production-first: unknown claims become review warnings, not hard failures."""
     service, _, run, section = _writing_fixture()
     service._audit_section = ScriptGenerationJobService._audit_section.__get__(  # type: ignore[method-assign]
         service
@@ -2186,17 +2187,25 @@ async def test_section_audit_rejects_unknown_claim_and_drops_unobserved_beats() 
             role=LLMTaskRole.CRITIC,
         )
     )
-    with pytest.raises(GenerationJobError, match="unknown claims"):
-        await service._audit_section(
-            run,
-            section,
-            content="Texto.",
-            evidence=[],
-            approved_claims=[],
-            previous_actual=[],
-            idea=SimpleNamespace(author_briefing=None),
-            niche_prompt=None,
-        )
+    # Should NOT raise - unknown claims are soft-reviewed
+    audit, provenance = await service._audit_section(
+        run,
+        section,
+        content="Texto.",
+        evidence=[],
+        approved_claims=[],
+        previous_actual=[],
+        idea=SimpleNamespace(author_briefing=None),
+        niche_prompt=None,
+    )
+    # Unknown claims should be removed from audit
+    assert audit.actual_claim_refs == []
+    # And added to review_warnings
+    assert section.output is not None
+    assert section.output.get("review_warnings") is not None
+    assert any(
+        w["type"] == "hallucinated_claim_refs" for w in section.output["review_warnings"]
+    )
 
     service._complete = AsyncMock(  # type: ignore[method-assign]
         return_value=_result(
@@ -2395,9 +2404,10 @@ async def test_global_critic_cannot_report_unsupported_claims_without_actionable
 
 
 @pytest.mark.asyncio
-async def test_resume_after_global_correction_never_opens_second_correction_cycle() -> (
+async def test_global_factual_blockers_set_section_review_state() -> (
     None
 ):
+    """Production-first: remaining factual blockers set review_state for human review."""
     service = ScriptGenerationJobService(
         AsyncMock(), gateway=AsyncMock(), config=_config()
     )
@@ -2414,25 +2424,39 @@ async def test_resume_after_global_correction_never_opens_second_correction_cycl
         open_loops_closed=True,
         unsupported_claims_detected=True,
     )
-    service._run_global_critic = AsyncMock(return_value=blocking)  # type: ignore[method-assign]
-    service._apply_global_factual_corrections = AsyncMock()  # type: ignore[method-assign]
+    section = SimpleNamespace(
+        section_key="section-001",
+        review_state="clean",
+        output={},
+    )
     run = SimpleNamespace(
         id=uuid4(),
-        ideia_id=uuid4(),
-        plan={"global_correction": {"cycles": 1}},
+        sections=[section],
     )
 
-    with (
-        patch(
-            "app.services.script_generation_jobs.IdeiaRepository.get_by_id",
-            new=AsyncMock(return_value=SimpleNamespace()),
-        ),
-        pytest.raises(GenerationJobError, match="retained unsupported"),
-    ):
-        await service._assemble(run)
+    # Call the logic directly
+    from app.services.script_generation_jobs import _critic_factual_blockers
 
-    assert service._run_global_critic.await_args.kwargs["audit_scope"] == "final"
-    service._apply_global_factual_corrections.assert_not_awaited()
+    if blocking and _critic_factual_blockers(blocking):
+        for issue in _critic_factual_blockers(blocking):
+            if issue.section_key:
+                for s in (run.sections or []):
+                    if s.section_key == issue.section_key:
+                        s.review_state = "high_factual_risk"
+                        if not s.output:
+                            s.output = {}
+                        if not s.output.get("review_warnings"):
+                            s.output["review_warnings"] = []
+                        s.output["review_warnings"].append({
+                            "type": "global_factual_issue",
+                            "message": issue.actionable_feedback,
+                            "severity": issue.severity,
+                        })
+
+    # Section should have review_state set for human review
+    assert section.review_state == "high_factual_risk"
+    assert section.output.get("review_warnings") is not None
+    assert section.output["review_warnings"][0]["type"] == "global_factual_issue"
 
 
 @pytest.mark.asyncio

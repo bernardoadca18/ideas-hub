@@ -972,7 +972,18 @@ class ScriptGenerationJobService:
             )
             run.heartbeat_at = datetime.now(UTC)
             await self.session.commit()
-        critic = await self._run_global_critic(run, audit_scope="reaudit")
+        critic = None
+        try:
+            critic = await self._run_global_critic(run, audit_scope="reaudit")
+        except Exception as e:
+            logger.warning(
+                "global_critic_unavailable",
+                extra={
+                    "run_id": str(run.id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+            )
         payload = source_structure.model_dump(mode="json")
         payload["blocos"] = _reaudited_blocks(
             source_structure.blocos,
@@ -994,7 +1005,7 @@ class ScriptGenerationJobService:
                     section.section_key: (section.output or {}).get("section_audit")
                     for section in run.sections
                 },
-                "global_critic": critic.model_dump(mode="json"),
+                "global_critic": critic.model_dump(mode="json") if critic else None,
                 "generation_run_id": str(run.id),
                 "source_generation_run_id": source_structure.generation_run_id
                 or source_structure.source_generation_run_id,
@@ -2658,6 +2669,9 @@ class ScriptGenerationJobService:
                 if audit is not None and audit.revision_required
                 else validation["status"],
             )
+            # SOFT REVIEW: When critic unavailable, stop revision loop immediately
+            if audit_unavailable:
+                break
         # SOFT REVIEW: Preserve output even with editorial/factual issues
         # Determine review state based on audit findings
         if audit_unavailable:
@@ -2695,6 +2709,9 @@ class ScriptGenerationJobService:
             "audio_intent": None,
             "review_warnings": _extract_review_warnings(final_audit) if final_audit else [],
         }
+        section.output_identity = hashlib.sha256(
+            json.dumps(section.output, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()
         section.review_state = review_state
         section.status = "completed"
         logger.warning(
@@ -2777,6 +2794,16 @@ class ScriptGenerationJobService:
                     ]
                 }
             )
+            # Add to review_warnings for human visibility
+            if not section.output:
+                section.output = {}
+            if not section.output.get("review_warnings"):
+                section.output["review_warnings"] = []
+            section.output["review_warnings"].append({
+                "type": "hallucinated_claim_refs",
+                "message": f"Critic referenced unknown claims: {', '.join(sorted(unknown_claims))}",
+                "severity": "warning",
+            })
 
         # Case B: unknown claims in issue.claim_ref - normalize to null
         unknown_issue_claims = {
@@ -3110,23 +3137,35 @@ class ScriptGenerationJobService:
         correction_cycles = int(
             (run.plan.get("global_correction") or {}).get("cycles", 0)
         )
-        critic = await self._run_global_critic(
-            run,
-            audit_scope="final" if correction_cycles else "initial",
-        )
-        # SOFT REVIEW: Global automatic correction removed from normal generation.
-        # Corrections only happen during manual approval with mode="correct_factual".
-        # During normal generation, factual blockers are surfaced as review warnings.
-        if _critic_factual_blockers(critic):
+        critic = None
+        try:
+            critic = await self._run_global_critic(
+                run,
+                audit_scope="final" if correction_cycles else "initial",
+            )
+        except Exception as e:
+            # SOFT REVIEW: Global critic failure should not destroy usable script
+            logger.warning(
+                "global_critic_unavailable",
+                extra={
+                    "run_id": str(run.id),
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+            )
+        # SOFT REVIEW: Factual blockers are surfaced as review warnings for human review.
+        if critic and _critic_factual_blockers(critic):
             # Mark affected sections as high_factual_risk for human review
             for issue in _critic_factual_blockers(critic):
                 if issue.section_key:
-                    for section in run.sections:
+                    for section in (run.sections or []):
                         if section.section_key == issue.section_key:
                             section.review_state = "high_factual_risk"
-                            if not section.review_warnings:
-                                section.review_warnings = []
-                            section.review_warnings.append({
+                            if not section.output:
+                                section.output = {}
+                            if not section.output.get("review_warnings"):
+                                section.output["review_warnings"] = []
+                            section.output["review_warnings"].append({
                                 "type": "global_factual_issue",
                                 "message": issue.actionable_feedback,
                                 "severity": issue.severity,
@@ -3135,7 +3174,7 @@ class ScriptGenerationJobService:
                 "global_factual_issues_found",
                 run_id=str(run.id),
                 issue_count=len(_critic_factual_blockers(critic)),
-                note="Surfaced for human review; use approval endpoint with mode=correct_factual to apply corrections",
+                note="Surfaced for human review",
             )
         run.phase = "assembling"
         blocks = assemble_written_sections(
@@ -3233,14 +3272,14 @@ class ScriptGenerationJobService:
                     section.section_key: (section.output or {}).get("section_audit")
                     for section in run.sections
                 },
-                "global_critic": critic.model_dump(mode="json"),
+                "global_critic": critic.model_dump(mode="json") if critic else None,
                 "generation_run_id": str(run.id),
             }
         )
         structure = RoteiroEstrutura.model_validate(payload)
         review["audit_content_identity"] = script_content_identity(structure)
         payload["editorial_review"] = review
-        payload["audit_status"] = "completed"
+        payload["audit_status"] = "completed" if critic else "unavailable"
         structure = RoteiroEstrutura.model_validate(payload)
         roteiro = await RoteiroGenerator(self.session)._persist_revision(
             ideia=idea,
@@ -4797,15 +4836,16 @@ def _critic_factual_blockers(critic: EditorialCriticOutput):
 
 
 def _editorial_review_payload(
-    run: ScriptGenerationRun, critic: EditorialCriticOutput
+    run: ScriptGenerationRun, critic: EditorialCriticOutput | None
 ) -> dict[str, Any]:
     section_issues = [
         issue
         for section in run.sections
         for issue in (section.output or {}).get("section_audit", {}).get("issues", [])
     ]
+    critic_issues = critic.issues if critic else []
     all_issues = [
-        *critic.issues,
+        *critic_issues,
         *[EditorialCriticIssue.model_validate(item) for item in section_issues],
     ]
     factual_warnings = [
@@ -4824,7 +4864,7 @@ def _editorial_review_payload(
     )
     return {
         "version": "editorial_review_v1",
-        "audit_status": "completed",
+        "audit_status": "completed" if critic else "unavailable",
         "editorial_status": "needs_revision"
         if editorial_revision
         else "warn"
@@ -4836,8 +4876,8 @@ def _editorial_review_payload(
         if factual_warnings
         else "pass",
         "approval_blocked": bool(factual_blockers),
-        "global_summary": critic.summary,
-        "global_issues": [item.model_dump(mode="json") for item in critic.issues],
+        "global_summary": critic.summary if critic else "Global critic unavailable",
+        "global_issues": [item.model_dump(mode="json") for item in critic_issues],
         "section_issues": {
             section.section_key: (
                 (section.output or {}).get("section_audit", {}).get("issues", [])
