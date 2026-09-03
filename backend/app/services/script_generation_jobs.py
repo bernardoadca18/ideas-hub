@@ -2689,10 +2689,8 @@ class ScriptGenerationJobService:
         else:
             # This should never happen in normal flow - indicates a structural bug
             raise GenerationJobError(
-                error_category="schema",
-                message=f"No valid writer output available for section {section.section_key}",
-                run_id=str(run.id),
-                section_key=section.section_key,
+                GenerationFailureCategory.SCHEMA,
+                f"No valid writer output available for section {section.section_key}",
             )
 
         # Preserve the output with review state
@@ -4841,7 +4839,7 @@ def _editorial_review_payload(
     section_issues = [
         issue
         for section in run.sections
-        for issue in (section.output or {}).get("section_audit", {}).get("issues", [])
+        for issue in ((section.output or {}).get("section_audit") or {}).get("issues", [])
     ]
     critic_issues = critic.issues if critic else []
     all_issues = [
@@ -4880,7 +4878,7 @@ def _editorial_review_payload(
         "global_issues": [item.model_dump(mode="json") for item in critic_issues],
         "section_issues": {
             section.section_key: (
-                (section.output or {}).get("section_audit", {}).get("issues", [])
+                ((section.output or {}).get("section_audit") or {}).get("issues", [])
             )
             for section in run.sections
         },

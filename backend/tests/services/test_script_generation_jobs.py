@@ -3309,6 +3309,29 @@ def test_review_status_blocks_factual_revision_but_not_style_warning() -> None:
     assert factual_review["approval_blocked"] is True
 
 
+def test_editorial_review_payload_handles_section_audit_none_gracefully() -> None:
+    """Regression test: section_audit=None should not raise AttributeError."""
+    section = SimpleNamespace(
+        section_key="section-001",
+        output={
+            "content": "Some valid content",
+            "section_audit": None,
+        },
+        review_state="audit_unavailable",
+    )
+    run = SimpleNamespace(
+        sections=[section],
+        plan={},
+    )
+
+    # critic=None simulates global-critic-unavailable path
+    review = _editorial_review_payload(run, critic=None)
+
+    assert review["audit_status"] == "unavailable"
+    assert review["global_issues"] == []
+    assert review["section_issues"]["section-001"] == []
+
+
 @pytest.mark.asyncio
 async def test_prompt_identity_is_call_specific_and_keeps_strategy_provenance() -> None:
     gateway = MagicMock()
