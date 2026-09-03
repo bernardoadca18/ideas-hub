@@ -415,6 +415,9 @@ class ScriptGenerationJobService:
             raise ValueError(
                 "Somente a versão mais recente pode iniciar regeneração com feedback"
             )
+        ideia = await IdeiaRepository(self.session).get_by_id(source.ideia_id)
+        if ideia is None:
+            raise ValueError("Ideia do roteiro não encontrada")
         source_structure = RoteiroEstrutura.model_validate(source.estrutura)
         provenance = (
             source_structure.evidence_provenance
@@ -480,7 +483,7 @@ class ScriptGenerationJobService:
             source.ideia_id,
             idempotency_key=idempotency_key,
             model_strategy=model_strategy,
-            profile_id_override=source.ideia.perfil_producao,
+            profile_id_override=ideia.perfil_producao,
             evidence_dossier_override=dossier,
             generation_intent="revision",
             parent_roteiro_id=source.id,
@@ -581,6 +584,9 @@ class ScriptGenerationJobService:
         latest = await repository.get_latest_version_by_ideia(source.ideia_id)
         if latest is None or latest.id != source.id:
             raise ValueError("Somente a versão mais recente pode iniciar re-audit")
+        ideia = await IdeiaRepository(self.session).get_by_id(source.ideia_id)
+        if ideia is None:
+            raise ValueError("Ideia do roteiro não encontrada")
         structure = RoteiroEstrutura.model_validate(source.estrutura)
         provenance = (
             structure.evidence_provenance
@@ -632,7 +638,7 @@ class ScriptGenerationJobService:
             source.ideia_id,
             idempotency_key=idempotency_key,
             model_strategy=model_strategy,
-            profile_id_override=source.ideia.perfil_producao,
+            profile_id_override=ideia.perfil_producao,
             evidence_dossier_override=dossier,
             generation_intent="reaudit",
             parent_roteiro_id=source.id,
