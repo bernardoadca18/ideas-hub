@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.analise_jogo import AnaliseJogoRequest
+from app.schemas.llm_outputs import LLMVisualQuery
 from app.services.editorial_generation import DurationMode
 
 
@@ -198,6 +199,7 @@ class EvidenceFragmentOutput(BaseModel):
 
 class WrittenSectionOutput(BaseModel):
     content: str = Field(min_length=1, max_length=100_000)
+    visual_queries: list[LLMVisualQuery] = Field(default_factory=list, max_length=5)
 
     @field_validator("content")
     @classmethod

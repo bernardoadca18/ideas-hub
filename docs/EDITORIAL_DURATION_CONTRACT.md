@@ -28,7 +28,7 @@ implications and payoff; filler and repeated recap are prohibited.
 
 The system keeps the existing Curador, Roteirista and game-analysis specialization; no new
 agent was introduced. Prompt composition is `script_prompt_composition_v2`; script workflows
-are `roteiro_padrao_v2` and `roteiro_analise_jogos_v2`. A script may record lightweight:
+are `roteiro_padrao_v3` and `roteiro_analise_jogos_v2`. A script may record lightweight:
 
 - section purpose and beats;
 - claims with evidence tier, source identity and confidence;

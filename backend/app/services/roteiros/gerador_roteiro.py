@@ -43,6 +43,7 @@ from app.services.editorial_generation import (
     ResolvedDurationIntent,
     resolve_duration_intent,
 )
+from app.services.visual_requirements import validate_preserved_visual_queries
 
 logger = structlog.get_logger("services.roteiro_generator")
 
@@ -511,6 +512,10 @@ class RoteiroGenerator:
         for edited, original in zip(
             request.blocos, source_structure.blocos, strict=True
         ):
+            validate_preserved_visual_queries(
+                content=edited.conteudo,
+                queries=original.visual_queries,
+            )
             block = edited.model_dump(mode="json")
             block["visual_queries"] = [
                 item.model_dump(mode="json") for item in original.visual_queries
@@ -677,7 +682,6 @@ class RoteiroGenerator:
                 "Somente a versão mais recente do roteiro pode ser aprovada"
             )
 
-        estrutura = RoteiroEstrutura.model_validate(roteiro.estrutura)
         # Manual approval is sovereign - no review hard gates.
         # Warnings remain metadata only for human decision-making.
 

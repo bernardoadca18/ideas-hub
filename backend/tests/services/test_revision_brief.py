@@ -576,7 +576,29 @@ async def test_revision_writer_receives_parent_text_priorities_and_exact_deficit
     )
     service._complete = AsyncMock(  # type: ignore[method-assign]
         return_value=_result(
-            json.dumps({"content": " ".join("fala" for _ in range(100))}),
+            json.dumps(
+                {
+                    "content": "inicio "
+                    + " ".join("fala" for _ in range(98))
+                    + " fim",
+                    "visual_queries": [
+                        {
+                            "intent": "illustration",
+                            "query": "footage para a abertura",
+                            "narration_excerpt": "inicio",
+                            "importance": "preferred",
+                            "source_note_id": None,
+                        },
+                        {
+                            "intent": "illustration",
+                            "query": "footage para o fechamento",
+                            "narration_excerpt": "fim",
+                            "importance": "preferred",
+                            "source_note_id": None,
+                        },
+                    ],
+                }
+            ),
             LLMTaskRole.WRITING,
         )
     )

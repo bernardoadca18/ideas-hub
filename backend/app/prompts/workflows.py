@@ -71,7 +71,12 @@ narrativos coerentes.
   pontos essenciais da parte anterior — sem repetir a parte anterior inteiramente.
 - IMPORTANTE: A política de duração no perfil de produção indica a duração esperada.
   Respeite essa faixa: não produza um roteiro muito mais curto que o mínimo esperado
-  sem justificativa clara (assunto insuficiente). Se o assunto for rico, expanda.""",
+  sem justificativa clara (assunto insuficiente). Se o assunto for rico, expanda.
+- Para cada bloco, produza VisualQueries estruturadas que descrevam necessidades de
+  footage ao longo da narração. Elas são intenção editorial, não seleção de arquivo.
+  Use narration_excerpt copiado literalmente do próprio bloco e distribua as queries
+  entre abertura, desenvolvimento e fechamento. Em faceless genérico, não invente
+  source_note_id, sessão ou timestamps.""",
     formato_saida="""{
   "titulo": "Título otimizado para clareza e interesse (máximo 80 caracteres)",
   "duracao_total_segundos": "IMPORTANTE: deve respeitar a política de duração do perfil ativo (ex: 600-900s para faceless)",
@@ -85,14 +90,26 @@ narrativos coerentes.
       "purpose": "Função narrativa explícita desta seção",
       "beats": [{"purpose": "setup/evidence/contrast/implication/transition/payoff", "key_point": "Ponto novo", "evidence_refs": ["identidade da fonte"], "target_words": 90, "retention_role": "Por que o próximo beat importa"}],
       "claims": [{"summary": "Claim auditável", "evidence_tier": "official_confirmed | official_observation | reliable_secondary | leak_authenticated | inference | speculation | unverified | author_opinion", "source_identity": "fonte ou null", "confidence": 0.8}],
-      "audio_intent": {"music_enabled": true, "moods": ["investigative"], "energy": 0.45, "styles": ["electronic", "documentary"], "vocals": false, "transition": "rise", "sfx_intent": []}
+      "audio_intent": {"music_enabled": true, "moods": ["investigative"], "energy": 0.45, "styles": ["electronic", "documentary"], "vocals": false, "transition": "rise", "sfx_intent": []},
+      "visual_queries": [
+        {
+          "intent": "illustration | evidence | transition | atmosphere | comparison",
+          "query": "Descrição do footage necessário, sem escolher arquivo",
+          "narration_excerpt": "Trecho literal da narração relacionado",
+          "importance": "required | preferred | optional",
+          "source_note_id": null,
+          "desired_duration_seconds": 20.0,
+          "notes": "Restrições editoriais opcionais"
+        }
+      ]
     }
   ],
   "tags": ["tag1", "tag2", "tag3"],
   "referencias": ["fonte1", "fonte2"],
   "justificativa": "Explicação objetiva das escolhas estruturais e de ritmo, incluindo por que a duração final é adequada"
 }""",
-    prompt_version="roteiro_padrao_v2",
+    structured_visual_queries=True,
+    prompt_version="roteiro_padrao_v3",
     editorial_guidance=(
         "Organize a narração pelo conteúdo real, sem template rígido. Cada seção deve "
         "avançar a tese com prosa completa, específica e oral; preserve continuidade, "

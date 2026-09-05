@@ -44,6 +44,22 @@ humana não permite trocar IDs, timestamps ou provenance das `visual_queries`; a
 permitida para o draft mais recente. Roteiros históricos sem briefing ou VisualQueries continuam
 válidos.
 
+## Contrato visual de produção faceless
+
+Os workflows atuais `roteiro_padrao` e `roteiro_analise_jogos` produzem `VisualQuery` estruturada
+durante a escrita de cada seção no Editorial V3. A query descreve intenção editorial; seleção de
+mídia continua pertencendo ao Orchestrator/Media Search. O host exige trechos literais e ordenados
+da narração, densidade bounded ao longo de cada seção e atribui IDs determinísticos por generation
+run. Perfis faceless comuns deixam provenance de gameplay nula; `game_analysis` só aceita
+`source_note_id` existente no contexto confiável e resolve sessão/range no backend.
+
+Edição humana preserva IDs somente quando os excerpts ainda existem em ordem; mudanças que
+invalidem bindings devem usar regeneração de roteiro, que replana as queries em uma nova revisão.
+Re-audit preserva texto e queries. Roteiros históricos sem queries seguem legíveis e versionáveis,
+mas não são considerados prontos para produção visual final: o Orchestrator os diagnostica como
+`visual_queries_missing` em vez de anunciar `VisualPlan completed 0/0`. O upgrade de um roteiro
+histórico requer uma nova revisão, nunca mutação do JSONB aprovado.
+
 Novas gerações resolvem uma intenção de duração explícita (`explicit_target`, `profile_default`
 ou `content_driven`) e podem executar como jobs duráveis por seção. Planejamento hierárquico,
 retomada, routing de modelos e disciplina de evidência estão documentados em

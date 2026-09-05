@@ -29,6 +29,7 @@ from app.prompts.editorial_v3 import (
     EDITORIAL_PROMPT_COMPOSITION_VERSION,
     compose_editorial_v3_prompt,
 )
+from app.prompts.workflows import get_workflow
 from app.repositories.ideia_repository import IdeiaRepository
 from app.repositories.nicho_repository import NichoRepository
 from app.repositories.roteiro_repository import RoteiroRepository
@@ -50,6 +51,7 @@ from app.schemas.generation import (
 from app.schemas.ideia import IdeiaCreate
 from app.schemas.llm_outputs import LLMOutputError, extract_json_object
 from app.schemas.roteiro import RoteiroEstrutura, script_content_identity
+from app.schemas.visual_query import VisualQuery
 from app.services.claim_realization import (
     derive_claim_realization_contracts,
     realization_contracts_by_ref,
@@ -101,6 +103,12 @@ from app.services.planning_claim_coverage import (
 from app.services.revision_brief import (
     build_revision_brief,
     scoped_revision_context,
+)
+from app.services.visual_requirements import (
+    VISUAL_REQUIREMENTS_POLICY_VERSION,
+    VisualRequirementsError,
+    materialize_written_visual_queries,
+    visual_query_count_policy,
 )
 
 logger = structlog.get_logger("services.script_generation_jobs")
@@ -2584,6 +2592,7 @@ class ScriptGenerationJobService:
         first_attempt = max(1, section.attempt_count + 1)
         final_audit: SectionEditorialAuditOutput | None = None
         last_valid_written: WrittenSectionOutput | None = None
+        last_valid_visual_queries: list[dict[str, Any]] = []
         for attempt in range(
             first_attempt,
             self.config.generation_max_revisions_per_section + 2,
@@ -2591,12 +2600,30 @@ class ScriptGenerationJobService:
             target_words = int(plan.get("target_words") or 500)
             min_words = int(plan.get("min_words") or target_words)
             max_words = int(plan.get("max_words") or target_words)
+            visual_contract = ""
+            workflow = get_workflow(profile.workflow_roteiro)
+            if workflow.structured_visual_queries:
+                visual_count = visual_query_count_policy(
+                    int(plan.get("target_duration_seconds") or 60)
+                )
+                visual_contract = (
+                    " The output object has exactly two fields: content and visual_queries. "
+                    f"Return between {visual_count.minimum} and {visual_count.maximum} "
+                    "VisualQueries, ordered through the section from opening to closing. "
+                    "Each query describes footage editorially; it never chooses a file. "
+                    "narration_excerpt is required and must be a short literal contiguous "
+                    "span copied from content. Excerpts must be distinct, non-overlapping "
+                    "and appear in narration order. For ordinary faceless scripts use null "
+                    "source_note_id. For game analysis, use a source_note_id only when that "
+                    "exact UUID appears in RELEVANT EVIDENCE; never invent provenance, "
+                    "sessions or timestamps."
+                )
             # Build realization contracts for writer
             contracts_for_writer = [c.to_writer_dict() for c in realization_contracts]
 
             task = (
                 "Write ONLY this script section as natural spoken PT-BR. Return JSON only. Do not include headings in content. "
-                "The output object has exactly one field: content. Meet the word budget only with supported evidence, qualified analysis, useful context and progression; never recap/filler. "
+                f"{visual_contract} Meet the word budget only with supported evidence, qualified analysis, useful context and progression; never recap/filler. "
                 f"STRICT WORD CONTRACT: content must contain between {min_words} and {max_words} words (target {target_words}). "
                 "SAFETY OVERRIDES WORD COUNT: never invent a material fact, technical mechanism, gameplay behavior, causal explanation, quantity or developer intent to reach the budget. Natural paraphrase and proportionate explanation are welcome when they preserve the supplied meaning and certainty.\n"
                 "BACKSTAGE FACT BOUNDARIES: the structured fields below are private production controls. Speak only to the viewer; never discuss how material was selected, classified, licensed or validated, and never repeat field names or IDs. Use natural attribution such as naming the publication once for the surrounding passage. These factual boundaries outrank planner prose; titles, purpose, narrative_role and transitions are editorial direction, not evidence. An editorial beat cannot introduce a new comparison fact, scene detail or technical proposition.\n"
@@ -2690,8 +2717,38 @@ class ScriptGenerationJobService:
             written, section_provenance = await self._parse_or_repair(
                 run, result, WrittenSectionOutput
             )
+            try:
+                visual_queries = (
+                    materialize_written_visual_queries(
+                        generation_run_id=run.id,
+                        section_key=section.section_key,
+                        duration_seconds=int(
+                            plan.get("target_duration_seconds") or 60
+                        ),
+                        content=written.content,
+                        generated=written.visual_queries,
+                        evidence_dossier=run.evidence_dossier,
+                    )
+                    if workflow.structured_visual_queries
+                    else []
+                )
+            except VisualRequirementsError as exc:
+                if attempt >= self.config.generation_max_revisions_per_section + 1:
+                    raise GenerationJobError(
+                        GenerationFailureCategory.SCHEMA,
+                        f"section {section.section_key} visual requirements are invalid: {exc}",
+                    ) from exc
+                section.output = None
+                section.output_identity = None
+                await self.session.commit()
+                feedback = (
+                    "VISUAL REQUIREMENTS REVISION: preserve the supported narration, but "
+                    f"repair this contract error: {exc}"
+                )
+                continue
             # Capture last valid writer output for production-first fallback
             last_valid_written = written
+            last_valid_visual_queries = [item.to_dict() for item in visual_queries]
             validation = validate_section_words(
                 count_words(written.content), _section_budget_from_mapping(plan)
             )
@@ -2766,6 +2823,7 @@ class ScriptGenerationJobService:
                     "opened_loops": audit.opened_loops,
                     "closed_loops": audit.closed_loops,
                     "section_audit": audit.model_dump(mode="json"),
+                    "visual_queries": last_valid_visual_queries,
                     "visual_intent": None,
                     "audio_intent": None,
                 }
@@ -2887,6 +2945,7 @@ class ScriptGenerationJobService:
             "section_audit": final_audit.model_dump(mode="json")
             if final_audit
             else None,
+            "visual_queries": last_valid_visual_queries,
             "visual_intent": None,
             "audio_intent": None,
             "review_warnings": _extract_review_warnings(final_audit)
@@ -3422,6 +3481,9 @@ class ScriptGenerationJobService:
                 else None,
                 "revision_brief_identity": (run.plan.get("revision_brief") or {}).get(
                     "identity"
+                ),
+                "visual_requirements_policy_version": (
+                    VISUAL_REQUIREMENTS_POLICY_VERSION
                 ),
                 "model_policy": run.model_policy,
                 "call_usage": run.call_usage,
@@ -5540,6 +5602,10 @@ def assemble_written_sections(
                 conteudo=section.output["content"],
                 dicas_visual=section.output.get("visual_intent"),
                 dicas_audio=None,
+                visual_queries=[
+                    VisualQuery.from_dict(item)
+                    for item in section.output.get("visual_queries") or []
+                ],
                 purpose=plan.get("purpose"),
                 beats=[
                     {

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+
 from app.core.config import Settings
 from app.production_profiles import get_profile
 from app.schemas.generation import (
@@ -219,7 +220,30 @@ def _planned_claim(
 
 
 def _written_json(word_count: int, *, marker: str = "palavra") -> str:
-    return json.dumps({"content": " ".join([marker] * word_count)})
+    words = [marker] * word_count
+    query_markers: list[str] = []
+    for index in range(5):
+        position = round(index * (word_count - 1) / 4)
+        query_marker = f"{marker}-visual-{index + 1}"
+        words[position] = query_marker
+        query_markers.append(query_marker)
+    return json.dumps(
+        {
+            "content": " ".join(words),
+            "visual_queries": [
+                {
+                    "intent": "illustration",
+                    "query": f"Footage editorial para o trecho {index + 1}",
+                    "narration_excerpt": query_marker,
+                    "importance": "preferred",
+                    "source_note_id": None,
+                    "desired_duration_seconds": 30,
+                    "notes": None,
+                }
+                for index, query_marker in enumerate(query_markers)
+            ],
+        }
+    )
 
 
 def _section_audit(
@@ -1824,9 +1848,9 @@ def test_writing_capacity_uses_headroom_and_remains_bounded() -> None:
         _writing_max_tokens(0)
 
 
-def test_writer_schema_does_not_echo_host_owned_section_metadata() -> None:
+def test_writer_schema_contains_only_prose_and_editorial_visual_requirements() -> None:
     properties = WrittenSectionOutput.model_json_schema()["properties"]
-    assert set(properties) == {"content"}
+    assert set(properties) == {"content", "visual_queries"}
 
 
 def test_section_claims_are_selected_only_by_explicit_approved_claim_refs() -> None:
@@ -2313,7 +2337,9 @@ async def test_v3_writer_receives_one_style_policy_content_scope_and_factuality(
     assert "Do not invent future episodes" in call["prompt"]
     assert "new comparison fact, scene detail or technical proposition" in call["prompt"]
     assert call["prompt_version"] == "section_writer_v3"
-    assert set(call["schema"]["properties"]) == {"content"}
+    assert set(call["schema"]["properties"]) == {"content", "visual_queries"}
+    assert "VisualQueries" in call["prompt"]
+    assert "literal contiguous" in call["prompt"]
 
 
 @pytest.mark.asyncio
