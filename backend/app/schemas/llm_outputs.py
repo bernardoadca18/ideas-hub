@@ -109,6 +109,19 @@ class LLMVisualQuery(StrictModel):
         return value
 
 
+class VisualEnrichmentSectionOutput(StrictModel):
+    """LLM output for visual query extraction from existing narration (read-only)."""
+
+    key: str = Field(min_length=1, max_length=64)
+    visual_queries: list[LLMVisualQuery] = Field(default_factory=list, max_length=5)
+
+
+class VisualEnrichmentOutput(StrictModel):
+    """LLM output schema for visual enrichment of manual scripts."""
+
+    sections: list[VisualEnrichmentSectionOutput] = Field(min_length=1, max_length=30)
+
+
 class EvidenceTier(str, Enum):
     official_confirmed = "official_confirmed"
     official_observation = "official_observation"

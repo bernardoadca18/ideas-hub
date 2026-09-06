@@ -255,9 +255,73 @@ CONSULTAS VISUAIS ESTRUTURADAS (visual_queries):
     ),
 )
 
+VISUAL_ENRICHMENT = WorkflowSpec(
+    id="visual_enrichment",
+    papel_agente="um assistente de pós-produção que identifica necessidades visuais em roteiros",
+    instrucoes="""Você receberá um roteiro manual com blocos de narração. Sua tarefa é identificar
+necessidades visuais estruturadas para cada bloco SEM reescrever ou modificar o texto.
+
+REGRAS FUNDAMENTAIS:
+- NUNCA reescreva, resuma ou altere a narração existente
+- Extraia APENAS consultas visuais estruturadas (visual_queries)
+- Cada visual_query deve ter intent, query, narration_excerpt, importance
+- narration_excerpt deve ser COPIADO LITERALMENTE do texto do bloco
+- Distribua queries ao longo do bloco (abertura, desenvolvimento, fechamento)
+
+PARA CADA BLOCO:
+1. Leia a narração completa
+2. Identifique momentos que se beneficiariam de footage específico
+3. Crie 1-5 visual_queries por bloco (baseado na duração: ~1 query por 30s)
+4. Copie trechos literais como narration_excerpt
+
+INTENT VALUES (use exatamente estes):
+- "illustration": footage genérico relacionado ao tema
+- "evidence": momento específico mencionado na narração
+- "transition": ponte entre segmentos
+- "atmosphere": clima/ambientação
+- "comparison": comparação lado-a-lado ou antes/depois
+
+IMPORTANCE VALUES (use exatamente estes):
+- "required": obrigatório para a narrativa
+- "preferred": importante mas não crítico
+- "optional": desejável se disponível
+
+NÃO INVENTE:
+- source_note_id (deixe null para scripts manuais)
+- preferred_session_id, preferred_start_seconds, preferred_end_seconds
+- Estes campos serão preenchidos pelo backend se houver contexto audiovisual
+
+OUTPUT: Retorne uma lista de seções, cada uma com sua key e visual_queries.""",
+    formato_saida="""{
+  "sections": [
+    {
+      "key": "identificador do bloco",
+      "visual_queries": [
+        {
+          "intent": "illustration | evidence | transition | atmosphere | comparison",
+          "query": "Descrição natural do footage necessário",
+          "narration_excerpt": "Trecho LITERAL copiado da narração",
+          "importance": "required | preferred | optional",
+          "source_note_id": null,
+          "desired_duration_seconds": 15.0,
+          "notes": null
+        }
+      ]
+    }
+  ]
+}""",
+    structured_visual_queries=True,
+    prompt_version="visual_enrichment_v1",
+    editorial_guidance=(
+        "Extraia necessidades visuais sem modificar o texto. Distribua queries "
+        "ao longo do bloco. Use narration_excerpt literal."
+    ),
+)
+
+
 _WORKFLOWS: dict[str, WorkflowSpec] = {
     w.id: w
-    for w in [IDEACAO_BRUTA, REFINAMENTO_IDEIA, ROTEIRO_PADRAO, ROTEIRO_ANALISE_JOGOS]
+    for w in [IDEACAO_BRUTA, REFINAMENTO_IDEIA, ROTEIRO_PADRAO, ROTEIRO_ANALISE_JOGOS, VISUAL_ENRICHMENT]
 }
 
 
