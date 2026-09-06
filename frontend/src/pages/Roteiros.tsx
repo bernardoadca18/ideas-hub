@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, GenerationRun, Roteiro, ScriptEditRevision } from '../api/client';
+import { api, GenerationRun, Ideia, Roteiro, ScriptEditRevision } from '../api/client';
 
 function formatDuration(seconds: number) {
   const minutes = Math.floor(seconds / 60);
@@ -55,6 +55,24 @@ export default function Roteiros() {
   const [regenerating, setRegenerating] = useState(false);
   const [revisionRun, setRevisionRun] = useState<GenerationRun | null>(null);
 
+  // Manual script creation state
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [ideias, setIdeias] = useState<Ideia[]>([]);
+  const [createDraft, setCreateDraft] = useState<{
+    ideia_id: string;
+    titulo: string;
+    blocos: Array<{ tipo: string; duracao_segundos: number; conteudo: string; dicas_visual: string; dicas_audio: string }>;
+    tags: string[];
+    referencias: string;
+  }>({
+    ideia_id: '',
+    titulo: '',
+    blocos: [{ tipo: 'introducao', duracao_segundos: 30, conteudo: '', dicas_visual: '', dicas_audio: '' }],
+    tags: [],
+    referencias: '',
+  });
+  const [creating, setCreating] = useState(false);
+
   useEffect(() => { void loadData(); }, [statusFilter]);
 
   async function loadData() {
@@ -67,6 +85,66 @@ export default function Roteiros() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadIdeias() {
+    try {
+      setIdeias(await api.getIdeias());
+    } catch (err) {
+      console.error('Failed to load ideias:', err);
+    }
+  }
+
+  async function handleCreateManual(e: React.FormEvent) {
+    e.preventDefault();
+    if (!createDraft.ideia_id || !createDraft.titulo.trim() || createDraft.blocos.length === 0) {
+      setError('Preencha ideia, título e pelo menos um bloco');
+      return;
+    }
+    try {
+      setCreating(true);
+      await api.createManualDraft({
+        ideia_id: createDraft.ideia_id,
+        titulo: createDraft.titulo,
+        blocos: createDraft.blocos.filter(b => b.conteudo.trim()),
+        tags: createDraft.tags.filter(t => t.trim()),
+        referencias: createDraft.referencias.trim() ? [createDraft.referencias.trim()] : undefined,
+      });
+      setShowCreateModal(false);
+      setCreateDraft({
+        ideia_id: '',
+        titulo: '',
+        blocos: [{ tipo: 'introducao', duracao_segundos: 30, conteudo: '', dicas_visual: '', dicas_audio: '' }],
+        tags: [],
+        referencias: '',
+      });
+      loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao criar roteiro');
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  function addBlock() {
+    setCreateDraft(d => ({
+      ...d,
+      blocos: [...d.blocos, { tipo: 'desenvolvimento', duracao_segundos: 60, conteudo: '', dicas_visual: '', dicas_audio: '' }],
+    }));
+  }
+
+  function removeBlock(index: number) {
+    setCreateDraft(d => ({
+      ...d,
+      blocos: d.blocos.filter((_, i) => i !== index),
+    }));
+  }
+
+  function updateCreateBlock(index: number, field: string, value: string | number) {
+    setCreateDraft(d => ({
+      ...d,
+      blocos: d.blocos.map((b, i) => (i === index ? { ...b, [field]: value } : b)),
+    }));
   }
 
   async function approve(script: Roteiro) {
@@ -190,7 +268,15 @@ export default function Roteiros() {
 
   return (
     <div className="page">
-      <div className="page-header"><h1>Roteiros</h1></div>
+      <div className="page-header">
+        <h1>Roteiros</h1>
+        <button
+          className="btn btn-primary"
+          onClick={() => { setShowCreateModal(true); loadIdeias(); }}
+        >
+          + Criar Roteiro Manual
+        </button>
+      </div>
       {error && <div className="error">{error} <button onClick={() => setError(null)}>Fechar</button></div>}
       <div className="filters">
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
@@ -361,6 +447,132 @@ export default function Roteiros() {
           </div>
         ))}
       </div>
+
+      {showCreateModal && (
+        <div className="modal-overlay" onClick={() => setShowCreateModal(false)}>
+          <div className="modal modal-large" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Criar Roteiro Manual</h2>
+            </div>
+            <form onSubmit={handleCreateManual}>
+              <div className="form-group">
+                <label>Ideia vinculada *</label>
+                <select
+                  value={createDraft.ideia_id}
+                  onChange={(e) => setCreateDraft(d => ({ ...d, ideia_id: e.target.value }))}
+                  required
+                >
+                  <option value="">Selecionar ideia...</option>
+                  {ideias.map(ideia => (
+                    <option key={ideia.id} value={ideia.id}>
+                      {ideia.titulo} ({ideia.status})
+                    </option>
+                  ))}
+                </select>
+                <small className="form-help">A ideia deve existir previamente. O roteiro será criado como rascunho versionado.</small>
+              </div>
+
+              <div className="form-group">
+                <label>Título do roteiro *</label>
+                <input
+                  type="text"
+                  value={createDraft.titulo}
+                  onChange={(e) => setCreateDraft(d => ({ ...d, titulo: e.target.value }))}
+                  required
+                  maxLength={300}
+                  placeholder="Título do roteiro..."
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Blocos (narrativa) *</label>
+                <small className="form-help">A prosa é preservada exatamente como escrita. Duração total: {createDraft.blocos.reduce((s, b) => s + b.duracao_segundos, 0)}s ({Math.round(createDraft.blocos.reduce((s, b) => s + b.duracao_segundos, 0) / 60)} min).</small>
+                {createDraft.blocos.map((bloco, i) => (
+                  <div key={i} className="block-edit" style={{ border: '1px solid #333', borderRadius: '6px', padding: '12px', marginBottom: '12px' }}>
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                      <select
+                        value={bloco.tipo}
+                        onChange={(e) => updateCreateBlock(i, 'tipo', e.target.value)}
+                      >
+                        <option value="introducao">Introdução</option>
+                        <option value="desenvolvimento">Desenvolvimento</option>
+                        <option value="conclusao">Conclusão</option>
+                        <option value="gancho">Gancho</option>
+                        <option value="cta">Call to Action</option>
+                      </select>
+                      <input
+                        type="number"
+                        value={bloco.duracao_segundos}
+                        onChange={(e) => updateCreateBlock(i, 'duracao_segundos', Number(e.target.value))}
+                        min={1}
+                        max={7200}
+                        style={{ width: '100px' }}
+                      />
+                      <span>s</span>
+                      {createDraft.blocos.length > 1 && (
+                        <button type="button" className="btn btn-sm btn-danger" onClick={() => removeBlock(i)}>Remover</button>
+                      )}
+                    </div>
+                    <textarea
+                      value={bloco.conteudo}
+                      onChange={(e) => updateCreateBlock(i, 'conteudo', e.target.value)}
+                      rows={4}
+                      placeholder="Conteúdo narrativo (prosa preservada)..."
+                      required
+                      maxLength={100000}
+                      style={{ width: '100%' }}
+                    />
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                      <input
+                        type="text"
+                        value={bloco.dicas_visual}
+                        onChange={(e) => updateCreateBlock(i, 'dicas_visual', e.target.value)}
+                        placeholder="Dicas visuais (opcional)"
+                        style={{ flex: 1 }}
+                      />
+                      <input
+                        type="text"
+                        value={bloco.dicas_audio}
+                        onChange={(e) => updateCreateBlock(i, 'dicas_audio', e.target.value)}
+                        placeholder="Dicas de áudio (opcional)"
+                        style={{ flex: 1 }}
+                      />
+                    </div>
+                  </div>
+                ))}
+                <button type="button" className="btn btn-sm btn-secondary" onClick={addBlock}>+ Adicionar bloco</button>
+              </div>
+
+              <div className="form-group">
+                <label>Tags (separadas por vírgula)</label>
+                <input
+                  type="text"
+                  value={createDraft.tags.join(', ')}
+                  onChange={(e) => setCreateDraft(d => ({ ...d, tags: e.target.value.split(',').map(t => t.trim()).filter(Boolean) }))}
+                  placeholder="tag1, tag2, tag3"
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Referências</label>
+                <input
+                  type="text"
+                  value={createDraft.referencias}
+                  onChange={(e) => setCreateDraft(d => ({ ...d, referencias: e.target.value }))}
+                  placeholder="URL ou referência (opcional)"
+                />
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowCreateModal(false)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={creating}>
+                  {creating ? 'Criando...' : 'Criar rascunho'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

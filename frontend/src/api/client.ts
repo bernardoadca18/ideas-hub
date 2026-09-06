@@ -425,6 +425,47 @@ class ApiClient {
       body: JSON.stringify({ idempotency_key: idempotencyKey }),
     });
   }
+
+  async createManualDraft(data: {
+    ideia_id: string;
+    titulo: string;
+    blocos: Array<{
+      tipo: string;
+      duracao_segundos: number;
+      conteudo: string;
+      dicas_visual?: string;
+      dicas_audio?: string;
+    }>;
+    tags?: string[];
+    referencias?: string[];
+  }): Promise<Roteiro> {
+    const duracao_total_segundos = data.blocos.reduce((sum, b) => sum + b.duracao_segundos, 0);
+    return this.request<Roteiro>('/roteiros/', {
+      method: 'POST',
+      body: JSON.stringify({
+        ideia_id: data.ideia_id,
+        estrutura: {
+          titulo: data.titulo,
+          duracao_total_segundos,
+          blocos: data.blocos.map(b => ({
+            tipo: b.tipo,
+            duracao_segundos: b.duracao_segundos,
+            conteudo: b.conteudo,
+            dicas_visual: b.dicas_visual || null,
+            dicas_audio: b.dicas_audio || null,
+            visual_queries: [],
+            purpose: null,
+            beats: [],
+            planned_beats: [],
+            claims: [],
+            audio_intent: null,
+          })),
+          tags: data.tags || [],
+          referencias: data.referencias || null,
+        },
+      }),
+    });
+  }
 }
 
 export const api = new ApiClient(API_BASE);
