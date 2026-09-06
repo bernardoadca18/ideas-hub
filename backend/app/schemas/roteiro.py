@@ -29,6 +29,11 @@ class PersistedVisualQuery(BaseModel):
     desired_duration_seconds: float | None = Field(default=None, gt=0)
     notes: str | None = None
 
+    def model_post_init(self, context: Any) -> None:
+        if self.preferred_start_seconds is not None and self.preferred_end_seconds is not None:
+            if self.preferred_end_seconds <= self.preferred_start_seconds:
+                raise ValueError("preferred_end_seconds must be greater than preferred_start_seconds")
+
 
 class PersistedNarrativeBlock(BaseModel):
     model_config = ConfigDict(extra="allow")

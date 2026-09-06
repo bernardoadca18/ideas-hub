@@ -198,14 +198,14 @@ async def test_visual_enrichment_uses_index_based_section_keys() -> None:
 
 @pytest.mark.asyncio
 async def test_visual_enrichment_rejects_non_manual_roteiro() -> None:
-    """Test that visual enrichment rejects roteiros that are not manual."""
+    """Test that visual enrichment rejects roteiros that are not manual lineage."""
     generator = RoteiroGenerator(AsyncMock())
 
-    # Create a non-manual roteiro
+    # Create a non-manual roteiro (llm_generation is not manual lineage)
     non_manual = SimpleNamespace(
         id=uuid4(),
         status="rascunho",
-        revision_kind="staged_generation",  # Not manual_create
+        revision_kind="llm_generation",  # Not manual_create or human_edit
         estrutura={"titulo": "Gerado"},
     )
 
@@ -214,6 +214,73 @@ async def test_visual_enrichment_rejects_non_manual_roteiro() -> None:
 
     with pytest.raises(ValueError, match="Visual enrichment only for manual scripts"):
         await generator.create_visual_enrichment_revision(non_manual.id)
+
+
+@pytest.mark.asyncio
+async def test_visual_enrichment_accepts_human_edit_roteiro() -> None:
+    """Test that visual enrichment accepts human_edit scripts (manual lineage)."""
+    generator = RoteiroGenerator(AsyncMock())
+
+    # Create a human_edit roteiro (manual lineage)
+    human_edited = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        status="rascunho",
+        revision_kind="human_edit",  # Manual lineage
+        estrutura={
+            "production_script_schema_version": "2.0",
+            "titulo": "Human Edited Script",
+            "duracao_total_segundos": 60,
+            "blocos": [
+                {
+                    "tipo": "introducao",
+                    "duracao_segundos": 60,
+                    "conteudo": "Conteúdo editado manualmente",
+                    "dicas_visual": "Imagens",
+                }
+            ],
+            "tags": [],
+            "visual_queries": None,  # No visual queries yet
+        },
+    )
+
+    generator.roteiro_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = human_edited
+
+    ideia = SimpleNamespace(
+        id=human_edited.ideia_id,
+        titulo="Test",
+        descricao_breve="Test",
+        nicho_id=None,
+    )
+    generator.ideia_repo = AsyncMock()
+    generator.ideia_repo.get_by_id.return_value = ideia
+
+    llm_output = VisualEnrichmentOutput(
+        sections=[
+            VisualEnrichmentSectionOutput(
+                key="block-000",
+                visual_queries=[],
+            )
+        ]
+    )
+
+    with (
+        patch(
+            "app.services.llm_gateway.llm_gateway.complete",
+            AsyncMock(return_value=MagicMock(content=llm_output.model_dump_json())),
+        ),
+        patch(
+            "app.services.visual_requirements.materialize_written_visual_queries"
+        ) as materialize,
+    ):
+        materialize.return_value = []
+        generator._persist_revision = AsyncMock(
+            return_value=SimpleNamespace(id=uuid4())
+        )
+
+        # Should NOT raise - human_edit is manual lineage
+        await generator.create_visual_enrichment_revision(human_edited.id)
 
 
 @pytest.mark.asyncio
@@ -297,3 +364,226 @@ async def test_visual_enrichment_preserves_block_content() -> None:
         assert "introdução" in contents[0]
         assert "desenvolvimento" in contents[1]
         assert "Conclusão" in contents[2]
+
+
+@pytest.mark.asyncio
+async def test_visual_enrichment_integration_with_real_materializer() -> None:
+    """Integration test: visual enrichment with real materializer (not mocked).
+
+    This test verifies the full pipeline:
+    1. LLM generates visual queries
+    2. Real materialize_written_visual_queries creates VisualQuery objects
+    3. Stable UUID5 identities are assigned
+    4. Provenance is correctly bound
+    """
+    from uuid import uuid5, NAMESPACE_URL
+
+    from app.schemas.visual_query import VisualQuery
+    from app.services.visual_requirements import materialize_written_visual_queries
+
+    generator = RoteiroGenerator(AsyncMock())
+
+    # Create a manual roteiro with SHORT blocks (≤30s = 1 query minimum)
+    # This allows us to test with exactly 1 query per block
+    manual_roteiro = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        status="rascunho",
+        revision_kind="manual_create",
+        estrutura={
+            "production_script_schema_version": "2.0",
+            "titulo": "Manual Script for Real Materializer",
+            "duracao_total_segundos": 75,
+            "blocos": [
+                {
+                    "tipo": "introducao",
+                    "duracao_segundos": 25,  # 25s = 1 query minimum
+                    "conteudo": "Este é o texto de introdução do vídeo manual. Segunda frase para contexto.",
+                    "dicas_visual": "Imagens de abertura",
+                },
+                {
+                    "tipo": "desenvolvimento",
+                    "duracao_segundos": 25,  # 25s = 1 query minimum
+                    "conteudo": "Este é o desenvolvimento principal com mais conteúdo. Adicionamos mais texto aqui.",
+                    "dicas_visual": "B-roll do tema",
+                },
+                {
+                    "tipo": "conclusao",
+                    "duracao_segundos": 25,  # 25s = 1 query minimum
+                    "conteudo": "Conclusão final do vídeo. Recapitulamos os principais pontos abordados.",
+                    "dicas_visual": "Imagens de fechamento",
+                },
+            ],
+            "tags": ["manual", "teste"],
+            "visual_queries": None,
+        },
+    )
+
+    generator.roteiro_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = manual_roteiro
+
+    ideia = SimpleNamespace(
+        id=manual_roteiro.ideia_id,
+        titulo="Integration Test",
+        descricao_breve="Real materializer test",
+        nicho_id=None,
+    )
+    generator.ideia_repo = AsyncMock()
+    generator.ideia_repo.get_by_id.return_value = ideia
+
+    # For 25s blocks, minimum is 1 query, max is 5
+    # We use 2 queries per block to satisfy the policy (1-5 queries for ≤30s)
+    # NOTE: Manual scripts don't have media context, so source_note_id must be None
+    # IMPORTANT: narration_excerpt must be LITERAL spans from the content IN ORDER
+    # Block 0 content: "Este é o texto de introdução do vídeo manual. Segunda frase para contexto."
+    # Block 1 content: "Este é o desenvolvimento principal com mais conteúdo. Adicionamos mais texto aqui."
+    # Block 2 content: "Conclusão final do vídeo. Recapitulamos os principais pontos abordados."
+    llm_output = VisualEnrichmentOutput(
+        sections=[
+            VisualEnrichmentSectionOutput(
+                key="block-000",
+                visual_queries=[
+                    LLMVisualQuery(
+                        intent=VisualQueryIntent.illustration,
+                        query="Imagens de abertura do tema",
+                        narration_excerpt="Este é o texto de introdução",  # Start of content
+                        importance=VisualQueryImportance.preferred,
+                        source_note_id=None,
+                        desired_duration_seconds=10.0,
+                    ),
+                    LLMVisualQuery(
+                        intent=VisualQueryIntent.atmosphere,
+                        query="Ambiente de abertura",
+                        narration_excerpt="Segunda frase para contexto",  # End of content (after first)
+                        importance=VisualQueryImportance.optional,
+                        source_note_id=None,
+                        desired_duration_seconds=8.0,
+                    ),
+                ],
+            ),
+            VisualEnrichmentSectionOutput(
+                key="block-001",
+                visual_queries=[
+                    LLMVisualQuery(
+                        intent=VisualQueryIntent.evidence,
+                        query="Momento específico do desenvolvimento",
+                        narration_excerpt="Este é o desenvolvimento principal",  # Start
+                        importance=VisualQueryImportance.required,
+                        source_note_id=None,
+                        desired_duration_seconds=15.0,
+                    ),
+                    LLMVisualQuery(
+                        intent=VisualQueryIntent.illustration,
+                        query="B-roll complementar",
+                        narration_excerpt="Adicionamos mais texto aqui",  # End (after first)
+                        importance=VisualQueryImportance.preferred,
+                        source_note_id=None,
+                        desired_duration_seconds=10.0,
+                    ),
+                ],
+            ),
+            VisualEnrichmentSectionOutput(
+                key="block-002",
+                visual_queries=[
+                    LLMVisualQuery(
+                        intent=VisualQueryIntent.atmosphere,
+                        query="Imagens de encerramento",
+                        narration_excerpt="Conclusão final do vídeo",  # Start
+                        importance=VisualQueryImportance.optional,
+                        source_note_id=None,
+                        desired_duration_seconds=8.0,
+                    ),
+                    LLMVisualQuery(
+                        intent=VisualQueryIntent.transition,
+                        query="Transição de fechamento",
+                        narration_excerpt="Recapitulamos os principais pontos",  # End (after first)
+                        importance=VisualQueryImportance.preferred,
+                        source_note_id=None,
+                        desired_duration_seconds=5.0,
+                    ),
+                ],
+            ),
+        ]
+    )
+
+    # Track materialized results for verification
+    materialized_results: list[list[VisualQuery]] = []
+
+    def capture_real_materialize(
+        generation_run_id, section_key, duration_seconds, content, generated, evidence_dossier
+    ):
+        result = materialize_written_visual_queries(
+            generation_run_id=generation_run_id,
+            section_key=section_key,
+            duration_seconds=duration_seconds,
+            content=content,
+            generated=generated,
+            evidence_dossier=evidence_dossier,
+        )
+        materialized_results.append(result)
+        return result
+
+    with (
+        patch(
+            "app.services.llm_gateway.llm_gateway.complete",
+            AsyncMock(return_value=MagicMock(content=llm_output.model_dump_json())),
+        ),
+        patch(
+            "app.services.visual_requirements.materialize_written_visual_queries",
+            side_effect=capture_real_materialize,
+        ),
+    ):
+        generator._persist_revision = AsyncMock(
+            return_value=SimpleNamespace(id=uuid4())
+        )
+
+        await generator.create_visual_enrichment_revision(manual_roteiro.id)
+
+        # Verify real materialization occurred
+        assert len(materialized_results) == 3  # One per block
+
+        # The generation_run_id passed to materializer is the roteiro_id (source roteiro)
+        roteiro_id_as_run_id = manual_roteiro.id
+
+        # Block 0: 2 queries, first is illustration
+        block_0_queries = materialized_results[0]
+        assert len(block_0_queries) == 2
+        assert block_0_queries[0].intent == "illustration"
+        assert block_0_queries[0].importance == "preferred"
+        assert block_0_queries[0].source_note_id is None
+        assert block_0_queries[0].preferred_session_id is None
+        # Verify stable UUID5 identity for first query
+        expected_id_0_0 = uuid5(
+            NAMESPACE_URL,
+            f"neovids:visual-query:{roteiro_id_as_run_id}:block-000:0",
+        )
+        assert block_0_queries[0].id == expected_id_0_0
+        # Second query is atmosphere
+        assert block_0_queries[1].intent == "atmosphere"
+        assert block_0_queries[1].importance == "optional"
+
+        # Block 1: 2 queries, first is evidence (no source_note_id since manual scripts have no media context)
+        block_1_queries = materialized_results[1]
+        assert len(block_1_queries) == 2
+        assert block_1_queries[0].intent == "evidence"
+        assert block_1_queries[0].importance == "required"
+        assert block_1_queries[0].source_note_id is None
+        # No provenance filled since no evidence_dossier
+        assert block_1_queries[0].preferred_session_id is None
+        assert block_1_queries[0].preferred_start_seconds is None
+        assert block_1_queries[0].preferred_end_seconds is None
+        # Verify stable UUID5 identity
+        expected_id_1_0 = uuid5(
+            NAMESPACE_URL,
+            f"neovids:visual-query:{roteiro_id_as_run_id}:block-001:0",
+        )
+        assert block_1_queries[0].id == expected_id_1_0
+
+        # Block 2: 2 queries, first is atmosphere
+        block_2_queries = materialized_results[2]
+        assert len(block_2_queries) == 2
+        assert block_2_queries[0].intent == "atmosphere"
+        assert block_2_queries[0].importance == "optional"
+        # Second query is transition
+        assert block_2_queries[1].intent == "transition"
+        assert block_2_queries[1].importance == "preferred"

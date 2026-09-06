@@ -762,9 +762,13 @@ class RoteiroGenerator:
         source = await self.roteiro_repo.get_by_id(roteiro_id)
         if not source:
             raise ValueError("Roteiro não encontrado")
-        if source.revision_kind != "manual_create":
+        # Support manual lineage: scripts that originated from manual work
+        # (manual_create) or were manually edited after generation (human_edit)
+        manual_lineage_kinds = {"manual_create", "human_edit"}
+        if source.revision_kind not in manual_lineage_kinds:
             raise ValueError(
-                f"Visual enrichment only for manual scripts (got: {source.revision_kind})"
+                f"Visual enrichment only for manual scripts "
+                f"(got: {source.revision_kind}, expected one of: {manual_lineage_kinds})"
             )
 
         source_structure = RoteiroEstrutura.model_validate(source.estrutura)
