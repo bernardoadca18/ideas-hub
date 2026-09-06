@@ -3,6 +3,7 @@ import Ideias from './pages/Ideias';
 import Trends from './pages/Trends';
 import Roteiros from './pages/Roteiros';
 import GameAnalysis from './pages/GameAnalysis';
+import { MediaStudioPage } from './components/MediaStudioPage';
 
 export default function App() {
   return (
@@ -21,6 +22,9 @@ export default function App() {
           <NavLink to="/game-analysis" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             Game Analysis
           </NavLink>
+          <NavLink to="/studio" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            Studio
+          </NavLink>
         </nav>
         <main className="main">
           <Routes>
@@ -29,6 +33,7 @@ export default function App() {
             <Route path="/trends" element={<Trends />} />
             <Route path="/roteiros" element={<Roteiros />} />
             <Route path="/game-analysis" element={<GameAnalysis />} />
+          <Route path="/studio" element={<MediaStudioPage />} />
           </Routes>
         </main>
       </div>

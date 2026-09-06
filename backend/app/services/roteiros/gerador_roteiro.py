@@ -740,6 +740,96 @@ class RoteiroGenerator:
             "mensagem": "Roteiro rejeitado. Ideia voltou para status aprovada.",
         }
 
+    async def create_visual_enrichment_revision(
+        self, roteiro_id: UUID
+    ) -> Roteiro:
+        """
+        Generate visual queries for manual scripts without LLM involvement.
+
+        Creates placeholder VisualQuery objects based on block durations:
+        - One query per ~30 seconds of block duration
+        - Uses first sentence as narration_excerpt (literal binding)
+        - Intent defaults to "illustration", importance to "preferred"
+        - No prose rewriting - content stays unchanged
+
+        Only works on scripts with revision_kind="manual_create" and empty visual_queries.
+        """
+        from uuid import uuid4
+
+        source = await self.roteiro_repo.get_by_id(roteiro_id)
+        if not source:
+            raise ValueError("Roteiro não encontrado")
+        if source.revision_kind != "manual_create":
+            raise ValueError(
+                f"Visual enrichment only for manual scripts (got: {source.revision_kind})"
+            )
+
+        source_structure = RoteiroEstrutura.model_validate(source.estrutura)
+
+        # Check if already enriched (idempotency)
+        total_queries = sum(
+            len(b.visual_queries) for b in source_structure.blocos
+        )
+        if total_queries > 0:
+            raise ValueError(
+                "Script already has visual queries. Use regeneration to modify."
+            )
+
+        # Generate placeholder visual queries for each block
+        enriched_blocks: list[dict[str, Any]] = []
+        for block in source_structure.blocos:
+            # Calculate number of queries based on duration
+            num_queries = max(
+                1, min(5, block.duracao_segundos // 30)
+            )
+
+            # Split content into sentences for excerpt binding
+            content = block.conteudo
+            sentences = [
+                s.strip() for s in content.replace("!", ".").replace("?", ".").split(".")
+                if s.strip()
+            ]
+
+            visual_queries = []
+            for i in range(num_queries):
+                # Use first sentence as excerpt (literal binding)
+                excerpt = sentences[0] if sentences else content[:100]
+                excerpt = excerpt[:200] if len(excerpt) > 200 else excerpt
+
+                visual_queries.append({
+                    "id": str(uuid4()),
+                    "order": i,
+                    "intent": "illustration",
+                    "query": f"Visual footage for: {block.tipo}",
+                    "narration_excerpt": excerpt,
+                    "importance": "preferred",
+                    "source_note_id": None,
+                    "preferred_session_id": None,
+                    "preferred_start_seconds": None,
+                    "preferred_end_seconds": None,
+                    "desired_duration_seconds": block.duracao_segundos / num_queries,
+                    "notes": None,
+                })
+
+            block_dict = block.model_dump(mode="json")
+            block_dict["visual_queries"] = visual_queries
+            enriched_blocks.append(block_dict)
+
+        # Create new revision
+        structure_payload = source_structure.model_dump(mode="json")
+        structure_payload["blocos"] = enriched_blocks
+
+        ideia = await self.ideia_repo.get_by_id(source.ideia_id)
+        if not ideia:
+            raise ValueError("Ideia não encontrada")
+
+        return await self._persist_revision(
+            ideia=ideia,
+            estrutura=RoteiroEstrutura.model_validate(structure_payload),
+            revision_kind="visual_enrichment",
+            parent_roteiro_id=source.id,
+        )
+
 
 def get_roteiro_generator(session: AsyncSession) -> RoteiroGenerator:
     return RoteiroGenerator(session)

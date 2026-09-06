@@ -156,6 +156,34 @@ async def editar_como_nova_revisao(
 
 
 @router.post(
+    "/{roteiro_id:uuid}/preparar-producao",
+    response_model=RoteiroResponse,
+    status_code=201,
+)
+async def preparar_para_producao(
+    roteiro_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """
+    Generate visual queries for manual scripts without LLM involvement.
+
+    Creates placeholder VisualQuery objects based on block structure.
+    Only works on scripts with revision_kind="manual_create" and empty visual_queries.
+    """
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    try:
+        created = await get_roteiro_generator(db).create_visual_enrichment_revision(
+            roteiro_id
+        )
+        refreshed = await RoteiroRepository(db).get_by_id(created.id)
+        assert refreshed is not None
+        return refreshed
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
     "/{roteiro_id:uuid}/revisoes/regenerar",
     response_model=GenerationRunResponse,
     status_code=202,
