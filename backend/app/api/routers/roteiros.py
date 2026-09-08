@@ -14,10 +14,13 @@ from app.repositories.roteiro_repository import RoteiroRepository
 from app.schemas.analise_jogo import AnaliseJogoRequest
 from app.schemas.generation import GenerationRunResponse
 from app.schemas.roteiro import (
+    MediaBindingRequest,
+    ProductionReadinessResponse,
     RoteiroResponse,
     ScriptCreateRequest,
     ScriptEditRevisionRequest,
     ScriptRegenerationRequest,
+    VisualQueryRepairRequest,
     VisualReadinessResponse,
 )
 
@@ -100,12 +103,30 @@ async def get_visual_readiness(
     roteiro_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Compute canonical production readiness without mutating script history."""
+    """Compute canonical visual-structure readiness without mutating history."""
 
     from app.services.roteiros.gerador_roteiro import get_roteiro_generator
 
     try:
         return await get_roteiro_generator(db).visual_readiness_report(roteiro_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get(
+    "/{roteiro_id:uuid}/production-readiness",
+    response_model=ProductionReadinessResponse,
+)
+async def get_production_readiness(
+    roteiro_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Compose editorial, visual, and profile-owned media prerequisites."""
+
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    try:
+        return await get_roteiro_generator(db).production_readiness_report(roteiro_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -165,6 +186,56 @@ async def editar_como_nova_revisao(
 
     try:
         created = await get_roteiro_generator(db).create_human_edit_revision(
+            roteiro_id, payload
+        )
+        refreshed = await RoteiroRepository(db).get_by_id(created.id)
+        assert refreshed is not None
+        return refreshed
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{roteiro_id:uuid}/revisoes/vincular-midia",
+    response_model=RoteiroResponse,
+    status_code=201,
+)
+async def vincular_midia_como_nova_revisao(
+    roteiro_id: UUID,
+    payload: MediaBindingRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Bind a structurally validated Media Indexer scope in an immutable draft."""
+
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    try:
+        created = await get_roteiro_generator(db).bind_media_context_revision(
+            roteiro_id, payload
+        )
+        refreshed = await RoteiroRepository(db).get_by_id(created.id)
+        assert refreshed is not None
+        return refreshed
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/{roteiro_id:uuid}/revisoes/reparar-visual-queries",
+    response_model=RoteiroResponse,
+    status_code=201,
+)
+async def reparar_visual_queries_como_nova_revisao(
+    roteiro_id: UUID,
+    payload: VisualQueryRepairRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Repair selected VisualQuery text without rewriting narration or spans."""
+
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    try:
+        created = await get_roteiro_generator(db).repair_visual_queries_revision(
             roteiro_id, payload
         )
         refreshed = await RoteiroRepository(db).get_by_id(created.id)

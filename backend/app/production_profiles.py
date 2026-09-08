@@ -174,6 +174,7 @@ class ProductionProfile:
     visual_requirements: VisualRequirementsPolicy = field(
         default_factory=VisualRequirementsPolicy
     )
+    requires_media_scope: bool = True
 
 
 FACELESS_POP_CULTURE_LISTS = ProductionProfile(

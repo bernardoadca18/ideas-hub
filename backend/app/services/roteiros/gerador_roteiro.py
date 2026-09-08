@@ -24,10 +24,12 @@ from app.schemas.analise_jogo import AnaliseJogoRequest
 from app.schemas.ideia import IdeiaCreate, IdeiaUpdate
 from app.schemas.llm_outputs import LLMOutputError
 from app.schemas.roteiro import (
+    MediaBindingRequest,
     RoteiroCreate,
     RoteiroEstrutura,
     RoteiroUpdate,
     ScriptEditRevisionRequest,
+    VisualQueryRepairRequest,
     script_content_identity,
 )
 from app.services.author_briefing import author_briefing_identity
@@ -44,6 +46,8 @@ from app.services.editorial_generation import (
     ResolvedDurationIntent,
     resolve_duration_intent,
 )
+from app.services.production_readiness import evaluate_production_readiness
+from app.services.visual_entity_constraints import validate_visual_query_entity_scope
 from app.services.visual_requirements import (
     VISUAL_PRODUCTION_SCRIPT_SCHEMA_VERSION,
     validate_preserved_visual_queries,
@@ -225,9 +229,7 @@ class RoteiroGenerator:
         revision_feedback: str | None = None,
     ) -> Roteiro:
         profile = await self._profile_for_idea(ideia)
-        readiness = validate_visual_readiness(
-            estrutura, profile.visual_requirements
-        )
+        readiness = validate_visual_readiness(estrutura, profile.visual_requirements)
         structure_payload = estrutura.model_dump(mode="json")
         if readiness.status == "ready":
             structure_payload["production_script_schema_version"] = (
@@ -752,6 +754,89 @@ class RoteiroGenerator:
             structure, profile.visual_requirements
         ).to_dict()
 
+    async def production_readiness_report(self, roteiro_id: UUID) -> dict[str, Any]:
+        roteiro = await self.roteiro_repo.get_by_id(roteiro_id)
+        if not roteiro:
+            raise ValueError("Roteiro não encontrado")
+        structure = RoteiroEstrutura.model_validate(roteiro.estrutura)
+        profile = await self._profile_for_idea(roteiro.ideia)
+        return evaluate_production_readiness(
+            structure, script_status=roteiro.status, profile=profile
+        )
+
+    async def bind_media_context_revision(
+        self, roteiro_id: UUID, request: MediaBindingRequest
+    ) -> Roteiro:
+        """Create a metadata-only child revision with a canonical media scope."""
+
+        source = await self.roteiro_repo.get_by_id(roteiro_id)
+        if not source:
+            raise ValueError("Roteiro não encontrado")
+        latest = await self.roteiro_repo.get_latest_version_by_ideia(source.ideia_id)
+        if latest is None or latest.id != source.id:
+            raise ValueError("Somente a versão mais recente pode receber media binding")
+        structure = RoteiroEstrutura.model_validate(source.estrutura)
+        if structure.media_context == request.media_context:
+            raise ValueError("Media binding is a no-op: this scope is already current")
+        payload = structure.model_dump(mode="json")
+        payload["media_context"] = request.media_context.model_dump(mode="json")
+        return await self._persist_revision(
+            ideia=source.ideia,
+            estrutura=RoteiroEstrutura.model_validate(payload),
+            revision_kind="media_binding",
+            parent_roteiro_id=source.id,
+        )
+
+    async def repair_visual_queries_revision(
+        self, roteiro_id: UUID, request: VisualQueryRepairRequest
+    ) -> Roteiro:
+        """Create a visual-only child revision replacing only named query text."""
+
+        source = await self.roteiro_repo.get_by_id(roteiro_id)
+        if not source:
+            raise ValueError("Roteiro não encontrado")
+        latest = await self.roteiro_repo.get_latest_version_by_ideia(source.ideia_id)
+        if latest is None or latest.id != source.id:
+            raise ValueError("Somente a versão mais recente pode receber visual repair")
+        structure = RoteiroEstrutura.model_validate(source.estrutura)
+        authorized_context = "\n".join(
+            [
+                structure.titulo,
+                *(block.conteudo for block in structure.blocos),
+                getattr(source.ideia, "titulo", "") or "",
+                getattr(source.ideia, "descricao_breve", "") or "",
+                getattr(source.ideia, "author_briefing", "") or "",
+            ]
+        )
+        repairs = {item.visual_query_id: item.query for item in request.repairs}
+        found: set[UUID] = set()
+        payload = structure.model_dump(mode="json")
+        for block in payload["blocos"]:
+            for query in block.get("visual_queries", []):
+                query_id = UUID(str(query["id"])) if query.get("id") else None
+                if query_id in repairs:
+                    validate_visual_query_entity_scope(
+                        query=repairs[query_id], authorized_context=authorized_context
+                    )
+                    if query.get("query") == repairs[query_id]:
+                        raise ValueError(f"VisualQuery repair is a no-op: {query_id}")
+                    query["query"] = repairs[query_id]
+                    found.add(query_id)
+        missing = set(repairs) - found
+        if missing:
+            raise ValueError(
+                "VisualQuery IDs not found: " + ", ".join(sorted(map(str, missing)))
+            )
+        repaired = RoteiroEstrutura.model_validate(payload)
+        if script_content_identity(repaired) != script_content_identity(structure):
+            raise ValueError("VisualQuery repair changed speakable narration")
+        return await self._persist_revision(
+            ideia=source.ideia,
+            estrutura=repaired,
+            revision_kind="visual_query_repair",
+            parent_roteiro_id=source.id,
+        )
+
     async def rejeitar_roteiro(self, roteiro_id: UUID) -> dict[str, Any]:
         roteiro = await self.roteiro_repo.get_by_id(roteiro_id)
         if not roteiro:
@@ -776,9 +861,7 @@ class RoteiroGenerator:
             "mensagem": "Roteiro rejeitado. Ideia voltou para status aprovada.",
         }
 
-    async def create_visual_enrichment_revision(
-        self, roteiro_id: UUID
-    ) -> Roteiro:
+    async def create_visual_enrichment_revision(self, roteiro_id: UUID) -> Roteiro:
         """
         Generate a visual-only immutable revision for any compatible script without queries.
 
@@ -804,12 +887,23 @@ class RoteiroGenerator:
         source_structure = RoteiroEstrutura.model_validate(source.estrutura)
         total_queries = sum(len(b.visual_queries) for b in source_structure.blocos)
         if total_queries > 0:
-            raise ValueError("Script already has visual queries. Use regeneration to modify.")
+            raise ValueError(
+                "Script already has visual queries. Use regeneration to modify."
+            )
 
         ideia = await self.ideia_repo.get_by_id(source.ideia_id)
         if not ideia:
             raise ValueError("Ideia não encontrada")
         profile = await self._profile_for_idea(ideia)
+        authorized_context = "\n".join(
+            [
+                source_structure.titulo,
+                *(block.conteudo for block in source_structure.blocos),
+                getattr(ideia, "titulo", "") or "",
+                getattr(ideia, "descricao_breve", "") or "",
+                getattr(ideia, "author_briefing", "") or "",
+            ]
+        )
         before_identity = speakable_content_identity(source_structure.blocos)
         enriched_blocks: list[dict[str, Any]] = []
         for idx, block in enumerate(source_structure.blocos):
@@ -822,11 +916,14 @@ class RoteiroGenerator:
             )
             generated: list[Any] = []
             for batch in visual_beat_batches(beats, profile.visual_requirements):
-                composed = PromptBuilder(workflow=VISUAL_ENRICHMENT, profile=profile).build(
+                composed = PromptBuilder(
+                    workflow=VISUAL_ENRICHMENT, profile=profile
+                ).build(
                     task_context=self._build_visual_enrichment_prompt(
                         section_key=section_key,
                         block=block,
                         beats=batch,
+                        authorized_context=authorized_context,
                     )
                 )
                 llm_output = await llm_gateway.complete(
@@ -848,6 +945,10 @@ class RoteiroGenerator:
                     raise ValueError(
                         "Visual enrichment did not return every host-owned beat in order"
                     )
+                for item in enriched.visual_queries:
+                    validate_visual_query_entity_scope(
+                        query=item.query, authorized_context=authorized_context
+                    )
                 generated.extend(enriched.visual_queries)
             materialized = materialize_written_visual_queries(
                 generation_run_id=roteiro_id,
@@ -855,7 +956,11 @@ class RoteiroGenerator:
                 duration_seconds=block.duracao_segundos,
                 content=block.conteudo,
                 generated=generated,
-                evidence_dossier=source_structure.media_context or {},
+                evidence_dossier=(
+                    source_structure.media_context.model_dump(mode="json")
+                    if source_structure.media_context
+                    else {}
+                ),
                 policy=profile.visual_requirements,
                 beats=beats,
             )
@@ -873,7 +978,9 @@ class RoteiroGenerator:
             enriched_structure, profile.visual_requirements
         )
         if readiness.status != "ready":
-            raise ValueError("Visual enrichment did not produce a production-ready script")
+            raise ValueError(
+                "Visual enrichment did not produce a production-ready script"
+            )
         return await self._persist_revision(
             ideia=ideia,
             estrutura=enriched_structure,
@@ -882,7 +989,9 @@ class RoteiroGenerator:
         )
 
     @staticmethod
-    def _build_visual_enrichment_prompt(*, section_key: str, block: Any, beats: Any) -> str:
+    def _build_visual_enrichment_prompt(
+        *, section_key: str, block: Any, beats: Any, authorized_context: str
+    ) -> str:
         """Build one bounded semantic batch; temporal fields are not in its schema."""
 
         return (
@@ -890,6 +999,10 @@ class RoteiroGenerator:
             "Retorne exatamente um item por beat_order, contendo apenas intent, query, "
             "importance, source_note_id e notes. Não retorne excerpt, span, duração, "
             "session ID ou timestamp.\n"
+            "Preserve as entidades nomeadas do contexto narrativo/midiático autorizado. "
+            "Não substitua jogos, produtos, pessoas, lugares ou obras por entidades "
+            "adjacentes, salvo quando a narração pedir comparação explicitamente.\n"
+            f"CONTEXTO AUTORIZADO: {authorized_context}\n"
             f"BLOCO: {section_key}\nTIPO: {block.tipo}\n"
             f"DICAS VISUAIS: {block.dicas_visual or 'nenhuma'}\n"
             f"BEATS: {json.dumps([{'beat_order': beat.order, 'narration': beat.text} for beat in beats], ensure_ascii=False)}"

@@ -18,10 +18,20 @@ docker compose up --build
 ## Proveniência de mídia no Production Script
 
 No workflow `game_analysis`, o `Roteiro.estrutura` preserva um `media_context` compacto com
-`media_project_id` e o filtro opcional `media_session_ids`. Esses IDs são os mesmos recebidos na
-requisição e permitem ao Orchestrator executar o Visual Director sem pesquisar projetos alheios.
-Roteiros antigos e fluxos sem Media Indexer continuam válidos com `media_context: null`; nenhum
-payload de Semantic Timeline é copiado para o roteiro.
+`media_project_id` e uma lista opcional de `media_session_ids`. Lista ausente, nula ou vazia
+significa pesquisar o projeto inteiro; quando presentes, os IDs de sessão devem ser únicos. Esses
+IDs permitem ao Orchestrator executar o Visual Director sem pesquisar projetos alheios. Roteiros antigos continuam
+legíveis com `media_context: null`; a exigência na entrada de produção é declarada pelo
+`ProductionProfile`. O binding valida UUIDs, normaliza lista vazia e rejeita duplicatas localmente,
+mas não faz lookup
+síncrono no Media Indexer: indisponibilidade temporária do serviço de mídia não pode impedir edição
+editorial. A consistência project/session continua validada pelo Visual Director antes da seleção.
+
+`POST /roteiros/{id}/revisoes/vincular-midia` cria uma revisão imutável `media_binding`, em
+`rascunho`, preservando narração, VisualQueries e metadata editorial. Binding idêntico é rejeitado
+como no-op. `GET /roteiros/{id}/production-readiness` compõe aprovação editorial, Visual Readiness
+e a policy profile-aware de MediaScope; o Orchestrator consome esse contrato antes de criar o
+workflow ou enfileirar TTS.
 
 ## Author Briefing e revisões editoriais
 

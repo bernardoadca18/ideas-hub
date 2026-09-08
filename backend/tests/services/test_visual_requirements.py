@@ -59,6 +59,7 @@ def test_all_current_production_profiles_enable_structured_visual_queries() -> N
         and profile.visual_requirements.requires_visual_queries_for_final
         for profile in list_profiles()
     )
+    assert all(profile.requires_media_scope for profile in list_profiles())
 
 
 @pytest.mark.parametrize(
@@ -107,7 +108,9 @@ def test_segmentation_is_deterministic_contiguous_and_lossless() -> None:
     assert first == second
     assert first[0].start_char == 0
     assert first[-1].end_char == len(content)
-    assert all(left.end_char == right.start_char for left, right in zip(first, first[1:]))
+    assert all(
+        left.end_char == right.start_char for left, right in zip(first, first[1:])
+    )
     assert "".join(beat.text for beat in first) == content
     assert len({beat.id for beat in first}) == len(first)
 
@@ -274,7 +277,10 @@ def test_persist_reload_preserves_host_beat_identity_and_offsets() -> None:
     persisted = reloaded.blocos[0].visual_queries[0]
     assert persisted.id == query.id
     assert persisted.visual_beat_id == query.visual_beat_id
-    assert (persisted.coverage_start_char, persisted.coverage_end_char) == (0, len(content))
+    assert (persisted.coverage_start_char, persisted.coverage_end_char) == (
+        0,
+        len(content),
+    )
 
 
 def test_staged_section_assembly_keeps_materialized_visual_queries() -> None:
@@ -299,7 +305,9 @@ def test_human_revision_must_preserve_complete_host_owned_bindings() -> None:
     content = _content(4)
     queries = _materialized(content, 60)
     validate_preserved_visual_queries(content=content, queries=queries)
-    with pytest.raises(VisualRequirementsError, match="changed host-owned visual coverage"):
+    with pytest.raises(
+        VisualRequirementsError, match="changed host-owned visual coverage"
+    ):
         validate_preserved_visual_queries(
             content=content.replace("sentença", "frase"), queries=queries
         )

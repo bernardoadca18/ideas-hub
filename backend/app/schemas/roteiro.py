@@ -39,16 +39,19 @@ class PersistedVisualQuery(BaseModel):
             and self.preferred_end_seconds is not None
             and self.preferred_end_seconds <= self.preferred_start_seconds
         ):
-            raise ValueError("preferred_end_seconds must be greater than preferred_start_seconds")
-        if (
-            (self.coverage_start_char is not None or self.coverage_end_char is not None)
-            and (
-                self.coverage_start_char is None
-                or self.coverage_end_char is None
-                or self.coverage_end_char <= self.coverage_start_char
+            raise ValueError(
+                "preferred_end_seconds must be greater than preferred_start_seconds"
             )
+        if (
+            self.coverage_start_char is not None or self.coverage_end_char is not None
+        ) and (
+            self.coverage_start_char is None
+            or self.coverage_end_char is None
+            or self.coverage_end_char <= self.coverage_start_char
         ):
-            raise ValueError("coverage_end_char must be greater than coverage_start_char")
+            raise ValueError(
+                "coverage_end_char must be greater than coverage_start_char"
+            )
 
 
 class PersistedNarrativeBlock(BaseModel):
@@ -59,7 +62,9 @@ class PersistedNarrativeBlock(BaseModel):
     conteudo: str = Field(min_length=1, max_length=100_000)
     dicas_visual: str | None = None
     dicas_audio: str | None = None
-    visual_queries: list[PersistedVisualQuery] = Field(default_factory=list, max_length=256)
+    visual_queries: list[PersistedVisualQuery] = Field(
+        default_factory=list, max_length=256
+    )
     purpose: str | None = None
     beats: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
     planned_beats: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
@@ -71,6 +76,27 @@ class PersistedNarrativeBlock(BaseModel):
     def non_blank_text(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("field must not be blank")
+        return value
+
+
+class ScriptMediaContext(BaseModel):
+    """Canonical Media Indexer search scope persisted inside script JSONB."""
+
+    model_config = ConfigDict(extra="allow")
+
+    media_project_id: UUID
+    media_session_ids: list[UUID] = Field(default_factory=list)
+
+    @field_validator("media_session_ids", mode="before")
+    @classmethod
+    def normalize_optional_session_ids(cls, value: Any) -> Any:
+        return [] if value is None else value
+
+    @field_validator("media_session_ids")
+    @classmethod
+    def unique_session_ids(cls, value: list[UUID]) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("media_session_ids must be unique")
         return value
 
 
@@ -87,7 +113,7 @@ class RoteiroEstrutura(BaseModel):
     referencias: list[str] | None = None
     justificativa_llm: str | None = None
     prompt_trace: dict[str, Any] | None = None
-    media_context: dict[str, Any] | None = None
+    media_context: ScriptMediaContext | None = None
     duration_contract: dict[str, Any] | None = None
     editorial_quality: dict[str, Any] | None = None
     editorial_review: dict[str, Any] | None = None
@@ -159,6 +185,34 @@ class ScriptCreateRequest(BaseModel):
 
     ideia_id: UUID
     estrutura: RoteiroEstrutura
+
+
+class MediaBindingRequest(BaseModel):
+    media_context: ScriptMediaContext
+
+
+class VisualQueryRepairItem(BaseModel):
+    visual_query_id: UUID
+    query: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("query")
+    @classmethod
+    def non_blank_query(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("query must not be blank")
+        return normalized
+
+
+class VisualQueryRepairRequest(BaseModel):
+    repairs: list[VisualQueryRepairItem] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def unique_query_ids(self) -> VisualQueryRepairRequest:
+        ids = [item.visual_query_id for item in self.repairs]
+        if len(set(ids)) != len(ids):
+            raise ValueError("visual_query_id values must be unique")
+        return self
 
 
 class RoteiroUpdate(BaseModel):
@@ -233,3 +287,12 @@ class VisualReadinessResponse(BaseModel):
     overlap_ranges: list[dict[str, int]] = Field(default_factory=list)
     issues: list[dict[str, Any]] = Field(default_factory=list)
     blocks: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ProductionReadinessResponse(BaseModel):
+    status: Literal["ready", "not_ready"]
+    profile: str
+    editorial_status: str
+    visual: VisualReadinessResponse
+    media_scope: dict[str, Any]
+    issues: list[dict[str, Any]] = Field(default_factory=list)

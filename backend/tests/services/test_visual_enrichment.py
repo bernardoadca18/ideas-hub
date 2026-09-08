@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from app.schemas.llm_outputs import LLMOutputError
 from app.schemas.roteiro import RoteiroEstrutura
@@ -46,6 +47,10 @@ def _source(*, revision_kind: str = "manual_create", duration: int = 60):
             ],
             "tags": ["preservar"],
             "referencias": ["fonte"],
+            "media_context": {
+                "media_project_id": str(uuid4()),
+                "media_session_ids": [str(uuid4())],
+            },
         },
     )
 
@@ -103,7 +108,9 @@ async def _generator(source):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("revision_kind", ["manual_create", "human_edit", "staged_generation"])
+@pytest.mark.parametrize(
+    "revision_kind", ["manual_create", "human_edit", "staged_generation"]
+)
 async def test_zero_query_legacy_lineages_are_eligible(revision_kind: str) -> None:
     source = _source(revision_kind=revision_kind, duration=20)
     generator = await _generator(source)
@@ -129,12 +136,15 @@ async def test_enrichment_preserves_speakable_content_and_metadata() -> None:
     )
     assert enriched.tags == before.tags
     assert enriched.referencias == before.referencias
+    assert enriched.media_context == before.media_context
     assert validate_visual_readiness(enriched).status == "ready"
     assert len(enriched.blocos[0].visual_queries) == 2
 
 
 @pytest.mark.asyncio
-async def test_long_section_is_enriched_in_bounded_batches_without_losing_beats() -> None:
+async def test_long_section_is_enriched_in_bounded_batches_without_losing_beats() -> (
+    None
+):
     source = _source(duration=600)
     generator = await _generator(source)
     complete = _response_for_request()
@@ -145,9 +155,10 @@ async def test_long_section_is_enriched_in_bounded_batches_without_losing_beats(
     assert complete.call_count_value() == 4
     assert len(queries) == 20
     assert [item.order for item in queries] == list(range(20))
-    assert "".join(item.narration_excerpt or "" for item in queries) == source.estrutura[
-        "blocos"
-    ][0]["conteudo"]
+    assert (
+        "".join(item.narration_excerpt or "" for item in queries)
+        == source.estrutura["blocos"][0]["conteudo"]
+    )
 
 
 @pytest.mark.asyncio
@@ -194,7 +205,7 @@ async def test_incompatible_script_fails_before_llm_or_persistence() -> None:
     complete = AsyncMock()
     with (
         patch("app.services.llm_gateway.llm_gateway.complete", complete),
-        pytest.raises(Exception),
+        pytest.raises(ValidationError),
     ):
         await generator.create_visual_enrichment_revision(source.id)
     complete.assert_not_awaited()
@@ -216,3 +227,40 @@ async def test_llm_receives_host_owned_beats_and_cannot_return_spans() -> None:
     assert "narration_excerpt" not in schema_properties
     assert "coverage_start_char" not in schema_properties
     assert "BEATS:" in request["messages"][1]["content"]
+    assert "Preserve as entidades nomeadas" in request["messages"][1]["content"]
+    assert "CONTEXTO AUTORIZADO" in request["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_enrichment_rejects_numbered_entity_drift_before_persistence() -> None:
+    source = _source(duration=20)
+    source.estrutura["titulo"] = "Análise de GTA IV"
+    source.estrutura["blocos"][0]["conteudo"] = (
+        "GTA IV usa física sistêmica em Liberty City para produzir caos emergente."
+    )
+    generator = await _generator(source)
+
+    async def drifting_complete(**kwargs):
+        return MagicMock(
+            content=json.dumps(
+                {
+                    "visual_queries": [
+                        {
+                            "beat_order": 0,
+                            "intent": "evidence",
+                            "query": "Gameplay de GTA V com física sistêmica",
+                            "importance": "required",
+                            "source_note_id": None,
+                            "notes": None,
+                        }
+                    ]
+                }
+            )
+        )
+
+    with (
+        patch("app.services.llm_gateway.llm_gateway.complete", drifting_complete),
+        pytest.raises(ValueError, match="entity drift"),
+    ):
+        await generator.create_visual_enrichment_revision(source.id)
+    generator._persist_revision.assert_not_awaited()

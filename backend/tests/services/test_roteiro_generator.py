@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+
 from app.agents.roteirista import BlocoNarrativo, RoteiroEstruturado
 from app.api.routers.roteiros import regenerar_com_feedback
 from app.schemas.analise_jogo import AnaliseJogoRequest
@@ -224,6 +225,10 @@ async def test_human_edit_invalidates_visual_spans_when_narration_changes() -> N
             "global_critic": {"summary": "Audit antigo"},
             "evidence_provenance": {"generation_run_id": "parent-run"},
             "generation_run_id": "parent-run",
+            "media_context": {
+                "media_project_id": str(uuid4()),
+                "media_session_ids": [str(uuid4())],
+            },
         },
     )
     generator.roteiro_repo = AsyncMock()
@@ -256,6 +261,11 @@ async def test_human_edit_invalidates_visual_spans_when_narration_changes() -> N
     assert edited.inherited_evidence_provenance == {"generation_run_id": "parent-run"}
     assert edited.generation_run_id is None
     assert edited.source_generation_run_id == "parent-run"
+    assert edited.media_context is not None
+    assert (
+        str(edited.media_context.media_project_id)
+        == source.estrutura["media_context"]["media_project_id"]
+    )
 
 
 @pytest.mark.asyncio
