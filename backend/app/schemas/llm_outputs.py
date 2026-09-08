@@ -109,6 +109,30 @@ class LLMVisualQuery(StrictModel):
         return value
 
 
+class LLMVisualBeatQuery(StrictModel):
+    """LLM-owned semantics for one host-owned coverage beat."""
+
+    beat_order: int = Field(ge=0)
+    intent: VisualQueryIntent
+    query: str = Field(min_length=1, max_length=1000)
+    importance: VisualQueryImportance
+    source_note_id: UUID | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("query")
+    @classmethod
+    def non_blank_query(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must not be blank")
+        return value
+
+
+class VisualBeatEnrichmentOutput(StrictModel):
+    """Bounded response; coverage span and duration are deliberately absent."""
+
+    visual_queries: list[LLMVisualBeatQuery] = Field(min_length=1, max_length=5)
+
+
 class VisualEnrichmentSectionOutput(StrictModel):
     """LLM output for visual query extraction from existing narration (read-only)."""
 

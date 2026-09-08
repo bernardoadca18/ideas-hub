@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import Any
@@ -43,7 +44,11 @@ from app.services.editorial_generation import (
     ResolvedDurationIntent,
     resolve_duration_intent,
 )
-from app.services.visual_requirements import validate_preserved_visual_queries
+from app.services.visual_requirements import (
+    VISUAL_PRODUCTION_SCRIPT_SCHEMA_VERSION,
+    validate_preserved_visual_queries,
+    validate_visual_readiness,
+)
 
 logger = structlog.get_logger("services.roteiro_generator")
 
@@ -219,6 +224,17 @@ class RoteiroGenerator:
         parent_roteiro_id: UUID | None = None,
         revision_feedback: str | None = None,
     ) -> Roteiro:
+        profile = await self._profile_for_idea(ideia)
+        readiness = validate_visual_readiness(
+            estrutura, profile.visual_requirements
+        )
+        structure_payload = estrutura.model_dump(mode="json")
+        if readiness.status == "ready":
+            structure_payload["production_script_schema_version"] = (
+                VISUAL_PRODUCTION_SCRIPT_SCHEMA_VERSION
+            )
+        structure_payload["visual_readiness"] = readiness.to_dict()
+        estrutura = RoteiroEstrutura.model_validate(structure_payload)
         latest_version = await self.roteiro_repo.get_latest_version_number_for_update(
             ideia.id
         )
@@ -512,14 +528,24 @@ class RoteiroGenerator:
         for edited, original in zip(
             request.blocos, source_structure.blocos, strict=True
         ):
-            validate_preserved_visual_queries(
-                content=edited.conteudo,
-                queries=original.visual_queries,
-            )
             block = edited.model_dump(mode="json")
-            block["visual_queries"] = [
-                item.model_dump(mode="json") for item in original.visual_queries
-            ]
+            # Coverage belongs to the exact speakable text and its editorial duration.
+            # An unchanged block can retain its immutable requirements; an edited block
+            # becomes explicitly not-ready and can receive a visual_enrichment child
+            # revision later.  Never attach stale spans to new narration.
+            if (
+                edited.conteudo == original.conteudo
+                and edited.duracao_segundos == original.duracao_segundos
+            ):
+                validate_preserved_visual_queries(
+                    content=edited.conteudo,
+                    queries=original.visual_queries,
+                )
+                block["visual_queries"] = [
+                    item.model_dump(mode="json") for item in original.visual_queries
+                ]
+            else:
+                block["visual_queries"] = []
             blocks.append(block)
         structure_payload = source_structure.model_dump(mode="json")
         structure_payload.update(
@@ -716,6 +742,16 @@ class RoteiroGenerator:
         report["script_version"] = roteiro.versao
         return report
 
+    async def visual_readiness_report(self, roteiro_id: UUID) -> dict[str, Any]:
+        roteiro = await self.roteiro_repo.get_by_id(roteiro_id)
+        if not roteiro:
+            raise ValueError("Roteiro não encontrado")
+        structure = RoteiroEstrutura.model_validate(roteiro.estrutura)
+        profile = await self._profile_for_idea(roteiro.ideia)
+        return validate_visual_readiness(
+            structure, profile.visual_requirements
+        ).to_dict()
+
     async def rejeitar_roteiro(self, roteiro_id: UUID) -> dict[str, Any]:
         roteiro = await self.roteiro_repo.get_by_id(roteiro_id)
         if not roteiro:
@@ -744,129 +780,120 @@ class RoteiroGenerator:
         self, roteiro_id: UUID
     ) -> Roteiro:
         """
-        Generate visual queries for manual scripts using LLM interpretation.
+        Generate a visual-only immutable revision for any compatible script without queries.
 
-        Uses canonical materialize_written_visual_queries pipeline:
-        - LLM interprets visual needs from narration (read-only, no prose rewriting)
-        - Deterministic IDs using uuid5 for stable identities
-        - Provenance canonicalization through evidence_dossier
-
-        Only works on scripts with revision_kind="manual_create" and empty visual_queries.
+        The host owns beat spans and batches; the LLM only describes footage semantics.
         """
         from app.prompts.builder import PromptBuilder
         from app.prompts.workflows import VISUAL_ENRICHMENT
-        from app.schemas.llm_outputs import VisualEnrichmentOutput, validate_model_output
+        from app.schemas.llm_outputs import (
+            VisualBeatEnrichmentOutput,
+            validate_model_output,
+        )
         from app.services.llm_gateway import LLMTaskRole, llm_gateway
-        from app.services.visual_requirements import materialize_written_visual_queries
+        from app.services.visual_requirements import (
+            materialize_written_visual_queries,
+            segment_visual_beats,
+            speakable_content_identity,
+            visual_beat_batches,
+        )
 
         source = await self.roteiro_repo.get_by_id(roteiro_id)
         if not source:
             raise ValueError("Roteiro não encontrado")
-        # Support manual lineage: scripts that originated from manual work
-        # (manual_create) or were manually edited after generation (human_edit)
-        manual_lineage_kinds = {"manual_create", "human_edit"}
-        if source.revision_kind not in manual_lineage_kinds:
-            raise ValueError(
-                f"Visual enrichment only for manual scripts "
-                f"(got: {source.revision_kind}, expected one of: {manual_lineage_kinds})"
-            )
-
         source_structure = RoteiroEstrutura.model_validate(source.estrutura)
-
-        # Check if already enriched (idempotency)
-        total_queries = sum(
-            len(b.visual_queries) for b in source_structure.blocos
-        )
+        total_queries = sum(len(b.visual_queries) for b in source_structure.blocos)
         if total_queries > 0:
-            raise ValueError(
-                "Script already has visual queries. Use regeneration to modify."
-            )
+            raise ValueError("Script already has visual queries. Use regeneration to modify.")
 
-        # Build LLM prompt for visual query extraction
         ideia = await self.ideia_repo.get_by_id(source.ideia_id)
         if not ideia:
             raise ValueError("Ideia não encontrada")
         profile = await self._profile_for_idea(ideia)
-        composed = PromptBuilder(workflow=VISUAL_ENRICHMENT, profile=profile).build(
-            task_context=self._build_visual_enrichment_prompt(source_structure)
-        )
-
-        # Call LLM to extract visual queries
-        llm_output = await llm_gateway.complete(
-            messages=[
-                {"role": "system", "content": composed.system},
-                {"role": "user", "content": composed.user},
-            ],
-            role=LLMTaskRole.WRITING,
-            temperature=0.3,
-            max_tokens=4000,
-            response_schema=VisualEnrichmentOutput.model_json_schema(),
-        )
-
-        # Parse and validate LLM output
-        enriched = validate_model_output(
-            VisualEnrichmentOutput,
-            llm_output.content,
-        )
-        assert isinstance(enriched, VisualEnrichmentOutput)
-
-        # Map sections by index-based key for lookup
-        section_map = {s.key: s for s in enriched.sections}
-
-        # Materialize visual queries with deterministic IDs
+        before_identity = speakable_content_identity(source_structure.blocos)
         enriched_blocks: list[dict[str, Any]] = []
         for idx, block in enumerate(source_structure.blocos):
-            # Use index-based key for section identification
             section_key = f"block-{idx:03d}"
-            llm_section = section_map.get(section_key)
-            if not llm_section or not llm_section.visual_queries:
-                # No queries for this block - keep original
-                enriched_blocks.append(block.model_dump(mode="json"))
-                continue
-
-            # Use canonical pipeline to materialize queries with deterministic IDs
+            beats = segment_visual_beats(
+                section_key=section_key,
+                content=block.conteudo,
+                duration_seconds=block.duracao_segundos,
+                policy=profile.visual_requirements,
+            )
+            generated: list[Any] = []
+            for batch in visual_beat_batches(beats, profile.visual_requirements):
+                composed = PromptBuilder(workflow=VISUAL_ENRICHMENT, profile=profile).build(
+                    task_context=self._build_visual_enrichment_prompt(
+                        section_key=section_key,
+                        block=block,
+                        beats=batch,
+                    )
+                )
+                llm_output = await llm_gateway.complete(
+                    messages=[
+                        {"role": "system", "content": composed.system},
+                        {"role": "user", "content": composed.user},
+                    ],
+                    role=LLMTaskRole.WRITING,
+                    temperature=0.3,
+                    max_tokens=2500,
+                    response_schema=VisualBeatEnrichmentOutput.model_json_schema(),
+                )
+                enriched = validate_model_output(
+                    VisualBeatEnrichmentOutput, llm_output.content
+                )
+                assert isinstance(enriched, VisualBeatEnrichmentOutput)
+                expected = [beat.order for beat in batch]
+                if [item.beat_order for item in enriched.visual_queries] != expected:
+                    raise ValueError(
+                        "Visual enrichment did not return every host-owned beat in order"
+                    )
+                generated.extend(enriched.visual_queries)
             materialized = materialize_written_visual_queries(
                 generation_run_id=roteiro_id,
                 section_key=section_key,
                 duration_seconds=block.duracao_segundos,
                 content=block.conteudo,
-                generated=llm_section.visual_queries,
-                evidence_dossier={},  # No media context for manual scripts
+                generated=generated,
+                evidence_dossier=source_structure.media_context or {},
+                policy=profile.visual_requirements,
+                beats=beats,
             )
-
             block_dict = block.model_dump(mode="json")
             block_dict["visual_queries"] = [vq.to_dict() for vq in materialized]
             enriched_blocks.append(block_dict)
 
-        # Create new revision
         structure_payload = source_structure.model_dump(mode="json")
         structure_payload["blocos"] = enriched_blocks
-
+        enriched_structure = RoteiroEstrutura.model_validate(structure_payload)
+        after_identity = speakable_content_identity(enriched_structure.blocos)
+        if before_identity != after_identity:
+            raise ValueError("Visual enrichment changed speakable narration")
+        readiness = validate_visual_readiness(
+            enriched_structure, profile.visual_requirements
+        )
+        if readiness.status != "ready":
+            raise ValueError("Visual enrichment did not produce a production-ready script")
         return await self._persist_revision(
             ideia=ideia,
-            estrutura=RoteiroEstrutura.model_validate(structure_payload),
+            estrutura=enriched_structure,
             revision_kind="visual_enrichment",
             parent_roteiro_id=source.id,
         )
 
     @staticmethod
-    def _build_visual_enrichment_prompt(structure: RoteiroEstrutura) -> str:
-        """Build prompt for LLM visual query extraction (read-only)."""
-        parts = ["Extraia consultas visuais estruturadas do seguinte roteiro MANUAL.\n"]
-        parts.append("NÃO reescreva o texto. Apenas identifique necessidades visuais.\n\n")
+    def _build_visual_enrichment_prompt(*, section_key: str, block: Any, beats: Any) -> str:
+        """Build one bounded semantic batch; temporal fields are not in its schema."""
 
-        for idx, block in enumerate(structure.blocos):
-            section_key = f"block-{idx:03d}"
-            parts.append(f"--- BLOCO: {section_key} ---\n")
-            parts.append(f"Tipo: {block.tipo}\n")
-            parts.append(f"Duração: {block.duracao_segundos}s\n")
-            parts.append(f"Narração:\n{block.conteudo}\n\n")
-
-        parts.append(
-            "Para cada bloco, retorne visual_queries com intent, query, "
-            "narration_excerpt (LITERAL) e importance. Use o key do bloco (block-000, block-001, etc)."
+        return (
+            "NÃO reescreva a narração. O host já definiu os spans abaixo. "
+            "Retorne exatamente um item por beat_order, contendo apenas intent, query, "
+            "importance, source_note_id e notes. Não retorne excerpt, span, duração, "
+            "session ID ou timestamp.\n"
+            f"BLOCO: {section_key}\nTIPO: {block.tipo}\n"
+            f"DICAS VISUAIS: {block.dicas_visual or 'nenhuma'}\n"
+            f"BEATS: {json.dumps([{'beat_order': beat.order, 'narration': beat.text} for beat in beats], ensure_ascii=False)}"
         )
-        return "\n".join(parts)
 
 
 def get_roteiro_generator(session: AsyncSession) -> RoteiroGenerator:

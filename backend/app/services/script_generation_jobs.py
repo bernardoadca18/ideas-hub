@@ -49,7 +49,11 @@ from app.schemas.generation import (
     WrittenSectionOutput,
 )
 from app.schemas.ideia import IdeiaCreate
-from app.schemas.llm_outputs import LLMOutputError, extract_json_object
+from app.schemas.llm_outputs import (
+    LLMOutputError,
+    VisualBeatEnrichmentOutput,
+    extract_json_object,
+)
 from app.schemas.roteiro import RoteiroEstrutura, script_content_identity
 from app.schemas.visual_query import VisualQuery
 from app.services.claim_realization import (
@@ -108,7 +112,9 @@ from app.services.visual_requirements import (
     VISUAL_REQUIREMENTS_POLICY_VERSION,
     VisualRequirementsError,
     materialize_written_visual_queries,
-    visual_query_count_policy,
+    segment_visual_beats,
+    validate_visual_readiness,
+    visual_beat_batches,
 )
 
 logger = structlog.get_logger("services.script_generation_jobs")
@@ -2603,20 +2609,11 @@ class ScriptGenerationJobService:
             visual_contract = ""
             workflow = get_workflow(profile.workflow_roteiro)
             if workflow.structured_visual_queries:
-                visual_count = visual_query_count_policy(
-                    int(plan.get("target_duration_seconds") or 60)
-                )
                 visual_contract = (
                     " The output object has exactly two fields: content and visual_queries. "
-                    f"Return between {visual_count.minimum} and {visual_count.maximum} "
-                    "VisualQueries, ordered through the section from opening to closing. "
-                    "Each query describes footage editorially; it never chooses a file. "
-                    "narration_excerpt is required and must be a short literal contiguous "
-                    "span copied from content. Excerpts must be distinct, non-overlapping "
-                    "and appear in narration order. For ordinary faceless scripts use null "
-                    "source_note_id. For game analysis, use a source_note_id only when that "
-                    "exact UUID appears in RELEVANT EVIDENCE; never invent provenance, "
-                    "sessions or timestamps."
+                    "Return visual_queries as an empty array. The host deterministically "
+                    "segments completed narration and a separate bounded enrichment step "
+                    "supplies visual semantics; the writer must not choose coverage spans."
                 )
             # Build realization contracts for writer
             contracts_for_writer = [c.to_writer_dict() for c in realization_contracts]
@@ -2719,15 +2716,12 @@ class ScriptGenerationJobService:
             )
             try:
                 visual_queries = (
-                    materialize_written_visual_queries(
-                        generation_run_id=run.id,
-                        section_key=section.section_key,
-                        duration_seconds=int(
-                            plan.get("target_duration_seconds") or 60
-                        ),
+                    await self._enrich_section_visual_beats(
+                        run,
+                        section,
                         content=written.content,
-                        generated=written.visual_queries,
-                        evidence_dossier=run.evidence_dossier,
+                        evidence=evidence,
+                        profile=profile,
                     )
                     if workflow.structured_visual_queries
                     else []
@@ -2876,7 +2870,7 @@ class ScriptGenerationJobService:
             # Attach realization contracts to issues with claim_refs
             issues_with_contracts: list[dict[str, Any]] = []
             for issue in structured_feedback.issues:
-                issue_dict = {
+                issue_dict: dict[str, Any] = {
                     "category": issue.category,
                     "severity": issue.severity,
                     "actionable_feedback": _writer_feedback_for_issue(issue),
@@ -2963,6 +2957,79 @@ class ScriptGenerationJobService:
             section_key=section.section_key,
             review_state=review_state,
             issues_count=len(final_audit.issues) if final_audit else 0,
+        )
+
+    async def _enrich_section_visual_beats(
+        self,
+        run: ScriptGenerationRun,
+        section: ScriptGenerationSection,
+        *,
+        content: str,
+        evidence: list[dict[str, Any]],
+        profile: Any,
+    ) -> list[VisualQuery]:
+        """Ask the LLM only for semantics; host-owned beats define coverage."""
+
+        duration = int(section.section_plan.get("target_duration_seconds") or 60)
+        policy = profile.visual_requirements
+        beats = segment_visual_beats(
+            section_key=section.section_key,
+            content=content,
+            duration_seconds=duration,
+            policy=policy,
+        )
+        generated: list[Any] = []
+        for batch_index, batch in enumerate(visual_beat_batches(beats, policy)):
+            task = (
+                "Describe the footage need for every HOST-OWNED VISUAL BEAT below. "
+                "Return exactly one visual_queries item per beat, preserving beat_order. "
+                "Choose only intent, query, importance, optional notes and source_note_id. "
+                "Do not return narration excerpts, spans, durations, session IDs or "
+                "timestamps. Use source_note_id only when its exact UUID exists in "
+                "RELEVANT EVIDENCE; otherwise use null.\n"
+                f"SECTION KEY: {section.section_key}\n"
+                "BEATS: "
+                f"{json.dumps([{'beat_order': beat.order, 'narration': beat.text} for beat in batch], ensure_ascii=False)}\n"
+                f"SECTION CONTEXT: {json.dumps(section.section_plan, ensure_ascii=False)}\n"
+                "RELEVANT EVIDENCE: "
+                f"<evidence>{json.dumps(evidence, ensure_ascii=False)}</evidence>"
+            )
+            composed = compose_editorial_v3_prompt(
+                phase="writing",
+                profile=profile,
+                task_prompt=task,
+            )
+            result = await self._complete(
+                run,
+                role=LLMTaskRole.WRITING,
+                prompt=composed.user,
+                system_prompt=composed.system,
+                prompt_trace=composed.trace,
+                prompt_version="visual_beat_enrichment_v2",
+                scope=f"{section.section_key}:visual:{batch_index}",
+                section_key=section.section_key,
+                schema=VisualBeatEnrichmentOutput.model_json_schema(),
+                max_tokens=2500,
+            )
+            parsed, _ = await self._parse_or_repair(
+                run, result, VisualBeatEnrichmentOutput
+            )
+            expected = [beat.order for beat in batch]
+            observed = [item.beat_order for item in parsed.visual_queries]
+            if observed != expected:
+                raise VisualRequirementsError(
+                    "visual beat enrichment must return every host-owned beat in order"
+                )
+            generated.extend(parsed.visual_queries)
+        return materialize_written_visual_queries(
+            generation_run_id=run.id,
+            section_key=section.section_key,
+            duration_seconds=duration,
+            content=content,
+            generated=generated,
+            evidence_dossier=run.evidence_dossier,
+            policy=policy,
+            beats=beats,
         )
 
     async def _audit_section(
@@ -3567,6 +3634,13 @@ class ScriptGenerationJobService:
             }
         )
         structure = RoteiroEstrutura.model_validate(payload)
+        readiness = validate_visual_readiness(structure, profile.visual_requirements)
+        if readiness.status != "ready":
+            raise GenerationJobError(
+                GenerationFailureCategory.SCHEMA,
+                "generated script does not satisfy host-owned visual readiness",
+            )
+        payload["visual_readiness"] = readiness.to_dict()
         review["audit_content_identity"] = script_content_identity(structure)
         payload["editorial_review"] = review
         payload["audit_status"] = "completed" if critic else "unavailable"

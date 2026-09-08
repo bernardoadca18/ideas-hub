@@ -39,26 +39,28 @@ continua verbatim, enquanto a identidade permite detectar se o briefing atual mu
 geração.
 
 Roteiros formam histórico imutável. Edição humana de título/blocos editoriais e “regenerar com
-feedback” criam uma nova `versao`, ligam `parent_roteiro_id` e preservam a versão anterior. Edição
-humana não permite trocar IDs, timestamps ou provenance das `visual_queries`; aprovação só é
-permitida para o draft mais recente. Roteiros históricos sem briefing ou VisualQueries continuam
-válidos.
+feedback” criam uma nova `versao`, ligam `parent_roteiro_id` e preservam a versão anterior. Blocos
+cujo texto e duração não mudaram podem preservar seus requisitos visuais; blocos alterados perdem
+os spans antigos e ficam explicitamente pendentes de enrichment visual. Aprovação só é permitida
+para o draft mais recente. Roteiros históricos sem briefing ou VisualQueries continuam válidos.
 
 ## Contrato visual de produção faceless
 
-Os workflows atuais `roteiro_padrao` e `roteiro_analise_jogos` produzem `VisualQuery` estruturada
-durante a escrita de cada seção no Editorial V3. A query descreve intenção editorial; seleção de
-mídia continua pertencendo ao Orchestrator/Media Search. O host exige trechos literais e ordenados
-da narração, densidade bounded ao longo de cada seção e atribui IDs determinísticos por generation
-run. Perfis faceless comuns deixam provenance de gameplay nula; `game_analysis` só aceita
-`source_note_id` existente no contexto confiável e resolve sessão/range no backend.
+O host segmenta deterministicamente cada seção concluída em **Visual Beats** contíguos, sem gaps
+ou overlaps, com densidade definida pelo `ProductionProfile` (30 s por beat por padrão). Esse
+conceito não é um shot: ele representa uma unidade editorial de coverage. Chamadas LLM bounded
+em lotes de até cinco beats descrevem somente o que procurar (`query`, `intent`, `importance`,
+`notes` e `source_note_id` confiável). O host materializa cada **VisualQuery** com o texto literal
+completo e os offsets do beat. O Orchestrator converte esses spans textuais em tempo físico no
+NarrationAlignment, o Visual Director escolhe uma fonte, e a ProductionTimeline produz os
+placements concretos.
 
-Edição humana preserva IDs somente quando os excerpts ainda existem em ordem; mudanças que
-invalidem bindings devem usar regeneração de roteiro, que replana as queries em uma nova revisão.
-Re-audit preserva texto e queries. Roteiros históricos sem queries seguem legíveis e versionáveis,
-mas não são considerados prontos para produção visual final: o Orchestrator os diagnostica como
-`visual_queries_missing` em vez de anunciar `VisualPlan completed 0/0`. O upgrade de um roteiro
-histórico requer uma nova revisão, nunca mutação do JSONB aprovado.
+`GET /roteiros/{id}/visual-readiness` é a autoridade canônica para aptidão à produção visual. Ele
+verifica coverage textual integral, ordem, identidade, semântica e provenance. `status=aprovado`
+continua sendo aprovação editorial e não substitui essa readiness. Roteiros históricos sem queries
+seguem legíveis e versionáveis; `/preparar-producao` cria uma revisão imutável
+`visual_enrichment`, preservando a identidade do conteúdo falável. A produção final é bloqueada
+antes do TTS quando a revisão aprovada não está visualmente pronta.
 
 Novas gerações resolvem uma intenção de duração explícita (`explicit_target`, `profile_default`
 ou `content_driven`) e podem executar como jobs duráveis por seção. Planejamento hierárquico,

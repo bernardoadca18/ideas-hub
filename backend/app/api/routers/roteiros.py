@@ -18,6 +18,7 @@ from app.schemas.roteiro import (
     ScriptCreateRequest,
     ScriptEditRevisionRequest,
     ScriptRegenerationRequest,
+    VisualReadinessResponse,
 )
 
 router = APIRouter(prefix="/roteiros", tags=["roteiros"])
@@ -87,6 +88,24 @@ async def get_duration_contract(
 
     try:
         return await get_roteiro_generator(db).duration_report(roteiro_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get(
+    "/{roteiro_id:uuid}/visual-readiness",
+    response_model=VisualReadinessResponse,
+)
+async def get_visual_readiness(
+    roteiro_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Compute canonical production readiness without mutating script history."""
+
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    try:
+        return await get_roteiro_generator(db).visual_readiness_report(roteiro_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -164,11 +183,10 @@ async def preparar_para_producao(
     roteiro_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """
-    Generate visual queries for manual scripts without LLM involvement.
+    """Create an immutable visual-enrichment revision for a compatible script.
 
-    Creates placeholder VisualQuery objects based on block structure.
-    Only works on scripts with revision_kind="manual_create" and empty visual_queries.
+    The host owns deterministic coverage beats; bounded LLM calls describe what
+    footage to search for and cannot modify narration or coverage spans.
     """
     from app.services.roteiros.gerador_roteiro import get_roteiro_generator
 

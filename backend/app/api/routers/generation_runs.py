@@ -44,6 +44,17 @@ async def production_profiles():
             "research_strategy": profile.research_strategy,
             "model_routing_policy": profile.model_routing_policy,
             "long_form_supported": profile.long_form_supported,
+            "visual_requirements": {
+                "target_beat_seconds": profile.visual_requirements.target_beat_seconds,
+                "max_beats_per_llm_call": (
+                    profile.visual_requirements.max_beats_per_llm_call
+                ),
+                "requires_visual_queries_for_final": (
+                    profile.visual_requirements.requires_visual_queries_for_final
+                ),
+                "version": profile.visual_requirements.version,
+                "identity": profile.visual_requirements.identity,
+            },
         }
         for profile in list_profiles()
     ]

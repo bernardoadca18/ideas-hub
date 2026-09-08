@@ -605,6 +605,9 @@ async def test_revision_writer_receives_parent_text_priorities_and_exact_deficit
     service._audit_section = AsyncMock(  # type: ignore[method-assign]
         return_value=(_passing_audit(), {"audit": "test"})
     )
+    service._enrich_section_visual_beats = AsyncMock(  # type: ignore[method-assign]
+        return_value=[]
+    )
 
     await service._write_section(run, section)
 
@@ -740,6 +743,10 @@ async def test_revision_assembly_persists_linked_v2_despite_editorial_and_durati
             "app.services.roteiros.gerador_roteiro.RoteiroGenerator._persist_revision",
             AsyncMock(return_value=persisted),
         ) as persist_revision,
+        patch(
+            "app.services.script_generation_jobs.validate_visual_readiness",
+            return_value=SimpleNamespace(status="ready", to_dict=lambda: {}),
+        ),
     ):
         await service._assemble(run)
 

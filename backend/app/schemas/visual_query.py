@@ -71,6 +71,10 @@ class VisualQuery:
     preferred_end_seconds: float | None = None
     desired_duration_seconds: float | None = None
     notes: str | None = None
+    visual_beat_id: UUID | None = None
+    coverage_start_char: int | None = None
+    coverage_end_char: int | None = None
+    coverage_policy_version: str | None = None
 
     def to_dict(self) -> dict:
         """Serialize VisualQuery to dictionary for JSONB persistence."""
@@ -89,6 +93,10 @@ class VisualQuery:
             "preferred_end_seconds": self.preferred_end_seconds,
             "desired_duration_seconds": self.desired_duration_seconds,
             "notes": self.notes,
+            "visual_beat_id": str(self.visual_beat_id) if self.visual_beat_id else None,
+            "coverage_start_char": self.coverage_start_char,
+            "coverage_end_char": self.coverage_end_char,
+            "coverage_policy_version": self.coverage_policy_version,
         }
 
     @classmethod
@@ -113,4 +121,10 @@ class VisualQuery:
             preferred_end_seconds=data.get("preferred_end_seconds"),
             desired_duration_seconds=data.get("desired_duration_seconds"),
             notes=data.get("notes"),
+            visual_beat_id=UUID(data["visual_beat_id"])
+            if data.get("visual_beat_id")
+            else None,
+            coverage_start_char=data.get("coverage_start_char"),
+            coverage_end_char=data.get("coverage_end_char"),
+            coverage_policy_version=data.get("coverage_policy_version"),
         )

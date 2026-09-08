@@ -11,7 +11,28 @@ pelo usuário (nome, prompts livres, fontes de trend). Adicionar um novo
 perfil = adicionar uma entrada aqui.
 """
 
-from dataclasses import dataclass, field
+import hashlib
+import json
+from dataclasses import asdict, dataclass, field
+
+
+@dataclass(frozen=True, slots=True)
+class VisualRequirementsPolicy:
+    """Profile-owned visual density and readiness contract."""
+
+    target_beat_seconds: int = 30
+    max_beats_per_llm_call: int = 5
+    requires_visual_queries_for_final: bool = True
+    version: str = "visual_requirements_v2"
+
+    def __post_init__(self) -> None:
+        if self.target_beat_seconds <= 0 or self.max_beats_per_llm_call <= 0:
+            raise ValueError("visual requirements policy limits must be positive")
+
+    @property
+    def identity(self) -> str:
+        payload = json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -150,6 +171,9 @@ class ProductionProfile:
     long_form_supported: bool = True
     max_practical_duration_seconds: int = 14_400
     source_policy: SourcePolicy = field(default_factory=SourcePolicy)
+    visual_requirements: VisualRequirementsPolicy = field(
+        default_factory=VisualRequirementsPolicy
+    )
 
 
 FACELESS_POP_CULTURE_LISTS = ProductionProfile(

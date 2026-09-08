@@ -28,11 +28,27 @@ class PersistedVisualQuery(BaseModel):
     preferred_end_seconds: float | None = Field(default=None, ge=0)
     desired_duration_seconds: float | None = Field(default=None, gt=0)
     notes: str | None = None
+    visual_beat_id: UUID | None = None
+    coverage_start_char: int | None = Field(default=None, ge=0)
+    coverage_end_char: int | None = Field(default=None, ge=0)
+    coverage_policy_version: str | None = None
 
     def model_post_init(self, context: Any) -> None:
-        if self.preferred_start_seconds is not None and self.preferred_end_seconds is not None:
-            if self.preferred_end_seconds <= self.preferred_start_seconds:
-                raise ValueError("preferred_end_seconds must be greater than preferred_start_seconds")
+        if (
+            self.preferred_start_seconds is not None
+            and self.preferred_end_seconds is not None
+            and self.preferred_end_seconds <= self.preferred_start_seconds
+        ):
+            raise ValueError("preferred_end_seconds must be greater than preferred_start_seconds")
+        if (
+            (self.coverage_start_char is not None or self.coverage_end_char is not None)
+            and (
+                self.coverage_start_char is None
+                or self.coverage_end_char is None
+                or self.coverage_end_char <= self.coverage_start_char
+            )
+        ):
+            raise ValueError("coverage_end_char must be greater than coverage_start_char")
 
 
 class PersistedNarrativeBlock(BaseModel):
@@ -43,9 +59,7 @@ class PersistedNarrativeBlock(BaseModel):
     conteudo: str = Field(min_length=1, max_length=100_000)
     dicas_visual: str | None = None
     dicas_audio: str | None = None
-    visual_queries: list[PersistedVisualQuery] = Field(
-        default_factory=list, max_length=5
-    )
+    visual_queries: list[PersistedVisualQuery] = Field(default_factory=list, max_length=256)
     purpose: str | None = None
     beats: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
     planned_beats: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
@@ -84,6 +98,7 @@ class RoteiroEstrutura(BaseModel):
     audit_status: str | None = None
     source_generation_run_id: str | None = None
     inherited_evidence_provenance: dict[str, Any] | None = None
+    visual_readiness: dict[str, Any] | None = None
 
     @field_validator("titulo")
     @classmethod
@@ -204,3 +219,17 @@ class RoteiroResponse(RoteiroBase):
     author_briefing_changed_since_creation: bool | None = None
     criado_em: datetime
     atualizado_em: datetime
+
+
+class VisualReadinessResponse(BaseModel):
+    status: Literal["ready", "not_ready"]
+    policy_version: str
+    policy_identity: str
+    speakable_content_identity: str
+    block_count: int = Field(ge=0)
+    visual_beat_count: int = Field(ge=0)
+    textual_coverage_ratio: float = Field(ge=0, le=1)
+    missing_ranges: list[dict[str, int]] = Field(default_factory=list)
+    overlap_ranges: list[dict[str, int]] = Field(default_factory=list)
+    issues: list[dict[str, Any]] = Field(default_factory=list)
+    blocks: list[dict[str, Any]] = Field(default_factory=list)

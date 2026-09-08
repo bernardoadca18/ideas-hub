@@ -336,6 +336,9 @@ def _writing_fixture() -> tuple[
             {"audit": "test"},
         )
     )
+    service._enrich_section_visual_beats = AsyncMock(  # type: ignore[method-assign]
+        return_value=[]
+    )
     return service, session, run, section
 
 
@@ -1853,6 +1856,56 @@ def test_writer_schema_contains_only_prose_and_editorial_visual_requirements() -
     assert set(properties) == {"content", "visual_queries"}
 
 
+@pytest.mark.asyncio
+async def test_editorial_v3_visual_enrichment_batches_host_owned_beats() -> None:
+    service, _, run, section = _writing_fixture()
+    content = " ".join(f"palavra-{index}" for index in range(580))
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(
+                json.dumps(
+                    {
+                        "visual_queries": [
+                            {
+                                "beat_order": order,
+                                "intent": "illustration",
+                                "query": f"footage para beat {order}",
+                                "importance": "preferred",
+                                "source_note_id": None,
+                                "notes": None,
+                            }
+                            for order in orders
+                        ]
+                    }
+                ),
+                role=LLMTaskRole.WRITING,
+            )
+            for orders in (range(5), range(5, 8))
+        ]
+    )
+    profile = get_profile("faceless_general")
+
+    queries = await ScriptGenerationJobService._enrich_section_visual_beats(
+        service,
+        run,
+        section,
+        content=content,
+        evidence=[],
+        profile=profile,
+    )
+
+    assert service._complete.await_count == 2
+    assert len(queries) == 8
+    assert [query.coverage_start_char for query in queries][0] == 0
+    assert queries[-1].coverage_end_char == len(content)
+    assert all(
+        left.coverage_end_char == right.coverage_start_char
+        for left, right in zip(queries, queries[1:])
+    )
+    schemas = [call.kwargs["schema"] for call in service._complete.await_args_list]
+    assert all("narration_excerpt" not in json.dumps(schema) for schema in schemas)
+
+
 def test_section_claims_are_selected_only_by_explicit_approved_claim_refs() -> None:
     run = SimpleNamespace(
         plan={
@@ -2338,8 +2391,9 @@ async def test_v3_writer_receives_one_style_policy_content_scope_and_factuality(
     assert "new comparison fact, scene detail or technical proposition" in call["prompt"]
     assert call["prompt_version"] == "section_writer_v3"
     assert set(call["schema"]["properties"]) == {"content", "visual_queries"}
-    assert "VisualQueries" in call["prompt"]
-    assert "literal contiguous" in call["prompt"]
+    assert "host deterministically segments completed narration" in call["prompt"]
+    assert "writer must not choose coverage spans" in call["prompt"]
+    assert "Return visual_queries as an empty array" in call["prompt"]
 
 
 @pytest.mark.asyncio

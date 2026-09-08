@@ -186,7 +186,7 @@ async def test_game_analysis_provider_failure_creates_no_partial_idea() -> None:
 
 
 @pytest.mark.asyncio
-async def test_human_edit_creates_revision_and_preserves_visual_provenance() -> None:
+async def test_human_edit_invalidates_visual_spans_when_narration_changes() -> None:
     generator = RoteiroGenerator(AsyncMock())
     query_id = uuid4()
     note_id = uuid4()
@@ -244,9 +244,7 @@ async def test_human_edit_creates_revision_and_preserves_visual_provenance() -> 
     )
     await generator.create_human_edit_revision(source.id, request)
     revision = generator._persist_revision.await_args.kwargs
-    persisted_query = revision["estrutura"].blocos[0].visual_queries[0]
-    assert persisted_query.id == query_id
-    assert persisted_query.source_note_id == note_id
+    assert revision["estrutura"].blocos[0].visual_queries == []
     assert revision["revision_kind"] == "human_edit"
     assert revision["parent_roteiro_id"] == source.id
     edited = revision["estrutura"]

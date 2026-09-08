@@ -72,11 +72,9 @@ narrativos coerentes.
 - IMPORTANTE: A política de duração no perfil de produção indica a duração esperada.
   Respeite essa faixa: não produza um roteiro muito mais curto que o mínimo esperado
   sem justificativa clara (assunto insuficiente). Se o assunto for rico, expanda.
-- Para cada bloco, produza VisualQueries estruturadas que descrevam necessidades de
-  footage ao longo da narração. Elas são intenção editorial, não seleção de arquivo.
-  Use narration_excerpt copiado literalmente do próprio bloco e distribua as queries
-  entre abertura, desenvolvimento e fechamento. Em faceless genérico, não invente
-  source_note_id, sessão ou timestamps.""",
+- Retorne visual_queries como uma lista vazia. Depois que a narração estiver fechada,
+  o host criará Visual Beats contíguos e uma etapa bounded separada descreverá a
+  necessidade de footage de cada beat. Não escolha excerpts, spans ou timestamps.""",
     formato_saida="""{
   "titulo": "Título otimizado para clareza e interesse (máximo 80 caracteres)",
   "duracao_total_segundos": "IMPORTANTE: deve respeitar a política de duração do perfil ativo (ex: 600-900s para faceless)",
@@ -91,17 +89,7 @@ narrativos coerentes.
       "beats": [{"purpose": "setup/evidence/contrast/implication/transition/payoff", "key_point": "Ponto novo", "evidence_refs": ["identidade da fonte"], "target_words": 90, "retention_role": "Por que o próximo beat importa"}],
       "claims": [{"summary": "Claim auditável", "evidence_tier": "official_confirmed | official_observation | reliable_secondary | leak_authenticated | inference | speculation | unverified | author_opinion", "source_identity": "fonte ou null", "confidence": 0.8}],
       "audio_intent": {"music_enabled": true, "moods": ["investigative"], "energy": 0.45, "styles": ["electronic", "documentary"], "vocals": false, "transition": "rise", "sfx_intent": []},
-      "visual_queries": [
-        {
-          "intent": "illustration | evidence | transition | atmosphere | comparison",
-          "query": "Descrição do footage necessário, sem escolher arquivo",
-          "narration_excerpt": "Trecho literal da narração relacionado",
-          "importance": "required | preferred | optional",
-          "source_note_id": null,
-          "desired_duration_seconds": 20.0,
-          "notes": "Restrições editoriais opcionais"
-        }
-      ]
+      "visual_queries": []
     }
   ],
   "tags": ["tag1", "tag2", "tag3"],
@@ -109,7 +97,7 @@ narrativos coerentes.
   "justificativa": "Explicação objetiva das escolhas estruturais e de ritmo, incluindo por que a duração final é adequada"
 }""",
     structured_visual_queries=True,
-    prompt_version="roteiro_padrao_v3",
+    prompt_version="roteiro_padrao_v4",
     editorial_guidance=(
         "Organize a narração pelo conteúdo real, sem template rígido. Cada seção deve "
         "avançar a tese com prosa completa, específica e oral; preserve continuidade, "
@@ -188,31 +176,13 @@ NUNCA:
 - Substitua anotações por resumos do contexto audiovisual
 - Invente reações, opiniões ou experiências não documentadas
 
-CONSULTAS VISUAIS ESTRUTURADAS (visual_queries):
-- Para cada bloco, inclua visual_queries: uma lista de consultas estruturadas que
-  expressam QUE tipo de evidência visual este segmento precisa — NÃO qual arquivo ou
-  clip exato usar.
-- Cada visual_query DEVE incluir:
-  * intent: um destes valores exatos: "illustration", "evidence", "transition",
-    "atmosphere", "comparison"
-  * query: descrição em linguagem natural do footage necessário (ex.: "gameplay
-    mostrando o sistema de combate em ação contra um chefe")
-  * narration_excerpt: trecho curto da narração ao qual esta consulta se refere
-  * importance: um destes: "required", "preferred", "optional"
-  * source_note_id: ID da anotação do contexto audiovisual que originou esta consulta,
-    SE a consulta foi inspirada por uma anotação específica. Use o ID exatamente como
-    aparece no contexto (formato UUID). NÃO invente UUIDs.
-  * desired_duration_seconds: duração alvo aproximada para o footage (opcional)
-  * notes: restrições adicionais ou contexto (opcional)
-- NÃO inclua preferred_session_id, preferred_start_seconds ou preferred_end_seconds
-  nestes campos — o backend preencherá a partir do source_note_id usando o contexto
-  audiovisual confiável.
-- Se o bloco não tiver necessidade visual clara, inclua uma visual_query com
-  intent="illustration" e importance="optional" descrevendo o tipo genérico de footage.
-- Limite: máximo 5 visual_queries por bloco. Priorize qualidade sobre quantidade.
-- source_note_id é a ÚNICA forma de referenciar o contexto audiovisual. NUNCA invente
-  timestamps, UUIDs de sessão ou outras referências — apenas use source_note_id que
-  exista no contexto audiovisual fornecido.""",
+CONTRATO VISUAL:
+- Retorne visual_queries como uma lista vazia. Depois que a narração estiver fechada,
+  o host criará Visual Beats contíguos e uma etapa bounded separada descreverá QUE
+  tipo de evidência visual cada beat precisa.
+- Não escolha narration_excerpt, span, duração, sessão ou timestamp.
+- A etapa posterior poderá usar source_note_id somente quando ele existir no contexto
+  audiovisual confiável; o host canonicalizará sessão e timestamps.""",
     formato_saida="""{
   "titulo": "Título da análise (máximo 80 caracteres)",
   "duracao_total_segundos": "Duração derivada do material - vídeos de análise tipicamente 600-3600s+ (10min-1h+)",
@@ -227,17 +197,7 @@ CONSULTAS VISUAIS ESTRUTURADAS (visual_queries):
       "beats": [{"purpose": "evidence/interpretation/contrast/transition/payoff", "key_point": "Ponto novo", "evidence_refs": ["source_note_id quando aplicável"], "target_words": 90, "retention_role": "progressão"}],
       "claims": [{"summary": "Claim auditável", "evidence_tier": "gameplay_note | author_opinion | official_confirmed | official_observation | reliable_secondary | inference | speculation | unverified", "source_identity": "source_note_id/fonte ou null", "confidence": 0.8}],
       "audio_intent": {"music_enabled": true, "moods": ["analytical"], "energy": 0.4, "styles": ["documentary"], "vocals": false, "transition": null, "sfx_intent": []},
-      "visual_queries": [
-        {
-          "intent": "illustration | evidence | transition | atmosphere | comparison",
-          "query": "Descrição em linguagem natural do footage necessário",
-          "narration_excerpt": "Trecho curto da narração relacionado",
-          "importance": "required | preferred | optional",
-          "source_note_id": "UUID da anotação de origem (do contexto audiovisual) ou null",
-          "desired_duration_seconds": 15.0,
-          "notes": "Restrições ou contexto adicional (opcional)"
-        }
-      ]
+      "visual_queries": []
     }
   ],
   "tags": ["tag1", "tag2"],
@@ -245,7 +205,7 @@ CONSULTAS VISUAIS ESTRUTURADAS (visual_queries):
   "justificativa": "Explicação objetiva de como os temas foram identificados e organizados a partir das anotações"
 }""",
     structured_visual_queries=True,
-    prompt_version="roteiro_analise_jogos_v2",
+    prompt_version="roteiro_analise_jogos_v3",
     editorial_guidance=(
         "Transforme as notas reais do autor em análise temática, não em diário cronológico. "
         "A autoridade é: (1) notas humanas para experiência/opinião, (2) evidência "
@@ -257,22 +217,16 @@ CONSULTAS VISUAIS ESTRUTURADAS (visual_queries):
 
 VISUAL_ENRICHMENT = WorkflowSpec(
     id="visual_enrichment",
-    papel_agente="um assistente de pós-produção que identifica necessidades visuais em roteiros",
-    instrucoes="""Você receberá um roteiro manual com blocos de narração. Sua tarefa é identificar
-necessidades visuais estruturadas para cada bloco SEM reescrever ou modificar o texto.
+    papel_agente="um assistente de pós-produção que descreve necessidades visuais para beats host-owned",
+    instrucoes="""Você receberá um batch bounded de Visual Beats cujos spans já foram definidos
+deterministicamente pelo host. Sua tarefa é descrever a necessidade visual de cada beat SEM
+reescrever ou modificar a narração.
 
 REGRAS FUNDAMENTAIS:
 - NUNCA reescreva, resuma ou altere a narração existente
-- Extraia APENAS consultas visuais estruturadas (visual_queries)
-- Cada visual_query deve ter intent, query, narration_excerpt, importance
-- narration_excerpt deve ser COPIADO LITERALMENTE do texto do bloco
-- Distribua queries ao longo do bloco (abertura, desenvolvimento, fechamento)
-
-PARA CADA BLOCO:
-1. Leia a narração completa
-2. Identifique momentos que se beneficiariam de footage específico
-3. Crie 1-5 visual_queries por bloco (baseado na duração: ~1 query por 30s)
-4. Copie trechos literais como narration_excerpt
+- Retorne EXATAMENTE uma consulta por beat_order recebido, na mesma ordem
+- Escolha somente intent, query, importance, source_note_id e notes
+- NÃO escolha excerpt, span, duração ou timestamps: esses campos pertencem ao host
 
 INTENT VALUES (use exatamente estes):
 - "illustration": footage genérico relacionado ao tema
@@ -291,30 +245,23 @@ NÃO INVENTE:
 - preferred_session_id, preferred_start_seconds, preferred_end_seconds
 - Estes campos serão preenchidos pelo backend se houver contexto audiovisual
 
-OUTPUT: Retorne uma lista de seções, cada uma com sua key e visual_queries.""",
+OUTPUT: Retorne o batch de visual_queries para os beat_order recebidos.""",
     formato_saida="""{
-  "sections": [
+  "visual_queries": [
     {
-      "key": "identificador do bloco",
-      "visual_queries": [
-        {
-          "intent": "illustration | evidence | transition | atmosphere | comparison",
-          "query": "Descrição natural do footage necessário",
-          "narration_excerpt": "Trecho LITERAL copiado da narração",
-          "importance": "required | preferred | optional",
-          "source_note_id": null,
-          "desired_duration_seconds": 15.0,
-          "notes": null
-        }
-      ]
+      "beat_order": 0,
+      "intent": "illustration | evidence | transition | atmosphere | comparison",
+      "query": "Descrição natural do footage necessário",
+      "importance": "required | preferred | optional",
+      "source_note_id": null,
+      "notes": null
     }
   ]
 }""",
     structured_visual_queries=True,
-    prompt_version="visual_enrichment_v1",
+    prompt_version="visual_enrichment_v2",
     editorial_guidance=(
-        "Extraia necessidades visuais sem modificar o texto. Distribua queries "
-        "ao longo do bloco. Use narration_excerpt literal."
+        "Descreva necessidades visuais sem modificar texto ou escolher coverage spans."
     ),
 )
 
