@@ -300,19 +300,24 @@ async def test_stale_draft_rejection_cannot_reset_idea_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_factual_warnings_do_not_block_manual_approval() -> None:
-    """Manual approval is sovereign - review warnings are displayed but don't block."""
+async def test_blocking_factual_review_prevents_manual_approval() -> None:
     generator = RoteiroGenerator(AsyncMock())
     script_id = uuid4()
     structure = {
         "titulo": "Auditado",
         "duracao_total_segundos": 60,
         "blocos": [{"tipo": "corpo", "duracao_segundos": 60, "conteudo": "Texto"}],
+        "duration_contract": {
+            "target_duration_seconds": 120,
+            "predicted_duration_seconds": 99.517,
+            "status": "below_target",
+            "revision_required": True,
+        },
         "editorial_review": {
             "audit_status": "completed",
-            "editorial_status": "pass",
+            "editorial_status": "needs_revision",
             "factuality_status": "blocking",
-            "approval_blocked": True,  # Review says blocked, but manual approval overrides
+            "approval_blocked": True,
         },
     }
     structure["editorial_review"]["audit_content_identity"] = script_content_identity(
@@ -328,12 +333,13 @@ async def test_factual_warnings_do_not_block_manual_approval() -> None:
     generator.ideia_repo = AsyncMock()
     generator.roteiro_repo.get_by_id.return_value = script
     generator.roteiro_repo.get_latest_version_by_ideia.return_value = script
-    generator.roteiro_repo.update.return_value = SimpleNamespace(status="aprovado")
+    with pytest.raises(
+        ValueError, match="Aprovação bloqueada.*factuality_status=blocking"
+    ):
+        await generator.aprovar_roteiro(script_id)
 
-    result = await generator.aprovar_roteiro(script_id)
-
-    assert result["status"] == "aprovado"
-    generator.roteiro_repo.update.assert_awaited_once()
+    generator.roteiro_repo.update.assert_not_awaited()
+    generator.ideia_repo.update.assert_not_awaited()
 
 
 @pytest.mark.asyncio

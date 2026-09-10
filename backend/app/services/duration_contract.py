@@ -257,7 +257,9 @@ def duration_budget_prompt(
     )
 
 
-def _predicted_seconds(text: str, calibration: DurationCalibration) -> float:
+def predict_duration_seconds(text: str, calibration: DurationCalibration) -> float:
+    """Estimate editorial duration using the canonical calibrated formula."""
+
     words = count_words(text)
     chars = len(normalize_speakable_text(text))
     estimates = []
@@ -293,7 +295,7 @@ def evaluate_duration(
     text = speakable_text_from_blocks(blocks)
     words = count_words(text)
     chars = len(normalize_speakable_text(text))
-    predicted = _predicted_seconds(text, calibration)
+    predicted = predict_duration_seconds(text, calibration)
     ratio = predicted / target_seconds if target_seconds else None
     status = _status(ratio, profile) if ratio is not None else "estimate_only"
     target_words = (
@@ -325,7 +327,7 @@ def evaluate_duration(
             if target_seconds and declared_total > 0
             else None
         )
-        section_predicted = _predicted_seconds(section_text, calibration)
+        section_predicted = predict_duration_seconds(section_text, calibration)
         section_ratio = section_predicted / section_target if section_target else None
         section_target_words = (
             round(calibration.words_per_minute * section_target / 60)

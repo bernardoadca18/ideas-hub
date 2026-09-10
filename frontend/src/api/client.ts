@@ -124,6 +124,14 @@ export interface Roteiro {
     section_audits?: Record<string, SectionAudit | null>;
     global_critic?: { summary?: string; issues?: EditorialIssue[] };
     generation_run_id?: string;
+    media_context?: { media_project_id: string; media_session_ids: string[] };
+    visual_readiness?: Record<string, unknown>;
+    manual_import?: {
+      schema_version: 'neovids_manual_script_v1';
+      source_filename: string;
+      normalized_payload_sha256: string;
+      source: 'manual_file_import';
+    };
   };
   status: string;
   author_briefing_snapshot?: string;
@@ -231,6 +239,76 @@ export interface ScriptEditRevision {
   edit_summary?: string;
 }
 
+export interface ManualScriptDocumentV1 {
+  schema: 'neovids_manual_script_v1';
+  title: string;
+  blocks: Array<{
+    type: string;
+    text: string;
+    duration_seconds?: number;
+  }>;
+  tags?: string[];
+  references?: string[];
+  media?: {
+    project_id: string;
+    session_ids?: string[];
+  };
+}
+
+export interface ManualScriptImportPreview {
+  importable: boolean;
+  schema_version: 'neovids_manual_script_v1';
+  idea: {
+    id: string;
+    title: string;
+    niche?: string;
+    production_profile: string;
+    target_duration_seconds: number | null;
+    duration_mode: string;
+  };
+  normalized: {
+    title: string;
+    block_count: number;
+    word_count: number;
+    duration_total_seconds: number;
+    normalized_payload_sha256: string;
+    blocks: Array<{
+      index: number;
+      type: string;
+      word_count: number;
+      duration_seconds: number;
+      duration_source: 'provided' | 'estimated';
+    }>;
+  };
+  duration: DurationContract;
+  media_scope: {
+    provided: boolean;
+    project_id: string | null;
+    session_ids: string[];
+    scope: 'not_provided' | 'whole_project' | 'selected_sessions';
+  };
+  visual: {
+    status: string;
+    message: string;
+    current_readiness: Record<string, unknown>;
+  };
+  production_readiness: {
+    expected_status_after_import: string;
+    diagnostic: Record<string, unknown>;
+  };
+  warnings: string[];
+  errors: string[];
+}
+
+export interface ManualScriptImportResult {
+  created: boolean;
+  duplicate: boolean;
+  normalized_payload_sha256: string;
+  draft: Roteiro;
+  current_revision: Roteiro;
+  media_binding_applied: boolean;
+}
+
 // API Client
 class ApiClient {
   private baseUrl: string;
@@ -249,8 +327,22 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`API Error ${response.status}: ${error}`);
+      const raw = await response.text();
+      let detail = raw;
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (
+          typeof parsed === 'object' &&
+          parsed !== null &&
+          'detail' in parsed &&
+          typeof parsed.detail === 'string'
+        ) {
+          detail = parsed.detail;
+        }
+      } catch {
+        // Preserve non-JSON backend responses verbatim.
+      }
+      throw new Error(`API Error ${response.status}: ${detail}`);
     }
 
     if (response.status === 204) {
@@ -464,6 +556,28 @@ class ApiClient {
           referencias: data.referencias || null,
         },
       }),
+    });
+  }
+
+  async previewManualScriptImport(data: {
+    ideia_id: string;
+    source_filename: string;
+    script: ManualScriptDocumentV1;
+  }): Promise<ManualScriptImportPreview> {
+    return this.request<ManualScriptImportPreview>('/roteiros/importar/preview', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async importManualScript(data: {
+    ideia_id: string;
+    source_filename: string;
+    script: ManualScriptDocumentV1;
+  }): Promise<ManualScriptImportResult> {
+    return this.request<ManualScriptImportResult>('/roteiros/importar', {
+      method: 'POST',
+      body: JSON.stringify(data),
     });
   }
 }

@@ -100,6 +100,17 @@ class ScriptMediaContext(BaseModel):
         return value
 
 
+class ManualImportProvenance(BaseModel):
+    """Server-owned provenance for a validated manual file import."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["neovids_manual_script_v1"]
+    source_filename: str = Field(min_length=1, max_length=255)
+    normalized_payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source: Literal["manual_file_import"] = "manual_file_import"
+
+
 class RoteiroEstrutura(BaseModel):
     """Script structure accepted by current consumers and historical rows."""
 
@@ -125,6 +136,7 @@ class RoteiroEstrutura(BaseModel):
     source_generation_run_id: str | None = None
     inherited_evidence_provenance: dict[str, Any] | None = None
     visual_readiness: dict[str, Any] | None = None
+    manual_import: ManualImportProvenance | None = None
 
     @field_validator("titulo")
     @classmethod

@@ -23,12 +23,22 @@ from app.repositories.roteiro_repository import RoteiroRepository
 from app.schemas.analise_jogo import AnaliseJogoRequest
 from app.schemas.ideia import IdeiaCreate, IdeiaUpdate
 from app.schemas.llm_outputs import LLMOutputError
+from app.schemas.manual_script_import import (
+    MANUAL_SCRIPT_SCHEMA_VERSION,
+    ManualImportIdeaPreview,
+    ManualImportMediaPreview,
+    ManualImportNormalizedPreview,
+    ManualScriptImportPreviewResponse,
+    ManualScriptImportRequest,
+    ManualScriptImportResponse,
+)
 from app.schemas.roteiro import (
     MediaBindingRequest,
     RoteiroCreate,
     RoteiroEstrutura,
     RoteiroUpdate,
     ScriptEditRevisionRequest,
+    ScriptMediaContext,
     VisualQueryRepairRequest,
     script_content_identity,
 )
@@ -46,6 +56,12 @@ from app.services.editorial_generation import (
     ResolvedDurationIntent,
     resolve_duration_intent,
 )
+from app.services.manual_script_import import (
+    NormalizedManualScript,
+    normalize_manual_script,
+    validate_manual_media_scope,
+)
+from app.services.media_indexer_client import MediaIndexerClient
 from app.services.production_readiness import evaluate_production_readiness
 from app.services.visual_entity_constraints import validate_visual_query_entity_scope
 from app.services.visual_requirements import (
@@ -69,11 +85,17 @@ class ScriptGenerationError(RuntimeError):
 class RoteiroGenerator:
     """Coordinates LLM work and commits one coherent business transaction."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        media_indexer_client: MediaIndexerClient | None = None,
+    ):
         self.session = session
         self.ideia_repo = IdeiaRepository(session)
         self.roteiro_repo = RoteiroRepository(session)
         self.nicho_repo = NichoRepository(session)
+        self.media_indexer_client = media_indexer_client or MediaIndexerClient()
 
     async def _call_script_agent(
         self,
@@ -488,7 +510,11 @@ class RoteiroGenerator:
         return self._summary(created, estrutura)
 
     async def create_manual_draft(
-        self, ideia_id: UUID, estrutura: RoteiroEstrutura
+        self,
+        ideia_id: UUID,
+        estrutura: RoteiroEstrutura,
+        *,
+        calibration: DurationCalibration | None = None,
     ) -> Roteiro:
         """Preserve the legacy create endpoint without accepting caller-owned provenance."""
 
@@ -496,7 +522,7 @@ class RoteiroGenerator:
         if not ideia:
             raise ValueError("Ideia não encontrada")
         profile = await self._profile_for_idea(ideia)
-        calibration = await duration_calibration_client.get(profile.id)
+        calibration = calibration or await duration_calibration_client.get(profile.id)
         payload = estrutura.model_dump(mode="json")
         payload["duration_contract"] = evaluate_duration(
             estrutura.blocos,
@@ -509,6 +535,163 @@ class RoteiroGenerator:
             ideia=ideia,
             estrutura=RoteiroEstrutura.model_validate(payload),
             revision_kind="manual_create",
+        )
+
+    async def _normalize_manual_import(
+        self, request: ManualScriptImportRequest
+    ) -> tuple[Ideia, ProductionProfile, DurationCalibration, NormalizedManualScript]:
+        ideia = await self.ideia_repo.get_by_id(request.ideia_id)
+        if not ideia:
+            raise ValueError("Ideia não encontrada")
+        profile = await self._profile_for_idea(ideia)
+        calibration = await duration_calibration_client.get(profile.id)
+        normalized = normalize_manual_script(
+            request.script,
+            calibration=calibration,
+            profile=profile,
+            target_duration_seconds=self._target_duration(ideia, profile),
+        )
+        await validate_manual_media_scope(
+            request.script.media, client=self.media_indexer_client
+        )
+        return ideia, profile, calibration, normalized
+
+    async def preview_manual_import(
+        self, request: ManualScriptImportRequest
+    ) -> ManualScriptImportPreviewResponse:
+        """Validate and project a manual import without mutating script history."""
+
+        ideia, profile, _, normalized = await self._normalize_manual_import(request)
+        media = request.script.media
+        preview_payload = normalized.structure.model_dump(mode="json")
+        if media is not None:
+            preview_payload["media_context"] = {
+                "media_project_id": str(media.project_id),
+                "media_session_ids": [str(value) for value in media.session_ids],
+            }
+        preview_structure = RoteiroEstrutura.model_validate(preview_payload)
+        visual = validate_visual_readiness(
+            preview_structure, profile.visual_requirements
+        ).to_dict()
+        production = evaluate_production_readiness(
+            preview_structure, script_status="rascunho", profile=profile
+        )
+        warnings = [
+            "O arquivo manual não possui auditoria factual automática; use o re-audit explicitamente se necessário."
+        ]
+        if (
+            normalized.structure.duration_contract
+            and normalized.structure.duration_contract.get("revision_required")
+        ):
+            warnings.append(
+                "A duração narrável estimada está fora da faixa do target atual."
+            )
+        if profile.requires_media_scope and media is None:
+            warnings.append("O ProductionProfile exige media scope antes da produção.")
+        duration_intent = self._duration_intent(ideia, profile)
+        return ManualScriptImportPreviewResponse(
+            importable=True,
+            schema_version=MANUAL_SCRIPT_SCHEMA_VERSION,
+            idea=ManualImportIdeaPreview(
+                id=ideia.id,
+                title=ideia.titulo,
+                niche=getattr(getattr(ideia, "nicho", None), "nome", None),
+                production_profile=profile.id,
+                target_duration_seconds=duration_intent.target_seconds,
+                duration_mode=duration_intent.mode.value,
+            ),
+            normalized=ManualImportNormalizedPreview(
+                title=normalized.structure.titulo,
+                block_count=len(normalized.structure.blocos),
+                word_count=normalized.word_count,
+                duration_total_seconds=normalized.structure.duracao_total_segundos,
+                normalized_payload_sha256=normalized.normalized_payload_sha256,
+                blocks=list(normalized.block_previews),
+            ),
+            duration=normalized.structure.duration_contract or {},
+            media_scope=ManualImportMediaPreview(
+                provided=media is not None,
+                project_id=media.project_id if media else None,
+                session_ids=list(media.session_ids) if media else [],
+                scope=(
+                    "not_provided"
+                    if media is None
+                    else "selected_sessions"
+                    if media.session_ids
+                    else "whole_project"
+                ),
+            ),
+            visual={
+                "status": "pending_enrichment",
+                "current_readiness": visual,
+                "message": (
+                    "VisualQueries serão produzidas posteriormente pelo Visual Enrichment canônico."
+                ),
+            },
+            production_readiness={
+                "expected_status_after_import": production["status"],
+                "diagnostic": production,
+            },
+            warnings=warnings,
+            errors=[],
+        )
+
+    async def import_manual_script(
+        self, request: ManualScriptImportRequest
+    ) -> ManualScriptImportResponse:
+        """Persist one idempotent manual_create and optional media_binding lineage."""
+
+        ideia, _, calibration, normalized = await self._normalize_manual_import(request)
+        await self.roteiro_repo.lock_revision_stream(ideia.id)
+        existing = await self.roteiro_repo.get_manual_import_result(
+            ideia.id, normalized.normalized_payload_sha256
+        )
+        if existing is not None:
+            draft, current = existing
+            return ManualScriptImportResponse.model_validate(
+                {
+                    "created": False,
+                    "duplicate": True,
+                    "normalized_payload_sha256": normalized.normalized_payload_sha256,
+                    "draft": draft,
+                    "current_revision": current,
+                    "media_binding_applied": current.revision_kind == "media_binding",
+                }
+            )
+
+        payload = normalized.structure.model_dump(mode="json")
+        payload["manual_import"] = {
+            "schema_version": MANUAL_SCRIPT_SCHEMA_VERSION,
+            "source_filename": request.source_filename,
+            "normalized_payload_sha256": normalized.normalized_payload_sha256,
+            "source": "manual_file_import",
+        }
+        draft = await self.create_manual_draft(
+            ideia.id,
+            RoteiroEstrutura.model_validate(payload),
+            calibration=calibration,
+        )
+        current = draft
+        media = request.script.media
+        if media is not None:
+            current = await self.bind_media_context_revision(
+                draft.id,
+                MediaBindingRequest(
+                    media_context=ScriptMediaContext(
+                        media_project_id=media.project_id,
+                        media_session_ids=media.session_ids,
+                    )
+                ),
+            )
+        return ManualScriptImportResponse.model_validate(
+            {
+                "created": True,
+                "duplicate": False,
+                "normalized_payload_sha256": normalized.normalized_payload_sha256,
+                "draft": draft,
+                "current_revision": current,
+                "media_binding_applied": current.revision_kind == "media_binding",
+            }
         )
 
     async def create_human_edit_revision(
@@ -710,8 +893,16 @@ class RoteiroGenerator:
                 "Somente a versão mais recente do roteiro pode ser aprovada"
             )
 
-        # Manual approval is sovereign - no review hard gates.
-        # Warnings remain metadata only for human decision-making.
+        structure = RoteiroEstrutura.model_validate(roteiro.estrutura)
+        review = structure.editorial_review
+        if isinstance(review, dict) and review.get("approval_blocked") is True:
+            editorial_status = str(review.get("editorial_status") or "unknown")
+            factuality_status = str(review.get("factuality_status") or "unknown")
+            raise ValueError(
+                "Aprovação bloqueada pela revisão editorial "
+                f"(editorial_status={editorial_status}, "
+                f"factuality_status={factuality_status})"
+            )
 
         updated = await self.roteiro_repo.update(
             roteiro_id, RoteiroUpdate(status="aprovado")

@@ -1,5 +1,13 @@
 import { useEffect, useState } from 'react';
-import { api, GenerationRun, Ideia, Roteiro, ScriptEditRevision } from '../api/client';
+import {
+  api,
+  GenerationRun,
+  Ideia,
+  ManualScriptDocumentV1,
+  ManualScriptImportPreview,
+  Roteiro,
+  ScriptEditRevision,
+} from '../api/client';
 
 function formatDuration(seconds: number) {
   const minutes = Math.floor(seconds / 60);
@@ -27,9 +35,7 @@ function auditStatusColor(status?: string) {
 }
 
 function approvalIsBlocked(script: Roteiro) {
-  // Manual approval is sovereign - never block based on review state
-  // Review warnings are displayed but don't block approval
-  return false;
+  return script.estrutura.editorial_review?.approval_blocked === true;
 }
 
 function hasReviewWarnings(script: Roteiro): boolean {
@@ -54,6 +60,18 @@ export default function Roteiros() {
   const [feedback, setFeedback] = useState('');
   const [regenerating, setRegenerating] = useState(false);
   const [revisionRun, setRevisionRun] = useState<GenerationRun | null>(null);
+
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importIdeaId, setImportIdeaId] = useState('');
+  const [importFile, setImportFile] = useState<{
+    filename: string;
+    script: ManualScriptDocumentV1;
+  } | null>(null);
+  const [importPreview, setImportPreview] = useState<ManualScriptImportPreview | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [validatingImport, setValidatingImport] = useState(false);
+  const [importingScript, setImportingScript] = useState(false);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
 
   // Manual script creation state
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -92,6 +110,91 @@ export default function Roteiros() {
       setIdeias(await api.getIdeias());
     } catch (err) {
       console.error('Failed to load ideias:', err);
+    }
+  }
+
+  function resetImport() {
+    setImportIdeaId('');
+    setImportFile(null);
+    setImportPreview(null);
+    setImportError(null);
+    setValidatingImport(false);
+    setImportingScript(false);
+  }
+
+  async function selectImportFile(file?: File) {
+    setImportPreview(null);
+    setImportError(null);
+    setImportFile(null);
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.json')) {
+      setImportError('Selecione um arquivo .json.');
+      return;
+    }
+    if (file.size > 1_000_000) {
+      setImportError('O arquivo excede o limite de 1 MB.');
+      return;
+    }
+    try {
+      const parsed: unknown = JSON.parse(await file.text());
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error('O conteúdo JSON precisa ser um objeto.');
+      }
+      setImportFile({ filename: file.name, script: parsed as ManualScriptDocumentV1 });
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'JSON inválido.');
+    }
+  }
+
+  async function validateImport() {
+    setImportPreview(null);
+    setImportError(null);
+    if (!importIdeaId) {
+      setImportError('Selecione uma Idea antes de validar.');
+      return;
+    }
+    if (!importFile) {
+      setImportError('Selecione um arquivo JSON válido.');
+      return;
+    }
+    try {
+      setValidatingImport(true);
+      const preview = await api.previewManualScriptImport({
+        ideia_id: importIdeaId,
+        source_filename: importFile.filename,
+        script: importFile.script,
+      });
+      setImportPreview(preview);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Falha ao validar o roteiro.');
+    } finally {
+      setValidatingImport(false);
+    }
+  }
+
+  async function persistImport() {
+    if (!importIdeaId || !importFile || !importPreview?.importable) return;
+    setImportError(null);
+    try {
+      setImportingScript(true);
+      const result = await api.importManualScript({
+        ideia_id: importIdeaId,
+        source_filename: importFile.filename,
+        script: importFile.script,
+      });
+      setImportNotice(
+        result.duplicate
+          ? `Este conteúdo já havia sido importado. Versão atual: ${result.current_revision.versao}.`
+          : `Roteiro manual importado. ${result.draft.revision_kind} v${result.draft.versao}${result.media_binding_applied ? ` → media_binding v${result.current_revision.versao}` : ''}.`,
+      );
+      setSelected(result.current_revision);
+      setShowImportModal(false);
+      resetImport();
+      await loadData();
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Falha ao importar o roteiro.');
+    } finally {
+      setImportingScript(false);
     }
   }
 
@@ -270,14 +373,23 @@ export default function Roteiros() {
     <div className="page">
       <div className="page-header">
         <h1>Roteiros</h1>
-        <button
-          className="btn btn-primary"
-          onClick={() => { setShowCreateModal(true); loadIdeias(); }}
-        >
-          + Criar Roteiro Manual
-        </button>
+        <div className="actions">
+          <button
+            className="btn btn-primary"
+            onClick={() => { resetImport(); setShowImportModal(true); void loadIdeias(); }}
+          >
+            Importar roteiro
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={() => { setShowCreateModal(true); void loadIdeias(); }}
+          >
+            + Criar manualmente
+          </button>
+        </div>
       </div>
       {error && <div className="error">{error} <button onClick={() => setError(null)}>Fechar</button></div>}
+      {importNotice && <div className="success">{importNotice} <button onClick={() => setImportNotice(null)}>Fechar</button></div>}
       <div className="filters">
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
           <option value="">Todos os status</option>
@@ -426,8 +538,13 @@ export default function Roteiros() {
                       <strong>⚠️ Avisos de revisão detectados</strong>
                       <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.9rem' }}>
                         Este roteiro contém questões editoriais ou factuais que requerem atenção.
-                        Você pode aprovar mesmo assim, mas revise os blocos marcados abaixo.
+                        Revise os blocos marcados abaixo. A aprovação permanece bloqueada quando a auditoria define um bloqueador explícito.
                       </p>
+                    </div>
+                  )}
+                  {approvalIsBlocked(selected) && (
+                    <div className="error">
+                      A aprovação está bloqueada pela revisão editorial. Corrija os bloqueadores e gere uma nova revisão antes de aprovar.
                     </div>
                   )}
                 </div>
@@ -447,6 +564,105 @@ export default function Roteiros() {
           </div>
         ))}
       </div>
+
+      {showImportModal && (
+        <div className="modal-overlay" onClick={() => { if (!importingScript) { setShowImportModal(false); resetImport(); } }}>
+          <div className="modal modal-large" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Importar roteiro</h2>
+              <button
+                className="btn-close"
+                disabled={importingScript}
+                onClick={() => { setShowImportModal(false); resetImport(); }}
+              >×</button>
+            </div>
+            <p className="form-help">
+              O arquivo entra como rascunho canônico. VisualQueries, aprovação e readiness continuam server-owned.
+            </p>
+            <div className="form-group">
+              <label>Idea existente *</label>
+              <select
+                value={importIdeaId}
+                onChange={(event) => {
+                  setImportIdeaId(event.target.value);
+                  setImportPreview(null);
+                  setImportError(null);
+                }}
+              >
+                <option value="">Selecionar Idea...</option>
+                {ideias.map((ideia) => (
+                  <option key={ideia.id} value={ideia.id}>{ideia.titulo} ({ideia.status})</option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Arquivo neovids_manual_script_v1 *</label>
+              <input
+                type="file"
+                accept="application/json,.json"
+                onChange={(event) => void selectImportFile(event.target.files?.[0])}
+              />
+              <small>{importFile ? importFile.filename : 'Nenhum arquivo selecionado.'}</small>
+            </div>
+            {importError && <div className="error import-message">{importError}</div>}
+            <div className="form-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={validatingImport || importingScript}
+                onClick={() => { setShowImportModal(false); resetImport(); }}
+              >Cancelar</button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={validatingImport || importingScript || !importIdeaId || !importFile}
+                onClick={() => void validateImport()}
+              >{validatingImport ? 'Validando…' : 'Validar'}</button>
+            </div>
+
+            {importPreview && (
+              <section className="manual-import-preview" aria-live="polite">
+                <h3>Preview determinístico</h3>
+                <dl className="preview-grid">
+                  <div><dt>Schema</dt><dd>{importPreview.schema_version} · PASS</dd></div>
+                  <div><dt>Idea</dt><dd>{importPreview.idea.title}</dd></div>
+                  <div><dt>Production Profile</dt><dd>{importPreview.idea.production_profile}</dd></div>
+                  <div><dt>Título</dt><dd>{importPreview.normalized.title}</dd></div>
+                  <div><dt>Blocos</dt><dd>{importPreview.normalized.block_count}</dd></div>
+                  <div><dt>Palavras</dt><dd>{importPreview.normalized.word_count}</dd></div>
+                  <div><dt>Duração editorial</dt><dd>{formatDuration(importPreview.normalized.duration_total_seconds)}</dd></div>
+                  <div><dt>Target</dt><dd>{importPreview.idea.target_duration_seconds ? formatDuration(importPreview.idea.target_duration_seconds) : 'content-driven'}</dd></div>
+                  <div><dt>Media scope</dt><dd>{importPreview.media_scope.scope.replace(/_/g, ' ')}</dd></div>
+                  <div><dt>Visual Readiness</dt><dd>PENDING ENRICHMENT</dd></div>
+                  <div><dt>Approval</dt><dd>PENDING</dd></div>
+                  <div><dt>Production Readiness</dt><dd>{importPreview.production_readiness.expected_status_after_import.toUpperCase()}</dd></div>
+                </dl>
+                <details>
+                  <summary>Duração por bloco</summary>
+                  <ul>{importPreview.normalized.blocks.map((block) => (
+                    <li key={block.index}>{block.type}: {block.word_count} palavras · {formatDuration(block.duration_seconds)} · {block.duration_source}</li>
+                  ))}</ul>
+                </details>
+                <p className="form-help">{importPreview.visual.message}</p>
+                {importPreview.warnings.length > 0 && (
+                  <div className="import-warnings"><strong>Warnings</strong><ul>{importPreview.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>
+                )}
+                {importPreview.errors.length > 0 && (
+                  <div className="error"><ul>{importPreview.errors.map((item) => <li key={item}>{item}</li>)}</ul></div>
+                )}
+                <div className="form-actions">
+                  <button
+                    type="button"
+                    className="btn btn-success"
+                    disabled={!importPreview.importable || importingScript || importPreview.errors.length > 0}
+                    onClick={() => void persistImport()}
+                  >{importingScript ? 'Importando…' : 'Importar'}</button>
+                </div>
+              </section>
+            )}
+          </div>
+        </div>
+      )}
 
       {showCreateModal && (
         <div className="modal-overlay" onClick={() => setShowCreateModal(false)}>

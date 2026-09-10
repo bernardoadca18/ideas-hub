@@ -107,3 +107,49 @@ class RoteiroRepository:
             .limit(1)
         )
         return result.scalar_one_or_none() or 0
+
+    async def lock_revision_stream(self, ideia_id: UUID) -> None:
+        """Serialize identity checks and revision creation for one owning idea."""
+
+        from app.models.ideia import Ideia
+
+        result = await self.session.execute(
+            select(Ideia.id).where(Ideia.id == ideia_id).with_for_update()
+        )
+        if result.scalar_one_or_none() is None:
+            raise ValueError("Ideia não encontrada")
+
+    async def get_manual_import_result(
+        self, ideia_id: UUID, normalized_payload_sha256: str
+    ) -> tuple[Roteiro, Roteiro] | None:
+        """Return the original import and its immediate canonical binding revision."""
+
+        result = await self.session.execute(
+            select(Roteiro)
+            .options(selectinload(Roteiro.ideia))
+            .where(
+                Roteiro.ideia_id == ideia_id,
+                Roteiro.estrutura["manual_import"][
+                    "normalized_payload_sha256"
+                ].as_string()
+                == normalized_payload_sha256,
+            )
+            .order_by(Roteiro.versao.asc())
+        )
+        revisions = list(result.scalars().all())
+        draft = next(
+            (item for item in revisions if item.revision_kind == "manual_create"),
+            None,
+        )
+        if draft is None:
+            return None
+        current = next(
+            (
+                item
+                for item in revisions
+                if item.revision_kind == "media_binding"
+                and item.parent_roteiro_id == draft.id
+            ),
+            draft,
+        )
+        return draft, current

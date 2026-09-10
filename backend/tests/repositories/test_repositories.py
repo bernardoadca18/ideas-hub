@@ -4,10 +4,13 @@ Testes para os repositórios.
 Testa operações CRUD com banco de dados mockado.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects import postgresql
+
 from app.repositories.ideia_repository import IdeiaRepository
 from app.repositories.nicho_repository import NichoRepository
 from app.repositories.roteiro_repository import RoteiroRepository
@@ -178,6 +181,66 @@ class TestRoteiroRepository:
         ):
             result = await repo.get_latest_version_by_ideia(ideia_id)
             assert result.versao == 3
+
+    @pytest.mark.asyncio
+    async def test_manual_import_lock_serializes_the_idea_revision_stream(
+        self, repo, mock_session
+    ):
+        ideia_id = uuid4()
+        query_result = MagicMock()
+        query_result.scalar_one_or_none.return_value = ideia_id
+        mock_session.execute.return_value = query_result
+
+        await repo.lock_revision_stream(ideia_id)
+
+        statement = mock_session.execute.await_args.args[0]
+        compiled = str(statement.compile(dialect=postgresql.dialect()))
+        assert "FOR UPDATE" in compiled
+        assert (
+            statement.compile(dialect=postgresql.dialect()).params["id_1"] == ideia_id
+        )
+
+    @pytest.mark.asyncio
+    async def test_manual_import_result_ignores_later_human_revisions(
+        self, repo, mock_session
+    ):
+        draft_id = uuid4()
+        draft = SimpleNamespace(
+            id=draft_id,
+            revision_kind="manual_create",
+            parent_roteiro_id=None,
+        )
+        binding = SimpleNamespace(
+            id=uuid4(),
+            revision_kind="media_binding",
+            parent_roteiro_id=draft_id,
+        )
+        human = SimpleNamespace(
+            id=uuid4(),
+            revision_kind="human_edit",
+            parent_roteiro_id=binding.id,
+        )
+        query_result = MagicMock()
+        query_result.scalars.return_value.all.return_value = [draft, binding, human]
+        mock_session.execute.return_value = query_result
+
+        result = await repo.get_manual_import_result(uuid4(), "a" * 64)
+
+        assert result == (draft, binding)
+
+    @pytest.mark.asyncio
+    async def test_manual_import_result_requires_manual_create_origin(
+        self, repo, mock_session
+    ):
+        query_result = MagicMock()
+        query_result.scalars.return_value.all.return_value = [
+            SimpleNamespace(
+                id=uuid4(), revision_kind="human_edit", parent_roteiro_id=uuid4()
+            )
+        ]
+        mock_session.execute.return_value = query_result
+
+        assert await repo.get_manual_import_result(uuid4(), "a" * 64) is None
 
 
 class TestTrendColetadaRepository:

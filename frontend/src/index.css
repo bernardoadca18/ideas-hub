@@ -413,6 +413,75 @@ body {
   margin-bottom: 1rem;
 }
 
+.success {
+  background: #d1fae5;
+  color: #065f46;
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.error button,
+.success button {
+  float: right;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.import-message {
+  margin-top: 0.75rem;
+}
+
+.manual-import-preview {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+.manual-import-preview h3 {
+  margin-bottom: 0.75rem;
+}
+
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.preview-grid div {
+  padding: 0.75rem;
+  border-radius: 6px;
+  background: #f9fafb;
+}
+
+.preview-grid dt {
+  color: #6b7280;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.preview-grid dd {
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.import-warnings {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border: 1px solid #f59e0b;
+  border-radius: 6px;
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.manual-import-preview ul {
+  padding-left: 1.25rem;
+}
+
 .empty-state {
   text-align: center;
   padding: 3rem;

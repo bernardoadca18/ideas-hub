@@ -6,13 +6,18 @@ import hashlib
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.repositories.roteiro_repository import RoteiroRepository
 from app.schemas.analise_jogo import AnaliseJogoRequest
 from app.schemas.generation import GenerationRunResponse
+from app.schemas.manual_script_import import (
+    ManualScriptImportPreviewResponse,
+    ManualScriptImportRequest,
+    ManualScriptImportResponse,
+)
 from app.schemas.roteiro import (
     MediaBindingRequest,
     ProductionReadinessResponse,
@@ -66,6 +71,65 @@ async def create_roteiro(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/importar/preview",
+    response_model=ManualScriptImportPreviewResponse,
+)
+async def preview_manual_script_import(
+    payload: ManualScriptImportRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Validate and normalize a manual JSON file without persisting anything."""
+
+    from app.services.manual_script_import import (
+        ManualMediaScopeError,
+        ManualMediaScopeUnavailableError,
+    )
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    try:
+        return await get_roteiro_generator(db).preview_manual_import(payload)
+    except ManualMediaScopeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ManualMediaScopeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        status_code = 404 if str(exc) == "Ideia não encontrada" else 422
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@router.post(
+    "/importar",
+    response_model=ManualScriptImportResponse,
+    status_code=201,
+)
+async def import_manual_script(
+    payload: ManualScriptImportRequest,
+    response: Response,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Create an idempotent canonical draft and optional media-binding revision."""
+
+    from app.services.manual_script_import import (
+        ManualMediaScopeError,
+        ManualMediaScopeUnavailableError,
+    )
+    from app.services.roteiros.gerador_roteiro import get_roteiro_generator
+
+    try:
+        result = await get_roteiro_generator(db).import_manual_script(payload)
+    except ManualMediaScopeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ManualMediaScopeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        status_code = 404 if str(exc) == "Ideia não encontrada" else 422
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    if not result.created:
+        response.status_code = 200
+    return result
 
 
 @router.get("/{roteiro_id:uuid}", response_model=RoteiroResponse)

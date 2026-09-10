@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
+
 from app.production_profiles import get_profile
 from app.schemas.llm_outputs import EvidenceTier, ScriptLLMOutput
 from app.services.duration_contract import (
@@ -10,6 +11,7 @@ from app.services.duration_contract import (
     duration_budget_prompt,
     evaluate_duration,
     evaluate_editorial_quality,
+    predict_duration_seconds,
     speakable_text_from_blocks,
 )
 
@@ -110,6 +112,19 @@ def test_calibration_identity_and_rate_change_estimate_deterministically() -> No
     )
     assert second["predicted_duration_seconds"] > first["predicted_duration_seconds"]
     assert first["identity"] != second["identity"]
+
+
+def test_public_duration_predictor_is_the_formula_used_by_duration_contract() -> None:
+    blocks = _blocks(300, duration=120)
+    text = speakable_text_from_blocks(blocks)
+    predicted = predict_duration_seconds(text, _calibration())
+    report = evaluate_duration(
+        blocks,
+        target_seconds=120,
+        calibration=_calibration(),
+        profile=get_profile("faceless_general"),
+    )
+    assert predicted == report["predicted_duration_seconds"]
 
 
 def test_speakable_text_excludes_titles_visual_audio_and_music_metadata() -> None:
