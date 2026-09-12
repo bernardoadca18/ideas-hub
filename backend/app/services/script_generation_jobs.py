@@ -105,6 +105,7 @@ from app.services.planning_claim_coverage import (
     validate_and_normalize_section_coverage,
 )
 from app.services.revision_brief import (
+    bind_revision_brief_to_target_sections,
     build_revision_brief,
     scoped_revision_context,
 )
@@ -530,17 +531,128 @@ class ScriptGenerationJobService:
             "untrusted_external_content": False,
             "research_complete": bool(provenance),
         }
-        return await self.enqueue(
+        run = await self.enqueue(
             source.ideia_id,
             idempotency_key=idempotency_key,
             model_strategy=model_strategy,
-            profile_id_override=ideia.perfil_producao,
+            profile_id_override=(
+                "game_analysis"
+                if getattr(ideia, "origem", None) == "notas_gameplay"
+                else ideia.perfil_producao
+            ),
             evidence_dossier_override=dossier,
             generation_intent="revision",
             parent_roteiro_id=source.id,
             revision_feedback=normalized_feedback,
             revision_brief_override=revision_brief,
         )
+        run_plan = getattr(run, "plan", {}) or {}
+        persisted_brief = run_plan.get("revision_brief") or {}
+        if not persisted_brief.get("human_backbone"):
+            target_section_keys = [
+                str(item["key"])
+                for item in run_plan.get("sections") or []
+                if item.get("key")
+            ]
+            bound_brief = bind_revision_brief_to_target_sections(
+                revision_brief,
+                target_section_keys=target_section_keys,
+            )
+            if bound_brief != revision_brief:
+                run.plan = {**run_plan, "revision_brief": bound_brief}
+                await self.session.flush()
+                await self.session.refresh(run)
+        return run
+
+    async def enqueue_manual_draft_improvement(
+        self,
+        ideia_id: UUID,
+        *,
+        draft_text: str,
+        idempotency_key: str,
+        feedback: str | None = None,
+        model_strategy: str = "standard",
+    ) -> dict[str, Any]:
+        """Atomically persist an exact human draft and enqueue its V3 revision."""
+
+        repository = RoteiroRepository(self.session)
+        await repository.lock_revision_stream(ideia_id)
+        normalized_feedback = (
+            feedback.strip() if feedback and feedback.strip() else None
+        )
+        input_identity = hashlib.sha256(draft_text.encode("utf-8")).hexdigest()
+        existing = (
+            await self.session.execute(
+                select(ScriptGenerationRun).where(
+                    ScriptGenerationRun.idempotency_key == idempotency_key
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            if existing.ideia_id != ideia_id:
+                raise ValueError("idempotency key belongs to another idea")
+            if existing.generation_intent != "revision" or not existing.parent_roteiro_id:
+                raise ValueError("idempotency key belongs to another generation intent")
+            if existing.revision_feedback != normalized_feedback:
+                raise ValueError("idempotency key belongs to another revision feedback")
+            draft = await repository.get_by_id(existing.parent_roteiro_id)
+            if draft is None:
+                raise ValueError("idempotent generation run lost its parent draft")
+            structure = RoteiroEstrutura.model_validate(draft.estrutura)
+            provenance = structure.manual_draft
+            if (
+                draft.revision_kind != "manual_create"
+                or provenance is None
+                or provenance.original_text_sha256 != input_identity
+            ):
+                raise ValueError("idempotency key belongs to another manual draft")
+            return {
+                "created": False,
+                "duplicate": True,
+                "draft": draft,
+                "run": existing,
+            }
+
+        async with self.session.begin_nested():
+            idea = await IdeiaRepository(self.session).get_by_id(ideia_id)
+            if idea is None:
+                raise ValueError("Ideia não encontrada")
+            if idea.status != "aprovada":
+                raise ValueError(f"Ideia não está aprovada (status: {idea.status})")
+
+            from app.services.manual_script_import import (
+                normalize_plain_text_manual_draft,
+            )
+            from app.services.roteiros.gerador_roteiro import RoteiroGenerator
+
+            generator = RoteiroGenerator(self.session)
+            profile = await generator._profile_for_idea(idea)
+            calibration = await duration_calibration_client.get(profile.id)
+            normalized = normalize_plain_text_manual_draft(
+                draft_text,
+                title=idea.titulo,
+                calibration=calibration,
+                profile=profile,
+                target_duration_seconds=generator._target_duration(idea, profile),
+            )
+            draft = await generator.create_manual_draft(
+                ideia_id,
+                normalized.structure,
+                calibration=calibration,
+                manual_draft_provenance=normalized.structure.manual_draft,
+            )
+            run = await self.enqueue_revision(
+                draft.id,
+                idempotency_key=idempotency_key,
+                feedback=normalized_feedback,
+                model_strategy=model_strategy,
+            )
+        return {
+            "created": True,
+            "duplicate": False,
+            "draft": draft,
+            "run": run,
+        }
 
     async def enqueue_game_analysis(
         self,
@@ -1305,12 +1417,19 @@ class ScriptGenerationJobService:
         assert idea is not None
         dossier = dict(run.evidence_dossier)
         description = (idea.descricao_breve or "").strip()
+        revision_source_text = "\n\n".join(
+            str(item.get("current_content") or "")
+            for item in (dossier.get("revision_source") or {}).get("blocks") or []
+        )
+        research_topic_context = " ".join(
+            item for item in (description, revision_source_text[:2_000]) if item
+        )
         primary_source_required = _explicit_primary_source_required(
             " ".join(
                 str(value or "")
                 for value in (
                     idea.titulo,
-                    description,
+                    research_topic_context,
                     getattr(idea, "author_briefing", None),
                 )
             )
@@ -1324,7 +1443,9 @@ class ScriptGenerationJobService:
         candidate_queries = [idea.titulo]
         candidate_queries.extend(
             [
-                f"{idea.titulo} {description[:500]}" if description else "",
+                f"{idea.titulo} {research_topic_context[:500]}"
+                if research_topic_context
+                else "",
                 f"{idea.titulo} verificação fontes confiáveis contexto",
                 f"{idea.titulo} reportagens entrevistas contexto de desenvolvimento",
             ]
@@ -1463,7 +1584,7 @@ class ScriptGenerationJobService:
             }
         external_sources = _select_research_sources(
             classified_sources,
-            topic=f"{idea.titulo} {description}",
+            topic=f"{idea.titulo} {research_topic_context}",
             limit=research_budget.selected_sources,
             trusted_only_when_available=research_budget.tier == "short",
         )
@@ -1610,7 +1731,7 @@ class ScriptGenerationJobService:
             )
             new_sources = _select_research_sources(
                 new_candidates,
-                topic=f"{idea.titulo} {description}",
+                topic=f"{idea.titulo} {research_topic_context}",
                 limit=remaining_source_budget,
             )
             dossier["sources"] = [

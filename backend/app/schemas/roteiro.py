@@ -111,6 +111,17 @@ class ManualImportProvenance(BaseModel):
     source: Literal["manual_file_import"] = "manual_file_import"
 
 
+class ManualDraftProvenance(BaseModel):
+    """Server-owned provenance for a human draft pasted in Ideas Hub."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    adapter_version: Literal["plain_text_manual_draft_v1"]
+    source: Literal["manual_plain_text"] = "manual_plain_text"
+    original_text_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_char_count: int = Field(ge=1, le=100_000)
+
+
 class RoteiroEstrutura(BaseModel):
     """Script structure accepted by current consumers and historical rows."""
 
@@ -137,6 +148,7 @@ class RoteiroEstrutura(BaseModel):
     inherited_evidence_provenance: dict[str, Any] | None = None
     visual_readiness: dict[str, Any] | None = None
     manual_import: ManualImportProvenance | None = None
+    manual_draft: ManualDraftProvenance | None = None
 
     @field_validator("titulo")
     @classmethod

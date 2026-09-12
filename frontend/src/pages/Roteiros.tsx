@@ -368,6 +368,9 @@ export default function Roteiros() {
   const selectedIsLatest = selected
     ? selected.versao === latestVersionByIdea.get(selected.ideia_id)
     : false;
+  const selectedParent = selected?.parent_roteiro_id
+    ? roteiros.find((script) => script.id === selected.parent_roteiro_id)
+    : undefined;
 
   return (
     <div className="page">
@@ -436,6 +439,26 @@ export default function Roteiros() {
                   <span>{selected.estrutura.blocos.length} blocos</span>
                   <span>Origem: {selected.revision_kind}</span>
                 </div>
+                {selected.estrutura.manual_draft && (
+                  <div className="script-provenance">
+                    <strong>Rascunho humano original</strong>
+                    <p>Texto colado no Ideas Hub e preservado nesta revisão manual.</p>
+                    <code>{selected.estrutura.manual_draft.original_text_sha256}</code>
+                  </div>
+                )}
+                {selected.parent_roteiro_id && (
+                  <div className="script-provenance">
+                    <strong>Linhagem</strong>
+                    <p>Esta versão foi criada a partir de {selectedParent ? `v${selectedParent.versao} · ${selectedParent.revision_kind}` : selected.parent_roteiro_id}.</p>
+                    {selectedParent && (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        onClick={() => { setSelected(selectedParent); setFeedback(''); }}
+                      >Abrir versão pai para comparar</button>
+                    )}
+                  </div>
+                )}
                 {selected.estrutura.duration_contract && (
                   <div className="script-provenance">
                     <strong style={{ color: durationStatusColor(selected.estrutura.duration_contract.status) }}>

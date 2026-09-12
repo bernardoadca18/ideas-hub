@@ -132,6 +132,12 @@ export interface Roteiro {
       normalized_payload_sha256: string;
       source: 'manual_file_import';
     };
+    manual_draft?: {
+      adapter_version: 'plain_text_manual_draft_v1';
+      source: 'manual_plain_text';
+      original_text_sha256: string;
+      original_char_count: number;
+    };
   };
   status: string;
   author_briefing_snapshot?: string;
@@ -309,6 +315,13 @@ export interface ManualScriptImportResult {
   media_binding_applied: boolean;
 }
 
+export interface ManualDraftImprovementRunResult {
+  created: boolean;
+  duplicate: boolean;
+  draft: Roteiro;
+  run: GenerationRun;
+}
+
 // API Client
 class ApiClient {
   private baseUrl: string;
@@ -408,6 +421,27 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ idempotency_key: idempotencyKey }),
     });
+  }
+
+  async startManualDraftImprovement(data: {
+    ideia_id: string;
+    draft_text: string;
+    feedback?: string;
+    idempotency_key: string;
+    model_strategy?: 'flash_only' | 'standard' | 'hybrid' | 'strong';
+  }): Promise<ManualDraftImprovementRunResult> {
+    return this.request<ManualDraftImprovementRunResult>(
+      `/ideias/${data.ideia_id}/manual-draft-improvement-runs`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          draft_text: data.draft_text,
+          ...(data.feedback ? { feedback: data.feedback } : {}),
+          idempotency_key: data.idempotency_key,
+          model_strategy: data.model_strategy || 'standard',
+        }),
+      },
+    );
   }
 
   async getGenerationRun(runId: string, signal?: AbortSignal): Promise<GenerationRun> {

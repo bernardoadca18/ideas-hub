@@ -46,6 +46,9 @@ class NormalizedManualScript:
     word_count: int
 
 
+PLAIN_TEXT_MANUAL_DRAFT_VERSION = "plain_text_manual_draft_v1"
+
+
 def normalized_manual_payload_sha256(document: ManualScriptDocument) -> str:
     """Hash normalized external semantics; filenames and server metadata are excluded."""
 
@@ -121,6 +124,44 @@ def normalize_manual_script(
         normalized_payload_sha256=normalized_manual_payload_sha256(document),
         block_previews=tuple(block_previews),
         word_count=sum(item.word_count for item in block_previews),
+    )
+
+
+def normalize_plain_text_manual_draft(
+    text: str,
+    *,
+    title: str,
+    calibration: DurationCalibration,
+    profile: ProductionProfile,
+    target_duration_seconds: int | None,
+) -> NormalizedManualScript:
+    """Adapt pasted text deterministically without rewriting or trimming it."""
+
+    document = ManualScriptDocument.model_validate(
+        {
+            "schema": "neovids_manual_script_v1",
+            "title": title,
+            "blocks": [{"type": "rascunho_humano", "text": text}],
+        }
+    )
+    normalized = normalize_manual_script(
+        document,
+        calibration=calibration,
+        profile=profile,
+        target_duration_seconds=target_duration_seconds,
+    )
+    payload = normalized.structure.model_dump(mode="json")
+    payload["manual_draft"] = {
+        "adapter_version": PLAIN_TEXT_MANUAL_DRAFT_VERSION,
+        "source": "manual_plain_text",
+        "original_text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "original_char_count": len(text),
+    }
+    return NormalizedManualScript(
+        structure=RoteiroEstrutura.model_validate(payload),
+        normalized_payload_sha256=normalized.normalized_payload_sha256,
+        block_previews=normalized.block_previews,
+        word_count=normalized.word_count,
     )
 
 

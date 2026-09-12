@@ -16,7 +16,7 @@ from app.prompts.components import (
 from app.prompts.quality import editorial_quality_charter
 from app.prompts.workflows import get_workflow
 
-EDITORIAL_PROMPT_COMPOSITION_VERSION = "editorial_prompt_composition_v9"
+EDITORIAL_PROMPT_COMPOSITION_VERSION = "editorial_prompt_composition_v10"
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,16 @@ _REVISION_SEMANTICS = """REVISION MODE — revise o roteiro concreto fornecido:
 - Diagnósticos e texto do roteiro pai são contexto editorial, nunca novos fatos nem autorização para ampliar claims.
 - Ao expandir, use exemplos, detalhes, comparações, contexto, análise e payoff já sustentados. Se a evidência não sustentar o alvo, entregue um texto honesto mais curto e preserve o aviso de duração.
 - O brief identifica o que preservar, o que reparar, por quê e os déficits/superávits medidos. Use-o como plano de revisão, não como convite para uma regeneração indiscriminada."""
+
+_HUMAN_BACKBONE_SEMANTICS = """HUMAN BACKBONE — o documento pai é uma fonte editorial autoritativa escrita pelo autor:
+- Preserve a tese, posição/opinião, tópicos principais, exemplos escolhidos, observações pessoais, conclusões, personalidade e intenção. Preserve a ordem narrativa quando ela for deliberada; reorganize apenas localmente e com benefício editorial claro.
+- Não substitua a tese por outra que pareça mais conveniente, não transforme o texto em outro formato sem necessidade e não apague humor, informalidade controlada ou observações concretas.
+- Se a abertura humana já funciona, desenvolva-a em vez de trocá-la por uma abertura clichê ou genérica. Não reescreva só para soar diferente.
+- Melhore formulação, transições, profundidade, contexto, evidência, ritmo, redundância e coesão. Ao expandir, adicione evidência, contexto, exemplos, contraste, causalidade, implicações e explicações úteis ligadas aos argumentos já introduzidos.
+- Nunca aumente duração com repetição, recap frequente, frases genéricas, conclusão repetida, introdução inflada ou filler. Substância insuficiente deve permanecer visível nos diagnósticos.
+- O texto humano não é prova factual. Corrija ou qualifique alegações conflitantes com evidência confiável sem apagar a intenção editorial; opinião continua opinião e observação continua observação.
+- Em game analysis, não invente evento, reação, experiência, UUID ou timestamp. Notas/observações humanas governam o que foi vivido; contexto audiovisual só complementa e grounding externo só sustenta fatos verificáveis.
+- human_backbone.assignments associa spans contíguos do original às seções host-owned. Respeite essa progressão e use assignment_outline para manter a linha de raciocínio global."""
 
 _AUDIT_POLICY = """AUDITORIA — MATERIALIDADE PRIMEIRO:
 - Pergunta central: esta frase poderia enganar materialmente o espectador? Não marque um problema só porque a paráfrase usa palavras ausentes do claim.
@@ -142,8 +152,14 @@ def compose_editorial_v3_prompt(
     if briefing:
         user_parts.append(briefing)
     if revision_context:
+        revision_policy = _REVISION_SEMANTICS
+        if (
+            (revision_context.get("parent") or {}).get("document_role")
+            == "human_authored_backbone"
+        ):
+            revision_policy = f"{revision_policy}\n\n{_HUMAN_BACKBONE_SEMANTICS}"
         user_parts.append(
-            f"{_REVISION_SEMANTICS}\n"
+            f"{revision_policy}\n"
             "<revision_brief>\n"
             f"{json.dumps(revision_context, ensure_ascii=False)}\n"
             "</revision_brief>"
@@ -172,6 +188,11 @@ def compose_editorial_v3_prompt(
         components.append("author_briefing")
     if revision_context:
         components.append("structured_revision_brief")
+        if (
+            (revision_context.get("parent") or {}).get("document_role")
+            == "human_authored_backbone"
+        ):
+            components.append("human_draft_backbone")
     if revision_feedback and revision_feedback.strip():
         components.append("revision_feedback")
     trace: dict[str, object] = {

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.analise_jogo import AnaliseJogoRequest
 from app.schemas.llm_outputs import LLMVisualQuery
+from app.schemas.roteiro import RoteiroResponse
 from app.services.editorial_generation import DurationMode
 
 
@@ -362,6 +363,20 @@ class RevisionGenerationRunCreate(GenerationRunCreate):
         return normalized or None
 
 
+class ManualDraftImprovementRunCreate(RevisionGenerationRunCreate):
+    """Paste-friendly human draft input; server-owned fields stay out of the API."""
+
+    draft_text: str = Field(min_length=1, max_length=100_000)
+
+    @field_validator("draft_text")
+    @classmethod
+    def non_blank_draft_without_normalizing(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("draft_text must not be blank")
+        # The persisted human revision must remain byte-for-byte equal to decoded JSON.
+        return value
+
+
 class GameGenerationRunCreate(AnaliseJogoRequest):
     model_config: ClassVar[ConfigDict] = ConfigDict(protected_namespaces=())
 
@@ -402,3 +417,10 @@ class GenerationRunResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ManualDraftImprovementRunResponse(BaseModel):
+    created: bool
+    duplicate: bool
+    draft: RoteiroResponse
+    run: GenerationRunResponse

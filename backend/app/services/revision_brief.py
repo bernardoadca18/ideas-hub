@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Set
+import re
+from collections.abc import Set as AbstractSet
+from copy import deepcopy
 from dataclasses import asdict, dataclass
+from itertools import pairwise
 from typing import Any
 from uuid import UUID
 
 from app.schemas.roteiro import RoteiroEstrutura, script_content_identity
 from app.services.duration_contract import revision_duration_diagnostics
 
-REVISION_BRIEF_VERSION = "script_revision_brief_v1"
+REVISION_BRIEF_VERSION = "script_revision_brief_v2"
+HUMAN_BACKBONE_KIND = "human_authored_backbone"
 
 
 @dataclass(frozen=True)
@@ -40,7 +44,7 @@ def build_revision_brief(
     structure: RoteiroEstrutura,
     human_feedback: str | None,
     evidence_provenance: dict[str, Any],
-    factual_issue_categories: Set[str],
+    factual_issue_categories: AbstractSet[str],
 ) -> RevisionBrief:
     """Build a durable revision brief exclusively from persisted parent data."""
 
@@ -136,6 +140,11 @@ def build_revision_brief(
         "content_identity": script_content_identity(structure),
         "title": structure.titulo,
         "blocks": parent_blocks,
+        "document_role": (
+            HUMAN_BACKBONE_KIND
+            if parent_revision_kind in {"manual_create", "human_edit"}
+            else "versioned_script"
+        ),
     }
     evidence_reuse = {
         "available": bool(evidence_provenance),
@@ -177,6 +186,56 @@ def build_revision_brief(
     )
 
 
+def bind_revision_brief_to_target_sections(
+    brief: dict[str, Any], *, target_section_keys: list[str]
+) -> dict[str, Any]:
+    """Map a human backbone onto host-owned V3 sections without an LLM call.
+
+    The original blocks remain immutable in the parent script. This projection divides
+    their text into ordered, contiguous prompt spans so long-form section calls do not
+    need the whole source document on every request.
+    """
+
+    value = deepcopy(brief)
+    parent = value.get("parent") or {}
+    if parent.get("document_role") != HUMAN_BACKBONE_KIND:
+        return value
+    keys = [str(item) for item in target_section_keys if str(item)]
+    if not keys:
+        return value
+    source_text = "\n\n".join(
+        str(item.get("current_content") or "") for item in parent.get("blocks") or []
+    )
+    spans = _balanced_source_spans(source_text, len(keys))
+    assignments = [
+        {
+            "section_key": keys[index],
+            "order": index,
+            "start_char": start,
+            "end_char": end,
+            "word_count": len(re.findall(r"\S+", source_text[start:end])),
+            "current_content": source_text[start:end],
+        }
+        for index, (start, end) in enumerate(spans)
+    ]
+    value["human_backbone"] = {
+        "version": "human_backbone_section_mapping_v1",
+        "mapping": "ordered_contiguous_source_spans",
+        "source_content_identity": parent.get("content_identity"),
+        "source_text_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+        "target_section_keys": keys,
+        "assignments": assignments,
+        "preservation_contract": (
+            "Every source span remains authoritative editorial material. Preserve the "
+            "author's thesis, positions, important ideas, examples, deliberate order, "
+            "observations, conclusions and voice; factual safety may correct unsupported "
+            "claims. Improve or expand only with justified substance, never filler."
+        ),
+    }
+    value["identity"] = _brief_identity(value)
+    return value
+
+
 def scoped_revision_context(
     brief: dict[str, Any] | None,
     *,
@@ -192,7 +251,26 @@ def scoped_revision_context(
     if not brief:
         return None
     parent = dict(brief.get("parent") or {})
-    if section_keys is not None:
+    human_backbone = deepcopy(brief.get("human_backbone") or {})
+    if human_backbone:
+        # Exact source prose lives once in the scoped assignment projection. Parent
+        # block metadata remains useful, but duplicating full prose wastes context.
+        parent["blocks"] = [
+            {key: value for key, value in item.items() if key != "current_content"}
+            for item in parent.get("blocks") or []
+        ]
+        all_assignments = list(human_backbone.get("assignments") or [])
+        human_backbone["assignment_outline"] = [
+            {key: value for key, value in item.items() if key != "current_content"}
+            for item in all_assignments
+        ]
+        if section_keys is not None:
+            human_backbone["assignments"] = [
+                item
+                for item in all_assignments
+                if item.get("section_key") in section_keys
+            ]
+    elif section_keys is not None:
         parent["blocks"] = [
             item
             for item in parent.get("blocks") or []
@@ -247,7 +325,41 @@ def scoped_revision_context(
         "revision_priorities": priorities,
         "preserve": preserve,
         "evidence_reuse": brief.get("evidence_reuse") or {},
+        "human_backbone": human_backbone or None,
     }
+
+
+def _balanced_source_spans(text: str, requested_count: int) -> list[tuple[int, int]]:
+    """Return exact contiguous spans split at word starts and covering all text."""
+
+    words = list(re.finditer(r"\S+", text))
+    if not words or requested_count < 1:
+        return []
+    count = min(requested_count, len(words))
+    cuts = [0]
+    for index in range(1, count):
+        word_index = min(len(words) - 1, round(len(words) * index / count))
+        cut = words[word_index].start()
+        if cut > cuts[-1]:
+            cuts.append(cut)
+    cuts.append(len(text))
+    return [
+        (start, end)
+        for start, end in pairwise(cuts)
+        if end > start and text[start:end].strip()
+    ]
+
+
+def _brief_identity(value: dict[str, Any]) -> str:
+    payload = {key: item for key, item in value.items() if key != "identity"}
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _prompt_revision_priorities(
@@ -291,7 +403,7 @@ def _revision_priorities(
     global_issues: list[dict[str, Any]],
     sections: list[dict[str, Any]],
     duration: dict[str, Any],
-    factual_issue_categories: Set[str],
+    factual_issue_categories: AbstractSet[str],
 ) -> list[dict[str, Any]]:
     issue_entries: list[tuple[str, dict[str, Any]]] = [
         ("global_critic", issue) for issue in global_issues
@@ -398,7 +510,7 @@ def _section_review_state(
     raw_audit: Any,
     issues: list[dict[str, Any]],
     *,
-    factual_issue_categories: Set[str],
+    factual_issue_categories: AbstractSet[str],
 ) -> str:
     if not isinstance(raw_audit, dict):
         return "audit_unavailable"

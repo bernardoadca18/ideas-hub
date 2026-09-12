@@ -3187,6 +3187,15 @@ async def test_external_research_resume_preserves_completed_claim_checkpoints(
         production_profile="faceless_general",
         target_words=None,
         evidence_dossier={
+            "revision_source": {
+                "blocks": [
+                    {
+                        "current_content": (
+                            "Preserve a hipótese sobre NPCs emergentes do rascunho humano."
+                        )
+                    }
+                ]
+            },
             "sources": [source.to_dict()],
             "fragments": [
                 {
@@ -3210,6 +3219,10 @@ async def test_external_research_resume_preserves_completed_claim_checkpoints(
     assert run.evidence_dossier["claims"] == [claim]
     assert run.evidence_dossier["fragments"][0]["claims"] == [claim]
     assert run.evidence_dossier["research_complete"] is True
+    assert any(
+        "NPCs emergentes" in call.args[0]
+        for call in research.search.await_args_list
+    )
     service._complete = AsyncMock()  # type: ignore[method-assign]
     await service._extract_external_claims(run, idea)
     service._complete.assert_not_awaited()

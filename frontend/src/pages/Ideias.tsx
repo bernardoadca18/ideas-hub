@@ -21,6 +21,13 @@ export default function Ideias() {
   const [generationRuns, setGenerationRuns] = useState<Record<string, GenerationRun>>({});
   const [generationPreview, setGenerationPreview] = useState<GenerationPreview | null>(null);
   const pollControllers = useRef(new Map<string, AbortController>());
+  const [improvingIdea, setImprovingIdea] = useState<Ideia | null>(null);
+  const [manualDraftText, setManualDraftText] = useState('');
+  const [manualDraftFeedback, setManualDraftFeedback] = useState('');
+  const [improvingDraft, setImprovingDraft] = useState(false);
+  const [manualDraftError, setManualDraftError] = useState<string | null>(null);
+  const manualDraftIdempotencyKey = useRef('');
+  const manualDraftSubmitInFlight = useRef(false);
 
   // Filter state
   const [statusFilter, setStatusFilter] = useState<string>('');
@@ -148,6 +155,56 @@ export default function Ideias() {
       void pollGeneration(id, run.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao gerar roteiro');
+    }
+  }
+
+  function openManualDraftImprovement(idea: Ideia) {
+    setImprovingIdea(idea);
+    setManualDraftText('');
+    setManualDraftFeedback('');
+    setManualDraftError(null);
+    manualDraftIdempotencyKey.current = crypto.randomUUID();
+  }
+
+  function closeManualDraftImprovement() {
+    if (improvingDraft) return;
+    setImprovingIdea(null);
+    setManualDraftError(null);
+  }
+
+  async function handleImproveManualDraft(e: React.FormEvent) {
+    e.preventDefault();
+    if (!improvingIdea || manualDraftSubmitInFlight.current) return;
+    if (!manualDraftText.trim()) {
+      setManualDraftError('Cole o seu roteiro ou rascunho antes de iniciar.');
+      return;
+    }
+    manualDraftSubmitInFlight.current = true;
+    setImprovingDraft(true);
+    setManualDraftError(null);
+    try {
+      const result = await api.startManualDraftImprovement({
+        ideia_id: improvingIdea.id,
+        draft_text: manualDraftText,
+        feedback: manualDraftFeedback.trim() || undefined,
+        idempotency_key: manualDraftIdempotencyKey.current,
+      });
+      setGenerationRuns((current) => ({
+        ...current,
+        [improvingIdea.id]: result.run,
+      }));
+      const ideaId = improvingIdea.id;
+      setImprovingIdea(null);
+      setManualDraftText('');
+      setManualDraftFeedback('');
+      void pollGeneration(ideaId, result.run.id);
+    } catch (err) {
+      setManualDraftError(
+        err instanceof Error ? err.message : 'Erro ao iniciar a melhoria do rascunho',
+      );
+    } finally {
+      manualDraftSubmitInFlight.current = false;
+      setImprovingDraft(false);
     }
   }
 
@@ -360,6 +417,77 @@ export default function Ideias() {
         </div>
       )}
 
+      {improvingIdea && (
+        <div className="modal-overlay" onClick={closeManualDraftImprovement}>
+          <div className="modal modal-large" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Melhorar um rascunho meu</h2>
+              <button
+                type="button"
+                className="btn-close"
+                disabled={improvingDraft}
+                onClick={closeManualDraftImprovement}
+              >×</button>
+            </div>
+            <p className="form-help">
+              O texto será preservado como uma versão humana histórica e usado como
+              espinha dorsal editorial. A versão produzida pela IA será uma nova revisão,
+              sem substituir o original.
+            </p>
+            <form onSubmit={handleImproveManualDraft}>
+              <div className="form-group">
+                <label htmlFor="manual-draft-text">Seu roteiro / rascunho *</label>
+                <textarea
+                  id="manual-draft-text"
+                  className="manual-draft-textarea"
+                  rows={18}
+                  maxLength={100000}
+                  value={manualDraftText}
+                  disabled={improvingDraft}
+                  onChange={(e) => {
+                    setManualDraftText(e.target.value);
+                    manualDraftIdempotencyKey.current = crypto.randomUUID();
+                  }}
+                  placeholder="Cole aqui o texto completo, mantendo seus parágrafos e observações."
+                  required
+                />
+                <small>{manualDraftText.length.toLocaleString()} / 100.000 caracteres</small>
+              </div>
+              <div className="form-group">
+                <label htmlFor="manual-draft-feedback">Instrução adicional (opcional)</label>
+                <textarea
+                  id="manual-draft-feedback"
+                  rows={4}
+                  maxLength={10000}
+                  value={manualDraftFeedback}
+                  disabled={improvingDraft}
+                  onChange={(e) => {
+                    setManualDraftFeedback(e.target.value);
+                    manualDraftIdempotencyKey.current = crypto.randomUUID();
+                  }}
+                  placeholder="Ex.: preserve especialmente a comparação entre GTA IV e GTA V."
+                />
+                <small>O contexto do autor da Idea continua sendo aplicado separadamente.</small>
+              </div>
+              {manualDraftError && <div className="error">{manualDraftError}</div>}
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={improvingDraft}
+                  onClick={closeManualDraftImprovement}
+                >Cancelar</button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={improvingDraft || !manualDraftText.trim()}
+                >{improvingDraft ? 'Persistindo e iniciando…' : 'Persistir e melhorar'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {showTrendsModal && (
         <div className="modal-overlay" onClick={() => setShowTrendsModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -435,7 +563,9 @@ export default function Ideias() {
               {generationRuns[ideia.id] && <div className="script-provenance">
                 <strong>Geração: {generationRuns[ideia.id].phase}</strong>
                 <p>{generationRuns[ideia.id].completed_sections} / {generationRuns[ideia.id].total_sections} seções · estratégia {generationRuns[ideia.id].generation_strategy}</p>
+                {generationRuns[ideia.id].generation_intent === 'revision' && generationRuns[ideia.id].parent_roteiro_id && <p>Rascunho humano preservado como versão pai. <a href="/roteiros">Abrir histórico</a></p>}
                 {generationRuns[ideia.id].error_message && <span className="context-changed">{generationRuns[ideia.id].error_message}</span>}
+                {generationRuns[ideia.id].status === 'completed' && generationRuns[ideia.id].roteiro_id && <a href="/roteiros">Abrir roteiro resultante e histórico</a>}
               </div>}
               <div className="card-actions">
                 <button
@@ -461,15 +591,14 @@ export default function Ideias() {
                   </>
                 )}
                 {ideia.status === 'aprovada' && (
-                  <button disabled={Boolean(generationRuns[ideia.id] && !['completed', 'failed', 'cancelled'].includes(generationRuns[ideia.id].status))} onClick={() => handleGerarRoteiro(ideia.id)} className="btn btn-sm btn-primary">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M12 19l7-7 3 3-7 7-3-3z"></path>
-                      <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"></path>
-                      <path d="M2 2l7.586 7.586"></path>
-                      <circle cx="11" cy="11" r="2"></circle>
-                    </svg>
-                    Gerar Roteiro
-                  </button>
+                  <>
+                    <button disabled={Boolean(generationRuns[ideia.id] && !['completed', 'failed', 'cancelled'].includes(generationRuns[ideia.id].status))} onClick={() => handleGerarRoteiro(ideia.id)} className="btn btn-sm btn-primary">
+                      Gerar do zero
+                    </button>
+                    <button disabled={Boolean(generationRuns[ideia.id] && !['completed', 'failed', 'cancelled'].includes(generationRuns[ideia.id].status))} onClick={() => openManualDraftImprovement(ideia)} className="btn btn-sm btn-secondary">
+                      Melhorar um rascunho meu
+                    </button>
+                  </>
                 )}
               </div>
             </div>

@@ -22,7 +22,11 @@ from app.services.duration_contract import (
     revision_duration_diagnostics,
 )
 from app.services.llm_gateway import LLMCallResult, LLMTaskRole
-from app.services.revision_brief import build_revision_brief, scoped_revision_context
+from app.services.revision_brief import (
+    bind_revision_brief_to_target_sections,
+    build_revision_brief,
+    scoped_revision_context,
+)
 from app.services.script_generation_jobs import (
     FACTUAL_BLOCKING_CATEGORIES,
     FRAGMENTED_PLANNING_VERSION,
@@ -242,7 +246,7 @@ def test_revision_brief_combines_parent_text_editorial_audits_and_human_feedback
         " Preserve a introdução. Torne a seção 2 concreta e evite meta-comentário. "
     )
 
-    assert brief["version"] == "script_revision_brief_v1"
+    assert brief["version"] == "script_revision_brief_v2"
     assert len(brief["identity"]) == 64
     assert brief["human_feedback"].startswith("Preserve a introdução")
     assert brief["parent"]["title"] == "O que o trailer realmente mostra"
@@ -631,6 +635,51 @@ def test_prompt_without_revision_brief_keeps_initial_generation_semantics() -> N
 
     assert "REVISION MODE" not in prompt.user
     assert "structured_revision_brief" not in prompt.trace["components"]
+
+
+def test_human_backbone_is_mapped_in_order_and_gets_conservative_prompt_semantics() -> None:
+    structure = _parent_structure()
+    brief = build_revision_brief(
+        parent_roteiro_id=uuid4(),
+        parent_version=1,
+        parent_revision_kind="manual_create",
+        structure=structure,
+        human_feedback="Não remova a conclusão.",
+        evidence_provenance={},
+        factual_issue_categories=FACTUAL_BLOCKING_CATEGORIES,
+    ).to_dict()
+    bound = bind_revision_brief_to_target_sections(
+        brief,
+        target_section_keys=["section-001", "section-002", "section-003"],
+    )
+
+    assignments = bound["human_backbone"]["assignments"]
+    source = "\n\n".join(
+        block.conteudo for block in structure.blocos
+    )
+    assert "".join(item["current_content"] for item in assignments) == source
+    assert [item["section_key"] for item in assignments] == [
+        "section-001",
+        "section-002",
+        "section-003",
+    ]
+    scoped = scoped_revision_context(bound, section_keys={"section-002"})
+    assert scoped is not None
+    assert [item["section_key"] for item in scoped["human_backbone"]["assignments"]] == [
+        "section-002"
+    ]
+    assert all("current_content" not in item for item in scoped["parent"]["blocks"])
+
+    prompt = compose_editorial_v3_prompt(
+        phase="writing",
+        profile=get_profile("game_analysis"),
+        task_prompt="Escreva a seção.",
+        revision_context=scoped,
+    )
+    assert "HUMAN BACKBONE" in prompt.user
+    assert "Não substitua a tese" in prompt.user
+    assert "não invente evento, reação, experiência, UUID ou timestamp" in prompt.user
+    assert "human_draft_backbone" in prompt.trace["components"]
 
 
 @pytest.mark.asyncio

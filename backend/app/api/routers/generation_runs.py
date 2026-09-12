@@ -13,6 +13,8 @@ from app.schemas.generation import (
     GenerationPreviewRequest,
     GenerationRunCreate,
     GenerationRunResponse,
+    ManualDraftImprovementRunCreate,
+    ManualDraftImprovementRunResponse,
     RevisionGenerationRunCreate,
 )
 from app.services.duration_contract import duration_calibration_client
@@ -123,6 +125,31 @@ async def start_generation_run(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/ideias/{ideia_id}/manual-draft-improvement-runs",
+    response_model=ManualDraftImprovementRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_manual_draft_improvement_run(
+    ideia_id: UUID,
+    payload: ManualDraftImprovementRunCreate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Persist pasted human prose and enqueue its immutable V3 child revision."""
+
+    try:
+        return await ScriptGenerationJobService(db).enqueue_manual_draft_improvement(
+            ideia_id,
+            draft_text=payload.draft_text,
+            idempotency_key=payload.idempotency_key,
+            feedback=payload.feedback,
+            model_strategy=payload.model_strategy,
+        )
+    except ValueError as exc:
+        status_code = 404 if str(exc) == "Ideia não encontrada" else 422
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 @router.post(

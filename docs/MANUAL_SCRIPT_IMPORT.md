@@ -37,3 +37,33 @@ O import não cria auditoria factual. Se uma auditoria posterior definir
 revisão; warnings não bloqueantes continuam disponíveis para decisão humana.
 
 Veja [o exemplo](examples/manual-script-v1.json).
+
+## Rascunho colado e melhoria Editorial V3
+
+A ação **Melhorar um rascunho meu** no Ideas Hub é uma entrada complementar ao
+import JSON e não o substitui. Ela aceita texto simples em
+`POST /ideias/{ideia_id}/manual-draft-improvement-runs` com:
+
+- `draft_text`: texto humano original, sem trim ou reescrita;
+- `feedback`: direção opcional para esta revisão;
+- `idempotency_key`: identidade estável da submissão;
+- `model_strategy`: política de modelos já suportada pelos generation runs.
+
+O servidor adapta o texto deterministicamente para um único bloco canônico
+`rascunho_humano`, calcula o duration contract e persiste `manual_create`. Em
+seguida, na mesma operação transacional, cria um generation run com
+`generation_intent=revision` e `parent_roteiro_id` apontando para o draft humano.
+A resposta contém `draft` e `run`; o progresso continua disponível nos endpoints
+normais de generation runs.
+
+O texto original fica em `estrutura.blocos[0].conteudo` e sua identidade em
+`estrutura.manual_draft`. O revision brief mapeia deterministicamente spans
+contíguos do original para as seções host-owned do V3. O texto humano orienta
+tese, argumentos, exemplos, ordem e voz, mas não entra no claim ledger como
+evidência automática. Quando falta provenance factual, a pesquisa normal do
+ProductionProfile continua sendo executada.
+
+Repetir a mesma `idempotency_key` com o mesmo texto/feedback devolve o draft e o
+run existentes. Reusar a chave com conteúdo diferente é rejeitado. Um savepoint
+engloba `manual_create → enqueue_revision`; falha no enqueue não deixa uma versão
+manual órfã nem altera a Idea para `em_roteiro` parcialmente.

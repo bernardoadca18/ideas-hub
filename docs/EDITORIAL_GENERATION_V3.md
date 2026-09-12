@@ -114,10 +114,21 @@ list. Revision prompts use a compact projection of the complete durable `Revisio
 human feedback, parent prose, diagnostics and exact deficits remain available without restating
 the same issue through several fields. Factual audit feedback is projected into viewer-safe repair
 language before it reaches the writer; the original diagnostic remains durable. External content is
-delimited as data. Fragmented V3 calls use `editorial_prompt_composition_v9`; legacy workflows retain
+delimited as data. Fragmented V3 calls use `editorial_prompt_composition_v10`; legacy workflows retain
 `prompt_composition_v2`. Important identities are
 `editorial_generation_strategy_v2`, `editorial_generation_plan_v1`,
-`fragmented_editorial_planning_v1` and `editorial_prompt_composition_v9`.
+`fragmented_editorial_planning_v1` and `editorial_prompt_composition_v10`.
+
+`script_revision_brief_v2` additionally identifies `manual_create`/`human_edit`
+parents as a human-authored editorial backbone. For pasted plain-text drafts, a
+deterministic `human_backbone_section_mapping_v1` divides the source into ordered,
+contiguous spans assigned to the host-owned target sections. Global planning sees
+the complete mapping; section planning and writing receive only their assigned
+source spans plus the global assignment outline. This preserves the author's
+progression while keeping long-form calls bounded. The human source is editorial
+authority, not evidence: factual conflicts still follow the canonical claim and
+evidence policy, and game analysis still forbids invented gameplay events or
+timestamps.
 
 After each section reaches capacity and word validation, a bounded structured critic audits the
 full prose for factuality, unsupported specificity, uncertainty, spoken PT-BR, hook, continuity and

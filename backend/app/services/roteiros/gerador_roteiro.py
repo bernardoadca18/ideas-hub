@@ -33,6 +33,7 @@ from app.schemas.manual_script_import import (
     ManualScriptImportResponse,
 )
 from app.schemas.roteiro import (
+    ManualDraftProvenance,
     MediaBindingRequest,
     RoteiroCreate,
     RoteiroEstrutura,
@@ -515,6 +516,7 @@ class RoteiroGenerator:
         estrutura: RoteiroEstrutura,
         *,
         calibration: DurationCalibration | None = None,
+        manual_draft_provenance: ManualDraftProvenance | None = None,
     ) -> Roteiro:
         """Preserve the legacy create endpoint without accepting caller-owned provenance."""
 
@@ -524,6 +526,13 @@ class RoteiroGenerator:
         profile = await self._profile_for_idea(ideia)
         calibration = calibration or await duration_calibration_client.get(profile.id)
         payload = estrutura.model_dump(mode="json")
+        # This method also backs the public manual-create endpoint. Plain-text
+        # provenance is accepted only through the composite server-owned adapter.
+        payload["manual_draft"] = (
+            manual_draft_provenance.model_dump(mode="json")
+            if manual_draft_provenance is not None
+            else None
+        )
         payload["duration_contract"] = evaluate_duration(
             estrutura.blocos,
             target_seconds=self._target_duration(ideia, profile),
@@ -753,6 +762,7 @@ class RoteiroGenerator:
                 "section_audits": None,
                 "global_critic": None,
                 "audit_status": "human_edit_unvalidated",
+                "manual_draft": None,
             }
         )
         estrutura = RoteiroEstrutura.model_validate(structure_payload)

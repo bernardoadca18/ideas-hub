@@ -498,7 +498,7 @@ def test_v3_audit_does_not_infer_absence_from_missing_evidence() -> None:
     assert "exige um claim aprovado" in prompt.system
     assert "enganar materialmente o espectador" in prompt.system
     assert prompt.trace["prompt_composition_version"] == (
-        "editorial_prompt_composition_v9"
+        "editorial_prompt_composition_v10"
     )
 
 
