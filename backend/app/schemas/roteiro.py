@@ -79,6 +79,35 @@ class PersistedNarrativeBlock(BaseModel):
         return value
 
 
+class StaticImageScope(BaseModel):
+    """Explicit opt-in and compact provenance allow-list for source images."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    asset_classes: list[str] = Field(default_factory=list, max_length=16)
+    collections: list[str] = Field(default_factory=list, max_length=16)
+    source_owners: list[str] = Field(default_factory=list, max_length=16)
+    source_classes: list[str] = Field(default_factory=list, max_length=16)
+
+    @field_validator(
+        "asset_classes", "collections", "source_owners", "source_classes", mode="before"
+    )
+    @classmethod
+    def normalize_optional_filters(cls, value: Any) -> Any:
+        return [] if value is None else value
+
+    @field_validator("asset_classes", "collections", "source_owners", "source_classes")
+    @classmethod
+    def validate_filters(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value]
+        if any(not item or len(item) > 200 for item in normalized):
+            raise ValueError("static image filters must contain non-blank values up to 200 chars")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("static image filters must be unique")
+        return normalized
+
+
 class ScriptMediaContext(BaseModel):
     """Canonical Media Indexer search scope persisted inside script JSONB."""
 
@@ -86,6 +115,7 @@ class ScriptMediaContext(BaseModel):
 
     media_project_id: UUID
     media_session_ids: list[UUID] = Field(default_factory=list)
+    static_images: StaticImageScope | None = None
 
     @field_validator("media_session_ids", mode="before")
     @classmethod

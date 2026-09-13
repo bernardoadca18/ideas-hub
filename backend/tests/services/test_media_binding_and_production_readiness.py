@@ -14,6 +14,7 @@ from app.schemas.roteiro import (
     MediaBindingRequest,
     RoteiroEstrutura,
     ScriptMediaContext,
+    StaticImageScope,
     VisualQueryRepairRequest,
     script_content_identity,
 )
@@ -187,6 +188,83 @@ def test_empty_session_scope_means_search_the_whole_project(session_ids) -> None
         {"media_project_id": str(PROJECT_ID), "media_session_ids": session_ids}
     )
     assert context.media_session_ids == []
+
+
+def test_legacy_media_context_keeps_static_images_disabled() -> None:
+    context = ScriptMediaContext.model_validate(
+        {"media_project_id": str(PROJECT_ID), "media_session_ids": []}
+    )
+    assert context.static_images is None
+    assert "static_images" not in context.model_dump(mode="json", exclude_none=True)
+
+
+def test_static_image_scope_is_explicit_and_serializable() -> None:
+    context = ScriptMediaContext.model_validate(
+        {
+            "media_project_id": str(PROJECT_ID),
+            "media_session_ids": [str(SESSION_ID)],
+            "static_images": {
+                "enabled": True,
+                "asset_classes": [" official_screenshot ", "official_artwork"],
+                "collections": ["screenshots"],
+                "source_owners": ["studio"],
+                "source_classes": ["official"],
+            },
+        }
+    )
+    assert context.static_images == StaticImageScope(
+        enabled=True,
+        asset_classes=["official_screenshot", "official_artwork"],
+        collections=["screenshots"],
+        source_owners=["studio"],
+        source_classes=["official"],
+    )
+    assert context.model_dump(mode="json")["static_images"]["enabled"] is True
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("asset_classes", ["official", "official"]),
+        ("collections", [" "]),
+        ("source_owners", ["x" * 201]),
+    ],
+)
+def test_static_image_scope_rejects_duplicate_or_invalid_filters(field, value) -> None:
+    with pytest.raises(ValidationError):
+        StaticImageScope.model_validate({"enabled": True, field: value})
+
+
+@pytest.mark.asyncio
+async def test_static_image_binding_is_metadata_only() -> None:
+    before = _ready_structure(media=True)
+    source = _source(before)
+    generator = RoteiroGenerator(AsyncMock())
+    generator.roteiro_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = source
+    generator.roteiro_repo.get_latest_version_by_ideia.return_value = source
+    generator._persist_revision = AsyncMock(return_value=SimpleNamespace(id=uuid4()))
+    query_ids = [item.id for item in before.blocos[0].visual_queries]
+
+    await generator.bind_media_context_revision(
+        source.id,
+        MediaBindingRequest(
+            media_context={
+                "media_project_id": PROJECT_ID,
+                "media_session_ids": [SESSION_ID],
+                "static_images": {
+                    "enabled": True,
+                    "asset_classes": ["official_screenshot"],
+                },
+            }
+        ),
+    )
+
+    after = generator._persist_revision.await_args.kwargs["estrutura"]
+    assert script_content_identity(after) == script_content_identity(before)
+    assert [item.id for item in after.blocos[0].visual_queries] == query_ids
+    assert after.blocos[0].claims == before.blocos[0].claims
+    assert after.media_context.static_images.enabled is True
 
 
 def test_production_readiness_is_profile_aware() -> None:

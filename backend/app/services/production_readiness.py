@@ -43,6 +43,17 @@ def evaluate_production_readiness(
             "media_session_ids": (
                 [str(value) for value in context.media_session_ids] if context else []
             ),
+            "static_images": (
+                context.static_images.model_dump(mode="json")
+                if context and context.static_images
+                else {
+                    "enabled": False,
+                    "asset_classes": [],
+                    "collections": [],
+                    "source_owners": [],
+                    "source_classes": [],
+                }
+            ),
         },
         "issues": issues,
     }
