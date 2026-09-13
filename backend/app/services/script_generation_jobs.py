@@ -5790,6 +5790,11 @@ def assemble_written_sections(
         blocks.append(
             BlocoNarrativo(
                 tipo=str(plan.get("title") or section.section_key),
+                display_title=(
+                    str(plan["title"]).strip()
+                    if isinstance(plan.get("title"), str) and str(plan["title"]).strip()
+                    else None
+                ),
                 duracao_segundos=int(
                     plan.get("target_duration_seconds")
                     or max(60, round(count_words(section.output["content"]) / 2.4))

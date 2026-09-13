@@ -42,6 +42,9 @@ class BlocoNarrativo:
     planned_beats: list[dict[str, Any]] = field(default_factory=list)
     claims: list[dict[str, Any]] = field(default_factory=list)
     audio_intent: dict[str, Any] | None = None
+    # Explicit editorial display text.  This is deliberately distinct from
+    # ``tipo``, which remains a structural/category label for legacy scripts.
+    display_title: str | None = None
 
 
 @dataclass
@@ -386,6 +389,7 @@ class RoteiristaService:
                     "beats": b.beats,
                     "claims": b.claims,
                     "audio_intent": b.audio_intent,
+                    "display_title": b.display_title,
                 }
                 for b in roteiro.blocos
             ],

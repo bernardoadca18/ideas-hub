@@ -70,6 +70,7 @@ class PersistedNarrativeBlock(BaseModel):
     planned_beats: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
     claims: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
     audio_intent: dict[str, Any] | None = None
+    display_title: str | None = Field(default=None, min_length=1, max_length=120)
 
     @field_validator("tipo", "conteudo")
     @classmethod
@@ -77,6 +78,16 @@ class PersistedNarrativeBlock(BaseModel):
         if not value.strip():
             raise ValueError("field must not be blank")
         return value
+
+    @field_validator("display_title")
+    @classmethod
+    def non_blank_display_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("display_title must not be blank")
+        return normalized
 
 
 class StaticImageScope(BaseModel):
