@@ -9,6 +9,12 @@ The field is optional. Its absence preserves the historical video-only contract 
 content identity. Enabling it is metadata-only: Ideas Hub never selects a concrete asset or a
 visual source type, and existing `VisualQuery` IDs and claims/evidence remain unchanged.
 
+The provenance fields are orthogonal. `asset_class` classifies the asset, `collection` identifies
+an operator-managed grouping or source pack, and `game` is a separate Media Indexer provenance
+field. A collection must not be populated with a game name. The current scope intentionally
+exposes only the filters needed by production; project ownership already fixes the broader media
+domain.
+
 Example:
 
 ```json
@@ -17,8 +23,8 @@ Example:
   "media_session_ids": null,
   "static_images": {
     "enabled": true,
-    "asset_classes": ["official_screenshot", "artwork"],
-    "collections": ["gta_vi"],
+    "asset_classes": ["official_screenshot", "official_artwork"],
+    "collections": ["screenshots", "artwork_wallpapers"],
     "source_owners": ["rockstar_games"],
     "source_classes": ["official"]
   }
