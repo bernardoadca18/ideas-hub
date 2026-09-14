@@ -3091,7 +3091,7 @@ class ScriptGenerationJobService:
     ) -> list[VisualQuery]:
         """Ask the LLM only for semantics; host-owned beats define coverage."""
 
-        duration = int(section.section_plan.get("target_duration_seconds") or 60)
+        duration = _section_output_duration_seconds(section.section_plan, content)
         policy = profile.visual_requirements
         beats = segment_visual_beats(
             section_key=section.section_key,
@@ -3191,6 +3191,7 @@ class ScriptGenerationJobService:
             author_briefing=idea.author_briefing,
             audience_promise=run.plan["editorial"].get("audience_promise"),
         )
+        await self._checkpoint_heartbeat(run)
         result = await self._complete(
             run,
             role=LLMTaskRole.CRITIC,
@@ -3312,6 +3313,19 @@ class ScriptGenerationJobService:
         if required != audit.revision_required:
             audit = audit.model_copy(update={"revision_required": required})
         return audit, provenance
+
+    async def _checkpoint_heartbeat(
+        self,
+        run: ScriptGenerationRun,
+        *,
+        phase: str | None = None,
+    ) -> None:
+        """Publish progress immediately before a potentially long validation call."""
+
+        if phase is not None:
+            run.phase = phase
+        run.heartbeat_at = datetime.now(UTC)
+        await self.session.commit()
 
     async def _checkpoint_writing_call(
         self,
@@ -3592,6 +3606,7 @@ class ScriptGenerationJobService:
     async def _assemble(self, run: ScriptGenerationRun) -> None:
         idea = await IdeiaRepository(self.session).get_by_id(run.ideia_id)
         assert idea is not None
+        await self._checkpoint_heartbeat(run, phase="validating")
         correction_cycles = int(
             (run.plan.get("global_correction") or {}).get("cycles", 0)
         )
@@ -3611,6 +3626,7 @@ class ScriptGenerationJobService:
                     "error_type": type(e).__name__,
                 },
             )
+        await self._checkpoint_heartbeat(run, phase="assembling")
         # SOFT REVIEW: Factual blockers are surfaced as review warnings for human review.
         if critic and _critic_factual_blockers(critic):
             # Mark affected sections as high_factual_risk for human review
@@ -3636,7 +3652,6 @@ class ScriptGenerationJobService:
                 issue_count=len(_critic_factual_blockers(critic)),
                 note="Surfaced for human review",
             )
-        run.phase = "assembling"
         blocks = assemble_written_sections(
             run.sections,
             claim_ledger=run.plan.get("editorial", {}).get("claim_ledger", []),
@@ -3757,9 +3772,22 @@ class ScriptGenerationJobService:
         structure = RoteiroEstrutura.model_validate(payload)
         readiness = validate_visual_readiness(structure, profile.visual_requirements)
         if readiness.status != "ready":
+            issue_codes = sorted(
+                {str(item.get("code") or "unknown") for item in readiness.issues}
+            )
+            logger.error(
+                "visual_readiness_failed",
+                run_id=str(run.id),
+                issue_codes=issue_codes,
+                textual_coverage_ratio=readiness.textual_coverage_ratio,
+                missing_range_count=len(readiness.missing_ranges),
+                overlap_range_count=len(readiness.overlap_ranges),
+                issues=list(readiness.issues),
+                blocks=list(readiness.blocks),
+            )
             raise GenerationJobError(
                 GenerationFailureCategory.SCHEMA,
-                "generated script does not satisfy host-owned visual readiness",
+                _visual_readiness_failure_message(readiness),
             )
         payload["visual_readiness"] = readiness.to_dict()
         review["audit_content_identity"] = script_content_identity(structure)
@@ -5771,6 +5799,30 @@ def _section_budget_from_mapping(value: dict[str, Any]):
     )
 
 
+def _section_output_duration_seconds(section_plan: dict[str, Any], content: str) -> int:
+    """Resolve the one duration authority shared by visual beats and assembly."""
+
+    planned_duration = section_plan.get("target_duration_seconds")
+    if planned_duration is not None:
+        return int(planned_duration)
+    return max(60, round(count_words(content) / 2.4))
+
+
+def _visual_readiness_failure_message(readiness: Any) -> str:
+    """Keep the persisted terminal error bounded but diagnostically actionable."""
+
+    issue_codes = sorted(
+        {str(item.get("code") or "unknown") for item in readiness.issues}
+    )
+    return (
+        "generated script does not satisfy host-owned visual readiness: "
+        f"issue_codes={','.join(issue_codes) or 'none'}; "
+        f"textual_coverage_ratio={readiness.textual_coverage_ratio:.6f}; "
+        f"missing_range_count={len(readiness.missing_ranges)}; "
+        f"overlap_range_count={len(readiness.overlap_ranges)}"
+    )
+
+
 def assemble_written_sections(
     sections: list[Any],
     *,
@@ -5795,9 +5847,8 @@ def assemble_written_sections(
                     if isinstance(plan.get("title"), str) and str(plan["title"]).strip()
                     else None
                 ),
-                duracao_segundos=int(
-                    plan.get("target_duration_seconds")
-                    or max(60, round(count_words(section.output["content"]) / 2.4))
+                duracao_segundos=_section_output_duration_seconds(
+                    plan, section.output["content"]
                 ),
                 conteudo=section.output["content"],
                 dicas_visual=section.output.get("visual_intent"),

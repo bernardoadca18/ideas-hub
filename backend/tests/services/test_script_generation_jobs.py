@@ -1857,9 +1857,10 @@ def test_writer_schema_contains_only_prose_and_editorial_visual_requirements() -
 
 
 @pytest.mark.asyncio
-async def test_editorial_v3_visual_enrichment_batches_host_owned_beats() -> None:
+async def test_content_driven_visual_enrichment_uses_assembled_duration() -> None:
     service, _, run, section = _writing_fixture()
-    content = " ".join(f"palavra-{index}" for index in range(580))
+    section.section_plan["target_duration_seconds"] = None
+    content = " ".join(f"palavra-{index}" for index in range(446))
     service._complete = AsyncMock(  # type: ignore[method-assign]
         side_effect=[
             _result(
@@ -1880,7 +1881,7 @@ async def test_editorial_v3_visual_enrichment_batches_host_owned_beats() -> None
                 ),
                 role=LLMTaskRole.WRITING,
             )
-            for orders in (range(5), range(5, 8))
+            for orders in (range(5), range(5, 7))
         ]
     )
     profile = get_profile("faceless_general")
@@ -1895,12 +1896,13 @@ async def test_editorial_v3_visual_enrichment_batches_host_owned_beats() -> None
     )
 
     assert service._complete.await_count == 2
-    assert len(queries) == 8
-    assert [query.coverage_start_char for query in queries][0] == 0
+    assert len(queries) == 7
+    assert round(sum(query.desired_duration_seconds or 0 for query in queries)) == 186
+    assert queries[0].coverage_start_char == 0
     assert queries[-1].coverage_end_char == len(content)
     assert all(
-        left.coverage_end_char == right.coverage_start_char
-        for left, right in zip(queries, queries[1:])
+        queries[index].coverage_end_char == queries[index + 1].coverage_start_char
+        for index in range(len(queries) - 1)
     )
     schemas = [call.kwargs["schema"] for call in service._complete.await_args_list]
     assert all("narration_excerpt" not in json.dumps(schema) for schema in schemas)
@@ -2348,9 +2350,11 @@ async def test_heartbeat_update_preserves_timezone_awareness() -> None:
     service = ScriptGenerationJobService(
         session, gateway=AsyncMock(), config=Settings()
     )
-    service.get = AsyncMock(return_value=run)
-    run.heartbeat_at = datetime.now(UTC)
+    await service._checkpoint_heartbeat(run, phase="validating")
+
+    assert run.phase == "validating"
     assert run.heartbeat_at.tzinfo is not None
+    session.commit.assert_awaited_once()
 
 
 def test_datetime_now_utc_produces_timezone_aware_values() -> None:

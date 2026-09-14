@@ -5,11 +5,16 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from app.agents.roteirista import RoteiroEstruturado, roteirista_service
 from app.production_profiles import list_profiles
 from app.prompts.workflows import get_workflow
 from app.schemas.llm_outputs import LLMVisualBeatQuery, VisualBeatEnrichmentOutput
 from app.schemas.roteiro import RoteiroEstrutura
-from app.services.script_generation_jobs import assemble_written_sections
+from app.services.script_generation_jobs import (
+    _section_output_duration_seconds,
+    _visual_readiness_failure_message,
+    assemble_written_sections,
+)
 from app.services.visual_requirements import (
     VisualRequirementsError,
     materialize_written_visual_queries,
@@ -299,6 +304,74 @@ def test_staged_section_assembly_keeps_materialized_visual_queries() -> None:
     )
     block = assemble_written_sections([section], claim_ledger=[])[0]
     assert block.visual_queries[0].visual_beat_id == query.visual_beat_id
+
+
+def test_content_driven_section_roundtrip_is_visually_ready() -> None:
+    """Regression for a single-pass section whose plan has no target duration."""
+
+    content = " ".join(f"palavra{index}" for index in range(446))
+    section_plan = {
+        "title": "Seção única",
+        "target_duration_seconds": None,
+        "beats": [],
+    }
+    duration = _section_output_duration_seconds(section_plan, content)
+    queries = _materialized(content, duration)
+    section = SimpleNamespace(
+        section_order=0,
+        section_key="section-001",
+        section_plan=section_plan,
+        output={
+            "content": content,
+            "visual_queries": [query.to_dict() for query in queries],
+            "claims_used": [],
+            "beats_covered": [],
+        },
+    )
+
+    blocks = assemble_written_sections([section], claim_ledger=[])
+    generated = RoteiroEstruturado(
+        titulo="Roteiro",
+        duracao_total_segundos=sum(block.duracao_segundos for block in blocks),
+        blocos=blocks,
+        tags=[],
+    )
+    serialized = roteirista_service.to_dict(generated)
+    structure = RoteiroEstrutura.model_validate(serialized)
+    report = validate_visual_readiness(structure)
+
+    assert duration == blocks[0].duracao_segundos == 186
+    assert len(structure.blocos[0].visual_queries) == 7
+    assert report.status == "ready"
+    assert report.textual_coverage_ratio == 1.0
+
+
+def test_visual_readiness_failure_message_preserves_bounded_diagnostics() -> None:
+    content = " ".join(f"palavra{index}" for index in range(446))
+    stale_queries = _materialized(content, 60)
+    structure = RoteiroEstrutura.model_validate(
+        {
+            "titulo": "Roteiro",
+            "duracao_total_segundos": 186,
+            "blocos": [
+                {
+                    "tipo": "narracao",
+                    "duracao_segundos": 186,
+                    "conteudo": content,
+                    "visual_queries": [item.to_dict() for item in stale_queries],
+                }
+            ],
+        }
+    )
+    report = validate_visual_readiness(structure)
+
+    assert report.status == "not_ready"
+    assert _visual_readiness_failure_message(report) == (
+        "generated script does not satisfy host-owned visual readiness: "
+        "issue_codes=visual_beat_plan_mismatch; "
+        "textual_coverage_ratio=1.000000; missing_range_count=0; "
+        "overlap_range_count=0"
+    )
 
 
 def test_human_revision_must_preserve_complete_host_owned_bindings() -> None:
