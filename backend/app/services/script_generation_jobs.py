@@ -125,7 +125,12 @@ logger = structlog.get_logger("services.script_generation_jobs")
 PLANNING_OUTPUT_TOKEN_FLOOR = 6000
 PLANNING_OUTPUT_TOKEN_BASE = 1000
 PLANNING_OUTPUT_TOKENS_PER_SECTION = 1000
-PLANNING_OUTPUT_TOKEN_CEILING = 6000
+# Standard planning aliases may resolve to reasoning models whose hidden reasoning
+# shares max_tokens with the visible structured JSON. The real GTA run consumed
+# 5,756 reasoning tokens before emitting only 239 visible tokens, so preserve the
+# existing visible capacity and add an explicit, bounded reasoning reserve.
+PLANNING_OUTPUT_REASONING_HEADROOM = 6000
+PLANNING_OUTPUT_TOKEN_CEILING = 12000
 REPAIR_OUTPUT_TOKEN_FLOOR = 2500
 REPAIR_OUTPUT_TOKEN_HEADROOM = 2000
 # Repair aliases may resolve to models whose hidden reasoning shares max_tokens
@@ -4362,12 +4367,13 @@ class ScriptGenerationJobService:
 def _planning_max_tokens(section_count: int) -> int:
     if section_count < 1:
         raise ValueError("planning requires at least one deterministic section")
-    expected_shape_tokens = (
+    expected_visible_tokens = (
         PLANNING_OUTPUT_TOKEN_BASE + section_count * PLANNING_OUTPUT_TOKENS_PER_SECTION
     )
+    visible_capacity = max(PLANNING_OUTPUT_TOKEN_FLOOR, expected_visible_tokens)
     return min(
         PLANNING_OUTPUT_TOKEN_CEILING,
-        max(PLANNING_OUTPUT_TOKEN_FLOOR, expected_shape_tokens),
+        visible_capacity + PLANNING_OUTPUT_REASONING_HEADROOM,
     )
 
 
@@ -5822,16 +5828,24 @@ def _raise_for_truncated_structured_output(result: LLMCallResult) -> None:
         "structured_output_truncated",
         task_role=result.task_role,
         model_alias=result.model_alias,
+        actual_model=result.actual_model,
+        provider=result.provider,
         prompt_identity=result.prompt_identity,
         finish_reason=result.finish_reason,
         completion_tokens=result.completion_tokens,
+        reasoning_tokens=result.reasoning_tokens,
+        visible_output_characters=result.visible_output_characters,
         max_tokens=result.max_tokens,
     )
     raise LLMGatewayError(
         LLMFailureCategory.FORMAT,
         "structured output was truncated at the provider output-token limit: "
+        f"model={result.actual_model or 'unknown'} "
+        f"provider={result.provider or 'unknown'} "
         f"finish_reason={result.finish_reason} "
         f"completion_tokens={result.completion_tokens} "
+        f"reasoning_tokens={result.reasoning_tokens} "
+        f"visible_output_characters={result.visible_output_characters} "
         f"max_tokens={result.max_tokens}",
     )
 

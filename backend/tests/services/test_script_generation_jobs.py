@@ -87,6 +87,7 @@ def _result(
     max_tokens: int = 3000,
     completion_tokens: int = 300,
     reasoning_tokens: int | None = None,
+    visible_output_characters: int | None = None,
 ) -> LLMCallResult:
     return LLMCallResult(
         content=content,
@@ -106,6 +107,7 @@ def _result(
         attempt_count=1,
         finish_reason=finish_reason,
         reasoning_tokens=reasoning_tokens,
+        visible_output_characters=visible_output_characters,
     )
 
 
@@ -1898,6 +1900,26 @@ async def test_singleton_repair_truncation_remains_terminal_format(
 
 
 @pytest.mark.asyncio
+async def test_singleton_batch_valid_planning_uses_bounded_capacity_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, run, rows = _planning_fixture(monkeypatch, section_count=1)
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_global_json()),
+            _result(_batch_json(["section-001"])),
+        ]
+    )
+
+    await service._plan(run)
+
+    assert service._complete.await_count == 2
+    assert service._complete.await_args_list[1].kwargs["max_tokens"] == 12000
+    assert rows[0].section_plan["planning_status"] == "completed"
+    assert run.plan["planning_state"]["truncated_batches"] == []
+
+
+@pytest.mark.asyncio
 async def test_singleton_batch_truncation_is_terminal_format(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1906,7 +1928,12 @@ async def test_singleton_batch_truncation_is_terminal_format(
         side_effect=[
             _result(_global_json()),
             _result(
-                "{", finish_reason="length", max_tokens=3000, completion_tokens=2990
+                "{",
+                finish_reason="length",
+                max_tokens=12000,
+                completion_tokens=239,
+                reasoning_tokens=11756,
+                visible_output_characters=919,
             ),
         ]
     )
@@ -1914,7 +1941,15 @@ async def test_singleton_batch_truncation_is_terminal_format(
         await service._plan(run)
     assert captured.value.category is LLMFailureCategory.FORMAT
     assert "finish_reason=length" in str(captured.value)
+    assert "model=provider/model" in str(captured.value)
+    assert "provider=test" in str(captured.value)
+    assert "completion_tokens=239" in str(captured.value)
+    assert "reasoning_tokens=11756" in str(captured.value)
+    assert "visible_output_characters=919" in str(captured.value)
+    assert "max_tokens=12000" in str(captured.value)
     assert rows[0].status == "planning"
+    assert service._complete.await_count == 2
+    assert service._complete.await_args_list[1].kwargs["max_tokens"] == 12000
 
 
 @pytest.mark.asyncio
@@ -1997,8 +2032,9 @@ async def test_28_sections_never_request_monolithic_editorial_schema(
 
 
 def test_planning_and_repair_token_budgets_remain_bounded() -> None:
-    assert _planning_max_tokens(1) == 6000
-    assert _planning_max_tokens(4) == 6000
+    assert _planning_max_tokens(1) == 12000
+    assert _planning_max_tokens(4) == 12000
+    assert _planning_max_tokens(100) == 12000
     with pytest.raises(ValueError, match="at least one"):
         _planning_max_tokens(0)
     assert (
