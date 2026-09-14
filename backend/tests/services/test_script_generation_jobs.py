@@ -49,6 +49,7 @@ from app.services.script_generation_jobs import (
     _editorial_review_payload,
     _enforce_claim_language_assessments,
     _explicit_primary_source_required,
+    _external_claim_status_values,
     _global_critic_output_contract,
     _global_plan_output_contract,
     _internal_pipeline_language_issues,
@@ -1075,6 +1076,36 @@ async def test_json_only_markdown_fence_is_locally_unwrapped_without_repair() ->
 
 
 @pytest.mark.asyncio
+async def test_canonical_external_claim_status_passes_without_llm_repair() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    service._complete = AsyncMock()  # type: ignore[method-assign]
+    result = _result(
+        json.dumps(
+            {
+                "claims": [
+                    {
+                        "summary": "A fonte descreve o personagem.",
+                        "source_fragment_id": "source-1",
+                        "claim_status": "official_observation",
+                        "confidence": 0.9,
+                    }
+                ]
+            }
+        )
+    )
+
+    parsed, provenance = await service._parse_or_repair(
+        SimpleNamespace(), result, ExternalClaimExtractionOutput
+    )
+
+    assert parsed.claims[0].claim_status == "official_observation"
+    assert provenance == result.provenance()
+    service._complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_external_claim_confidence_labels_are_normalized_without_llm_repair() -> (
     None
 ):
@@ -1107,6 +1138,144 @@ async def test_external_claim_confidence_labels_are_normalized_without_llm_repai
         "external_claim_confidence_label"
     ]
     service._complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("legacy_status", "canonical_status"),
+    [
+        ("official_confirmed", "confirmed"),
+        ("reliable_secondary", "reported"),
+        ("leak_authenticated", "leak"),
+        ("unverified", "unknown"),
+    ],
+)
+async def test_external_claim_legacy_status_is_normalized_without_llm_repair(
+    legacy_status: str, canonical_status: str
+) -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    service._complete = AsyncMock()  # type: ignore[method-assign]
+    result = _result(
+        json.dumps(
+            {
+                "claims": [
+                    {
+                        "summary": "A fonte faz uma afirmação delimitada.",
+                        "source_fragment_id": "source-1",
+                        "claim_status": legacy_status,
+                        "confidence": 0.7,
+                    }
+                ]
+            }
+        )
+    )
+
+    parsed, provenance = await service._parse_or_repair(
+        SimpleNamespace(), result, ExternalClaimExtractionOutput
+    )
+
+    assert parsed.claims[0].claim_status == canonical_status
+    assert provenance["local_shape_normalizations"] == [
+        (
+            "claims.0.claim_status:legacy_evidence_tier:"
+            f"{legacy_status}_to_{canonical_status}"
+        )
+    ]
+    service._complete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_status", ["invented_synonym", "author_opinion", "gameplay_note"]
+)
+async def test_external_claim_unknown_or_non_external_status_uses_bounded_repair(
+    invalid_status: str,
+) -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    repaired = {
+        "claims": [
+            {
+                "summary": "A fonte faz uma afirmação delimitada.",
+                "source_fragment_id": "source-1",
+                "claim_status": "reported",
+                "confidence": 0.7,
+            }
+        ]
+    }
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(json.dumps(repaired), role=LLMTaskRole.REPAIR)
+    )
+    invalid = {
+        "claims": [
+            {
+                **repaired["claims"][0],
+                "claim_status": invalid_status,
+            }
+        ]
+    }
+
+    parsed, provenance = await service._parse_or_repair(
+        SimpleNamespace(),
+        _result(json.dumps(invalid)),
+        ExternalClaimExtractionOutput,
+    )
+
+    assert parsed.model_dump(exclude_none=True) == repaired
+    assert provenance["repair_reason"] == "ValidationError"
+    repair_prompt = service._complete.await_args.kwargs["prompt"]
+    assert f'"invalid_value": "{invalid_status}"' in repair_prompt
+    assert "change only paths named in VALIDATION ERRORS" in repair_prompt
+    service._complete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_external_claim_malformed_repair_remains_bounded_failure() -> None:
+    service = ScriptGenerationJobService(
+        AsyncMock(), gateway=AsyncMock(), config=_config()
+    )
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result("{", role=LLMTaskRole.REPAIR)
+    )
+    invalid = _result(
+        json.dumps(
+            {
+                "claims": [
+                    {
+                        "summary": "A fonte faz uma afirmação delimitada.",
+                        "source_fragment_id": "source-1",
+                        "claim_status": "invented_synonym",
+                        "confidence": 0.7,
+                    }
+                ]
+            }
+        )
+    )
+
+    with pytest.raises(LLMGatewayError, match="remained invalid"):
+        await service._parse_or_repair(
+            SimpleNamespace(), invalid, ExternalClaimExtractionOutput
+        )
+
+    service._complete.assert_awaited_once()
+
+
+def test_external_claim_status_contract_is_derived_from_strict_schema() -> None:
+    assert _external_claim_status_values() == (
+        "confirmed",
+        "official_observation",
+        "reported",
+        "strongly_supported",
+        "interpretation",
+        "inference",
+        "rumor",
+        "leak",
+        "speculation",
+        "unknown",
+    )
 
 
 @pytest.mark.asyncio
@@ -1906,6 +2075,119 @@ async def test_content_driven_visual_enrichment_uses_assembled_duration() -> Non
     )
     schemas = [call.kwargs["schema"] for call in service._complete.await_args_list]
     assert all("narration_excerpt" not in json.dumps(schema) for schema in schemas)
+
+
+@pytest.mark.asyncio
+async def test_visual_enrichment_exposes_note_id_and_canonicalizes_provenance() -> None:
+    service, _, run, section = _writing_fixture()
+    note_id = uuid4()
+    session_id = uuid4()
+    section.section_plan["target_duration_seconds"] = 20
+    section.section_plan["evidence_refs"] = ["media-fragment"]
+    run.evidence_dossier = {
+        "fragments": [
+            {
+                "source_fragment_id": "media-fragment",
+                "media_note_id": str(note_id),
+                "session_id": str(session_id),
+                "alignment": {"start_seconds": 12.5, "end_seconds": 19.0},
+                "themes": ["combate"],
+                "claims": [],
+            }
+        ]
+    }
+    evidence = service._evidence_for_section(run, section)
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        return_value=_result(
+            json.dumps(
+                {
+                    "visual_queries": [
+                        {
+                            "beat_order": 0,
+                            "intent": "evidence",
+                            "query": "combate observado no gameplay",
+                            "importance": "required",
+                            "source_note_id": str(note_id),
+                            "notes": None,
+                        }
+                    ]
+                }
+            ),
+            role=LLMTaskRole.WRITING,
+        )
+    )
+
+    queries = await ScriptGenerationJobService._enrich_section_visual_beats(
+        service,
+        run,
+        section,
+        content="Momento canônico do combate.",
+        evidence=evidence,
+        profile=get_profile("faceless_general"),
+    )
+
+    assert evidence[0]["media_note_id"] == str(note_id)
+    assert "session_id" not in evidence[0]
+    assert "alignment" not in evidence[0]
+    prompt = service._complete.await_args.kwargs["prompt"]
+    assert f'ALLOWED SOURCE NOTE IDS: ["{note_id}"]' in prompt
+    assert queries[0].source_note_id == note_id
+    assert queries[0].preferred_session_id == session_id
+    assert queries[0].preferred_start_seconds == 12.5
+    assert queries[0].preferred_end_seconds == 19.0
+
+
+@pytest.mark.asyncio
+async def test_unknown_note_gets_one_visual_only_retry_with_same_narration() -> None:
+    service, _, run, section = _writing_fixture()
+    unknown_note_id = uuid4()
+    content = "Narração válida que não deve ser reescrita."
+    section.section_plan["target_duration_seconds"] = 20
+    section.output = {"content": content}
+    responses = [
+        {
+            "beat_order": 0,
+            "intent": "illustration",
+            "query": "imagem de apoio",
+            "importance": "preferred",
+            "source_note_id": str(unknown_note_id),
+            "notes": None,
+        },
+        {
+            "beat_order": 0,
+            "intent": "illustration",
+            "query": "imagem de apoio",
+            "importance": "preferred",
+            "source_note_id": None,
+            "notes": None,
+        },
+    ]
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(
+                json.dumps({"visual_queries": [response]}),
+                role=LLMTaskRole.WRITING,
+            )
+            for response in responses
+        ]
+    )
+
+    queries = await ScriptGenerationJobService._enrich_section_visual_beats(
+        service,
+        run,
+        section,
+        content=content,
+        evidence=[],
+        profile=get_profile("faceless_general"),
+    )
+
+    assert service._complete.await_count == 2
+    prompts = [call.kwargs["prompt"] for call in service._complete.await_args_list]
+    assert all("ALLOWED SOURCE NOTE IDS: []" in prompt for prompt in prompts)
+    assert all(content in prompt for prompt in prompts)
+    assert "previous visual-only attempt" in prompts[1]
+    assert section.output == {"content": content}
+    assert queries[0].source_note_id is None
 
 
 def test_section_claims_are_selected_only_by_explicit_approved_claim_refs() -> None:

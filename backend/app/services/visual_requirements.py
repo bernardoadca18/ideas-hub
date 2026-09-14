@@ -31,6 +31,18 @@ class VisualRequirementsError(ValueError):
     """A visual requirement cannot be safely bound or trusted."""
 
 
+class UnknownVisualSourceNoteError(VisualRequirementsError):
+    """The LLM selected a note UUID outside the trusted dossier."""
+
+    def __init__(self, source_note_id: UUID, *, allowed_count: int) -> None:
+        self.source_note_id = source_note_id
+        self.allowed_count = allowed_count
+        super().__init__(
+            f"source_note_id {source_note_id} is not present in trusted media context "
+            f"(allowed_count={allowed_count})"
+        )
+
+
 DEFAULT_VISUAL_REQUIREMENTS_POLICY = VisualRequirementsPolicy()
 
 
@@ -181,8 +193,9 @@ def materialize_written_visual_queries(
         if source_note_id is not None:
             provenance = note_provenance.get(source_note_id)
             if provenance is None:
-                raise VisualRequirementsError(
-                    "source_note_id is not present in trusted media context"
+                raise UnknownVisualSourceNoteError(
+                    source_note_id,
+                    allowed_count=len(note_provenance),
                 )
             preferred_session_id, preferred_start_seconds, preferred_end_seconds = provenance
         intent = _enum_value(getattr(raw, "intent", None))

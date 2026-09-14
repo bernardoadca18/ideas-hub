@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+
 from app.production_profiles import SourceMatchRule, SourcePolicy, get_profile
 from app.prompts.editorial_v3 import compose_editorial_v3_prompt
 from app.services.editorial_evidence import (
@@ -303,6 +305,18 @@ def test_unverified_source_cannot_promote_claim_to_confirmed() -> None:
     assert qualification and "não é uma fonte primária" in qualification
 
 
+def test_community_source_cannot_promote_claim_to_confirmed() -> None:
+    status, confidence, qualification = _calibrate_external_claim(
+        source_trust=SourceTrustTier.COMMUNITY,
+        claim_status=ClaimStatus.CONFIRMED,
+        confidence=0.99,
+        qualification=None,
+    )
+    assert status is ClaimStatus.REPORTED
+    assert confidence == 0.6
+    assert qualification and "não é uma fonte primária" in qualification
+
+
 def test_reliable_secondary_authority_does_not_become_official_status() -> None:
     status, confidence, qualification = _calibrate_external_claim(
         source_trust=SourceTrustTier.RELIABLE_SECONDARY,
@@ -571,12 +585,160 @@ async def test_external_fragment_produces_typed_host_owned_claim_checkpoint() ->
         run.evidence_dossier["fragments"][0]["claim_extraction_status"] == "completed"
     )
     extraction_prompt = service._complete.await_args.kwargs["prompt"]
-    assert "official_observation" in extraction_prompt
+    assert (
+        "claim_status MUST be exactly one of: confirmed, official_observation, "
+        "reported, strongly_supported, interpretation, inference, rumor, leak, "
+        "speculation, unknown"
+    ) in extraction_prompt
+    assert "Do not use an evidence_tier or source_trust value" in extraction_prompt
     assert "never implies an unstated gameplay mechanic" in extraction_prompt
+    assert (
+        service._complete.await_args.kwargs["prompt_version"]
+        == "external_claim_extraction_v2"
+    )
     assert service._complete.await_args.kwargs["temperature"] == 0.0
     assert service._complete.await_args.kwargs["max_tokens"] == 4360
     assert service._complete.await_args.kwargs["structured_mode"] == "json_schema"
     session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_external_claim_repair_receives_explicit_status_contract() -> None:
+    session = AsyncMock()
+    service = ScriptGenerationJobService(session, gateway=AsyncMock())
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(
+                json.dumps(
+                    {
+                        "claims": [
+                            {
+                                "source_fragment_id": "source-1",
+                                "summary": "A fonte relata uma informação.",
+                                "claim_status": "not_a_status",
+                                "confidence": 0.7,
+                            }
+                        ]
+                    }
+                )
+            ),
+            _result(
+                json.dumps(
+                    {
+                        "claims": [
+                            {
+                                "source_fragment_id": "source-1",
+                                "summary": "A fonte relata uma informação.",
+                                "claim_status": "reported",
+                                "confidence": 0.7,
+                            }
+                        ]
+                    }
+                )
+            ),
+        ]
+    )
+    run = SimpleNamespace(
+        id=uuid4(),
+        production_profile="faceless_general",
+        evidence_dossier={
+            "fragments": [
+                {
+                    "source_fragment_id": "source-1",
+                    "snippet": "Dado.",
+                    "source_trust": "unverified",
+                    "claim_extraction_status": "pending",
+                }
+            ]
+        },
+        heartbeat_at=None,
+        call_usage={},
+    )
+
+    await service._extract_external_claims(
+        run, SimpleNamespace(nicho_id=None, titulo="Tema", descricao_breve=None)
+    )
+
+    repair_prompt = service._complete.await_args_list[1].kwargs["prompt"]
+    assert "STRUCTURAL CONTRACT" in repair_prompt
+    assert (
+        "claim_status MUST be exactly one of: confirmed, official_observation, "
+        "reported, strongly_supported, interpretation, inference, rumor, leak, "
+        "speculation, unknown"
+    ) in repair_prompt
+    assert '"invalid_value": "not_a_status"' in repair_prompt
+
+
+@pytest.mark.asyncio
+async def test_each_external_claim_fragment_uses_a_distinct_durable_checkpoint() -> None:
+    class TrackingRun:
+        def __init__(self) -> None:
+            self.id = uuid4()
+            self.production_profile = "faceless_general"
+            self.heartbeat_at = None
+            self.checkpoints: list[dict[str, Any]] = []
+            self._evidence_dossier = {
+                "fragments": [
+                    {
+                        "source_fragment_id": "source-1",
+                        "snippet": "Primeiro dado.",
+                        "source_trust": "unverified",
+                        "claim_extraction_status": "pending",
+                    },
+                    {
+                        "source_fragment_id": "source-2",
+                        "snippet": "Segundo dado.",
+                        "source_trust": "community",
+                        "claim_extraction_status": "pending",
+                    },
+                ]
+            }
+
+        @property
+        def evidence_dossier(self) -> dict[str, Any]:
+            return self._evidence_dossier
+
+        @evidence_dossier.setter
+        def evidence_dossier(self, value: dict[str, Any]) -> None:
+            self._evidence_dossier = value
+            self.checkpoints.append(json.loads(json.dumps(value)))
+
+    def extraction(source_id: str) -> LLMCallResult:
+        return _result(
+            json.dumps(
+                {
+                    "claims": [
+                        {
+                            "source_fragment_id": source_id,
+                            "summary": f"Claim de {source_id}.",
+                            "claim_status": "reported",
+                            "confidence": 0.5,
+                        }
+                    ]
+                }
+            )
+        )
+
+    session = AsyncMock()
+    service = ScriptGenerationJobService(session, gateway=AsyncMock())
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[extraction("source-1"), extraction("source-2")]
+    )
+    run = TrackingRun()
+
+    await service._extract_external_claims(
+        run, SimpleNamespace(nicho_id=None, titulo="Tema", descricao_breve=None)
+    )
+
+    assert session.commit.await_count == 2
+    assert [
+        fragment["claim_extraction_status"]
+        for fragment in run.checkpoints[0]["fragments"]
+    ] == ["completed", "pending"]
+    assert [
+        fragment["claim_extraction_status"]
+        for fragment in run.checkpoints[1]["fragments"]
+    ] == ["completed", "completed"]
 
 
 @pytest.mark.asyncio

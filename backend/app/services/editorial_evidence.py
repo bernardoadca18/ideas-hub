@@ -297,6 +297,21 @@ def legacy_tier_contract(tier: str) -> tuple[SourceTrustTier, ClaimStatus]:
     )
 
 
+def external_claim_status_from_legacy_tier(tier: str) -> ClaimStatus | None:
+    """Return only recognized legacy tiers that are valid for external research."""
+
+    contract = _LEGACY_TIER_MAP.get(tier)
+    if contract is None:
+        return None
+    _, status = contract
+    if status in {
+        ClaimStatus.AUTHOR_OPINION,
+        ClaimStatus.GAMEPLAY_OBSERVATION,
+    }:
+        return None
+    return status
+
+
 def legacy_evidence_tier_for(
     source_trust: SourceTrustTier | str,
     claim_status: ClaimStatus | str,

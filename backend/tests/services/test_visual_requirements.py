@@ -16,6 +16,7 @@ from app.services.script_generation_jobs import (
     assemble_written_sections,
 )
 from app.services.visual_requirements import (
+    UnknownVisualSourceNoteError,
     VisualRequirementsError,
     materialize_written_visual_queries,
     segment_visual_beats,
@@ -231,6 +232,59 @@ def test_unknown_source_note_and_missing_beat_are_rejected() -> None:
             evidence_dossier={},
             beats=beats,
         )
+
+
+def test_session_uuid_cannot_be_used_as_source_note_id() -> None:
+    note_id = uuid4()
+    session_id = uuid4()
+    content = "Momento canônico do gameplay."
+    beats = segment_visual_beats(
+        section_key="game", content=content, duration_seconds=20
+    )
+
+    with pytest.raises(UnknownVisualSourceNoteError) as captured:
+        materialize_written_visual_queries(
+            generation_run_id=uuid4(),
+            section_key="game",
+            duration_seconds=20,
+            content=content,
+            generated=[_semantic(0, source_note_id=session_id)],
+            evidence_dossier={
+                "fragments": [
+                    {
+                        "media_note_id": str(note_id),
+                        "session_id": str(session_id),
+                    }
+                ]
+            },
+            beats=beats,
+        )
+
+    assert captured.value.source_note_id == session_id
+    assert captured.value.allowed_count == 1
+    assert str(session_id) in str(captured.value)
+
+
+def test_null_source_note_id_is_valid_without_media_context() -> None:
+    content = "Narração manual sem contexto temporal."
+    beats = segment_visual_beats(
+        section_key="manual", content=content, duration_seconds=20
+    )
+
+    result = materialize_written_visual_queries(
+        generation_run_id=uuid4(),
+        section_key="manual",
+        duration_seconds=20,
+        content=content,
+        generated=[_semantic(0)],
+        evidence_dossier={"fragments": []},
+        beats=beats,
+    )[0]
+
+    assert result.source_note_id is None
+    assert result.preferred_session_id is None
+    assert result.preferred_start_seconds is None
+    assert result.preferred_end_seconds is None
 
 
 def test_visual_readiness_requires_full_host_owned_coverage() -> None:

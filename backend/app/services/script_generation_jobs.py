@@ -75,6 +75,7 @@ from app.services.editorial_evidence import (
     build_canonical_claim_ledger,
     canonical_claim_id,
     classify_source_trust,
+    external_claim_status_from_legacy_tier,
     legacy_evidence_tier_for,
     select_planning_claims,
 )
@@ -111,6 +112,7 @@ from app.services.revision_brief import (
 )
 from app.services.visual_requirements import (
     VISUAL_REQUIREMENTS_POLICY_VERSION,
+    UnknownVisualSourceNoteError,
     VisualRequirementsError,
     materialize_written_visual_queries,
     segment_visual_beats,
@@ -1844,6 +1846,7 @@ class ScriptGenerationJobService:
             source_trust = SourceTrustTier(
                 fragment.get("source_trust") or SourceTrustTier.UNVERIFIED
             )
+            allowed_claim_statuses = ", ".join(_external_claim_status_values())
             contract = (
                 "Return ONE object with exactly claims. claims is an array and may be empty. "
                 "Extract at most four central, atomic claims (normally one to three); omit "
@@ -1856,6 +1859,9 @@ class ScriptGenerationJobService:
                 "qualification, support_scope and contradiction_note. Every "
                 "source_fragment_id must equal "
                 f"{source_id}. Extract only propositions directly supported by this snippet. "
+                "claim_status MUST be exactly one of: "
+                f"{allowed_claim_statuses}. Do not use an evidence_tier or source_trust value "
+                "as claim_status and do not invent synonyms. "
                 "Use official_observation when official material merely shows or depicts an "
                 "element; confirmed is reserved for an explicit factual confirmation in the "
                 "source and never implies an unstated gameplay mechanic. "
@@ -1892,7 +1898,7 @@ class ScriptGenerationJobService:
                 prompt=composed.user,
                 system_prompt=composed.system,
                 prompt_trace=composed.trace,
-                prompt_version="external_claim_extraction_v1",
+                prompt_version="external_claim_extraction_v2",
                 scope=source_id,
                 schema=ExternalClaimExtractionOutput.model_json_schema(),
                 max_tokens=_claim_extraction_max_tokens(EXTERNAL_CLAIM_MAX_ITEMS),
@@ -1945,10 +1951,15 @@ class ScriptGenerationJobService:
             fragment["claims"] = claims
             fragment["claim_extraction_status"] = "completed"
             fragment["claim_extraction_provenance"] = provenance
-            dossier["fragments"] = fragments
-            dossier["claims"] = [
-                claim for current in fragments for claim in current.get("claims") or []
-            ]
+            dossier = {
+                **dossier,
+                "fragments": [dict(item) for item in fragments],
+                "claims": [
+                    claim
+                    for current in fragments
+                    for claim in current.get("claims") or []
+                ],
+            }
             run.evidence_dossier = dossier
             run.heartbeat_at = datetime.now(UTC)
             await self.session.commit()
@@ -3099,59 +3110,88 @@ class ScriptGenerationJobService:
             duration_seconds=duration,
             policy=policy,
         )
-        generated: list[Any] = []
-        for batch_index, batch in enumerate(visual_beat_batches(beats, policy)):
-            task = (
-                "Describe the footage need for every HOST-OWNED VISUAL BEAT below. "
-                "Return exactly one visual_queries item per beat, preserving beat_order. "
-                "Choose only intent, query, importance, optional notes and source_note_id. "
-                "Do not return narration excerpts, spans, durations, session IDs or "
-                "timestamps. Use source_note_id only when its exact UUID exists in "
-                "RELEVANT EVIDENCE; otherwise use null.\n"
-                f"SECTION KEY: {section.section_key}\n"
-                "BEATS: "
-                f"{json.dumps([{'beat_order': beat.order, 'narration': beat.text} for beat in batch], ensure_ascii=False)}\n"
-                f"SECTION CONTEXT: {json.dumps(section.section_plan, ensure_ascii=False)}\n"
-                "RELEVANT EVIDENCE: "
-                f"<evidence>{json.dumps(evidence, ensure_ascii=False)}</evidence>"
-            )
-            composed = compose_editorial_v3_prompt(
-                phase="writing",
-                profile=profile,
-                task_prompt=task,
-            )
-            result = await self._complete(
-                run,
-                role=LLMTaskRole.WRITING,
-                prompt=composed.user,
-                system_prompt=composed.system,
-                prompt_trace=composed.trace,
-                prompt_version="visual_beat_enrichment_v2",
-                scope=f"{section.section_key}:visual:{batch_index}",
-                section_key=section.section_key,
-                schema=VisualBeatEnrichmentOutput.model_json_schema(),
-                max_tokens=2500,
-            )
-            parsed, _ = await self._parse_or_repair(
-                run, result, VisualBeatEnrichmentOutput
-            )
-            expected = [beat.order for beat in batch]
-            observed = [item.beat_order for item in parsed.visual_queries]
-            if observed != expected:
-                raise VisualRequirementsError(
-                    "visual beat enrichment must return every host-owned beat in order"
+        allowed_source_note_ids = _allowed_source_note_ids(evidence)
+        for provenance_attempt in range(2):
+            generated: list[Any] = []
+            for batch_index, batch in enumerate(visual_beat_batches(beats, policy)):
+                retry_instruction = (
+                    "A previous visual-only attempt selected an unlisted note UUID. "
+                    "Correct only visual semantics and provenance; do not alter narration. "
+                    if provenance_attempt
+                    else ""
                 )
-            generated.extend(parsed.visual_queries)
-        return materialize_written_visual_queries(
-            generation_run_id=run.id,
-            section_key=section.section_key,
-            duration_seconds=duration,
-            content=content,
-            generated=generated,
-            evidence_dossier=run.evidence_dossier,
-            policy=policy,
-            beats=beats,
-        )
+                task = (
+                    "Describe the footage need for every HOST-OWNED VISUAL BEAT below. "
+                    "Return exactly one visual_queries item per beat, preserving beat_order. "
+                    "Choose only intent, query, importance, optional notes and source_note_id. "
+                    "Do not return narration excerpts, spans, durations, session IDs or "
+                    "timestamps. Set source_note_id only to one exact UUID from "
+                    "ALLOWED SOURCE NOTE IDS. When that list is empty or no listed note "
+                    "applies, source_note_id MUST be null. Never use a session UUID or a "
+                    "UUID parsed from source_fragment_id.\n"
+                    f"{retry_instruction}"
+                    f"SECTION KEY: {section.section_key}\n"
+                    "BEATS: "
+                    f"{json.dumps([{'beat_order': beat.order, 'narration': beat.text} for beat in batch], ensure_ascii=False)}\n"
+                    f"SECTION CONTEXT: {json.dumps(section.section_plan, ensure_ascii=False)}\n"
+                    "ALLOWED SOURCE NOTE IDS: "
+                    f"{json.dumps(allowed_source_note_ids)}\n"
+                    "RELEVANT EVIDENCE: "
+                    f"<evidence>{json.dumps(evidence, ensure_ascii=False)}</evidence>"
+                )
+                composed = compose_editorial_v3_prompt(
+                    phase="writing",
+                    profile=profile,
+                    task_prompt=task,
+                )
+                result = await self._complete(
+                    run,
+                    role=LLMTaskRole.WRITING,
+                    prompt=composed.user,
+                    system_prompt=composed.system,
+                    prompt_trace=composed.trace,
+                    prompt_version="visual_beat_enrichment_v3",
+                    scope=(
+                        f"{section.section_key}:visual:{batch_index}"
+                        if not provenance_attempt
+                        else f"{section.section_key}:visual:{batch_index}:provenance-retry"
+                    ),
+                    section_key=section.section_key,
+                    schema=VisualBeatEnrichmentOutput.model_json_schema(),
+                    max_tokens=2500,
+                )
+                parsed, _ = await self._parse_or_repair(
+                    run, result, VisualBeatEnrichmentOutput
+                )
+                expected = [beat.order for beat in batch]
+                observed = [item.beat_order for item in parsed.visual_queries]
+                if observed != expected:
+                    raise VisualRequirementsError(
+                        "visual beat enrichment must return every host-owned beat in order"
+                    )
+                generated.extend(parsed.visual_queries)
+            try:
+                return materialize_written_visual_queries(
+                    generation_run_id=run.id,
+                    section_key=section.section_key,
+                    duration_seconds=duration,
+                    content=content,
+                    generated=generated,
+                    evidence_dossier=run.evidence_dossier,
+                    policy=policy,
+                    beats=beats,
+                )
+            except UnknownVisualSourceNoteError as exc:
+                if provenance_attempt:
+                    raise
+                logger.warning(
+                    "visual_enrichment_unknown_source_note_retry",
+                    run_id=str(run.id),
+                    section_key=section.section_key,
+                    rejected_source_note_id=str(exc.source_note_id),
+                    allowed_source_note_count=len(allowed_source_note_ids),
+                )
+        raise AssertionError("unreachable visual provenance retry state")
 
     async def _audit_section(
         self,
@@ -3474,6 +3514,9 @@ class ScriptGenerationJobService:
                 "source_url": item.get("url"),
                 "source_title": item.get("title"),
                 "source_trust": item.get("source_trust"),
+                "media_note_id": str(item["media_note_id"])
+                if item.get("media_note_id")
+                else None,
                 "authoritative_note_excerpt": raw_notes[
                     int(item.get("start") or 0) : int(item.get("end") or 0)
                 ],
@@ -5689,16 +5732,29 @@ def _planning_is_complete(run: Any) -> bool:
 
 def _compact_validation_error(error: Exception) -> str:
     if isinstance(error, ValidationError):
-        compact = [
-            {
+        compact = []
+        for item in error.errors(include_url=False, include_input=True):
+            detail = {
                 "location": ".".join(str(part) for part in item["loc"]),
                 "type": item["type"],
                 "message": item["msg"],
             }
-            for item in error.errors(include_url=False, include_input=False)
-        ]
+            if (
+                item["loc"]
+                and item["loc"][-1] == "claim_status"
+                and isinstance(item.get("input"), str)
+            ):
+                detail["invalid_value"] = item["input"][:80]
+            compact.append(detail)
         return json.dumps(compact, ensure_ascii=False)[:8000]
     return f"{type(error).__name__}: {str(error)[:2000]}"
+
+
+def _external_claim_status_values() -> tuple[str, ...]:
+    schema = ExternalClaimExtractionOutput.model_json_schema()
+    return tuple(
+        schema["$defs"]["ExternalClaimOutput"]["properties"]["claim_status"]["enum"]
+    )
 
 
 def _normalize_structured_payload(
@@ -5731,9 +5787,18 @@ def _normalize_structured_payload(
         "low": 0.3,
         "baixa": 0.3,
     }
-    for claim in payload.get("claims") or []:
+    for index, claim in enumerate(payload.get("claims") or []):
         if not isinstance(claim, dict):
             continue
+        raw_status = claim.get("claim_status")
+        if isinstance(raw_status, str):
+            canonical_status = external_claim_status_from_legacy_tier(raw_status)
+            if canonical_status is not None and canonical_status.value != raw_status:
+                claim["claim_status"] = canonical_status.value
+                normalizations.append(
+                    f"claims.{index}.claim_status:legacy_evidence_tier:"
+                    f"{raw_status}_to_{canonical_status.value}"
+                )
         confidence = claim.get("confidence")
         if not isinstance(confidence, str):
             continue
@@ -5806,6 +5871,23 @@ def _section_output_duration_seconds(section_plan: dict[str, Any], content: str)
     if planned_duration is not None:
         return int(planned_duration)
     return max(60, round(count_words(content) / 2.4))
+
+
+def _allowed_source_note_ids(evidence: list[dict[str, Any]]) -> list[str]:
+    """Expose only canonical note UUIDs; sessions and timestamps remain host-owned."""
+
+    result: list[str] = []
+    for item in evidence:
+        raw_note_id = item.get("media_note_id")
+        if raw_note_id is None:
+            continue
+        try:
+            note_id = str(UUID(str(raw_note_id)))
+        except (TypeError, ValueError):
+            continue
+        if note_id not in result:
+            result.append(note_id)
+    return result
 
 
 def _visual_readiness_failure_message(readiness: Any) -> str:
