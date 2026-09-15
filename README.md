@@ -27,9 +27,11 @@ mas não faz lookup
 síncrono no Media Indexer: indisponibilidade temporária do serviço de mídia não pode impedir edição
 editorial. A consistência project/session continua validada pelo Visual Director antes da seleção.
 
-`POST /roteiros/{id}/revisoes/vincular-midia` cria uma revisão imutável `media_binding`, em
-`rascunho`, preservando narração, VisualQueries e metadata editorial. Binding idêntico é rejeitado
-como no-op. `GET /roteiros/{id}/production-readiness` compõe aprovação editorial, Visual Readiness
+`POST /roteiros/{id}/revisoes/vincular-midia` cria uma revisão imutável `media_binding` derivada do
+ID explicitamente escolhido, preservando narração, VisualQueries e metadata editorial. O filho
+herda `aprovado` somente quando o pai escolhido já estava aprovado; mudanças editoriais reais
+continuam nascendo como `rascunho`. Binding idêntico é rejeitado como no-op.
+`GET /roteiros/{id}/production-readiness` compõe aprovação editorial, Visual Readiness
 e a policy profile-aware de MediaScope; o Orchestrator consome esse contrato antes de criar o
 workflow ou enfileirar TTS.
 
@@ -48,11 +50,14 @@ LF; nenhum outro whitespace é removido. `None` é distinto de texto vazio. Assi
 continua verbatim, enquanto a identidade permite detectar se o briefing atual mudou depois da
 geração.
 
-Roteiros formam histórico imutável. Edição humana de título/blocos editoriais e “regenerar com
+Roteiros formam histórico imutável. **HUMAN APPROVAL IS SOVEREIGN. HISTORICAL REVISIONS REMAIN
+USABLE. LATEST REVISION IS A DEFAULT, NOT AN AUTHORITY.** O operador pode aprovar e escolher uma
+revisão histórica por seu ID exato; isso não altera nem remove revisões posteriores. Edição humana de título/blocos editoriais e “regenerar com
 feedback” criam uma nova `versao`, ligam `parent_roteiro_id` e preservam a versão anterior. Blocos
 cujo texto e duração não mudaram podem preservar seus requisitos visuais; blocos alterados perdem
-os spans antigos e ficam explicitamente pendentes de enrichment visual. Aprovação só é permitida
-para o draft mais recente. Roteiros históricos sem briefing ou VisualQueries continuam válidos.
+os spans antigos e ficam explicitamente pendentes de enrichment visual. **MEDIA BINDING IS
+OPERATIONAL CONFIGURATION** e workflows de produção devem fixar o ID de uma revisão imutável
+exata. Roteiros históricos sem briefing ou VisualQueries continuam válidos.
 
 ## Contrato visual de produção faceless
 

@@ -34,7 +34,7 @@ function auditStatusColor(status?: string) {
   return '#6b7280';
 }
 
-function approvalIsBlocked(script: Roteiro) {
+function hasEditorialBlockers(script: Roteiro) {
   return script.estrutura.editorial_review?.approval_blocked === true;
 }
 
@@ -251,6 +251,24 @@ export default function Roteiros() {
   }
 
   async function approve(script: Roteiro) {
+    const latestVersion = latestVersionByIdea.get(script.ideia_id);
+    if (
+      latestVersion !== undefined
+      && script.versao !== latestVersion
+      && !window.confirm(
+        `Esta não é a revisão mais recente. Versão escolhida: v${script.versao}. Versão mais recente: v${latestVersion}. Deseja aprovar esta revisão mesmo assim?`,
+      )
+    ) {
+      return;
+    }
+    if (
+      hasEditorialBlockers(script)
+      && !window.confirm(
+        'A revisão editorial marcou este roteiro com bloqueadores. Revise os apontamentos antes de decidir. Deseja aprovar mesmo assim?',
+      )
+    ) {
+      return;
+    }
     try {
       await api.aprovarRoteiro(script.id);
       setSelected(null);
@@ -439,6 +457,14 @@ export default function Roteiros() {
                   <span>{selected.estrutura.blocos.length} blocos</span>
                   <span>Origem: {selected.revision_kind}</span>
                 </div>
+                {!selectedIsLatest && (
+                  <div className="review-warnings-banner" style={{ marginTop: '1rem', padding: '0.75rem', backgroundColor: '#fef3c7', border: '1px solid #f59e0b', borderRadius: '4px' }}>
+                    <strong>⚠ Esta não é a revisão mais recente.</strong>
+                    <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.9rem' }}>
+                      Versão escolhida: v{selected.versao}. Versão mais recente: v{latestVersionByIdea.get(selected.ideia_id)}. Você ainda pode aprovar esta revisão explicitamente.
+                    </p>
+                  </div>
+                )}
                 {selected.estrutura.manual_draft && (
                   <div className="script-provenance">
                     <strong>Rascunho humano original</strong>
@@ -561,17 +587,20 @@ export default function Roteiros() {
                       <strong>⚠️ Avisos de revisão detectados</strong>
                       <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.9rem' }}>
                         Este roteiro contém questões editoriais ou factuais que requerem atenção.
-                        Revise os blocos marcados abaixo. A aprovação permanece bloqueada quando a auditoria define um bloqueador explícito.
+                        Revise os blocos marcados abaixo antes de decidir. A aprovação manual continua disponível.
                       </p>
                     </div>
                   )}
-                  {approvalIsBlocked(selected) && (
-                    <div className="error">
-                      A aprovação está bloqueada pela revisão editorial. Corrija os bloqueadores e gere uma nova revisão antes de aprovar.
+                  {hasEditorialBlockers(selected) && (
+                    <div className="review-warnings-banner" style={{ marginTop: '1rem', padding: '0.75rem', backgroundColor: '#fef3c7', border: '1px solid #f59e0b', borderRadius: '4px' }}>
+                      <strong>⚠ Revisão editorial encontrou bloqueadores.</strong>
+                      <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.9rem' }}>
+                        Revise os apontamentos antes de decidir. A aprovação manual continua disponível.
+                      </p>
                     </div>
                   )}
                 </div>
-                {selected.status === 'rascunho' && <div className="modal-footer">{selectedIsLatest ? <><button onClick={() => reject(selected)} className="btn btn-danger">Rejeitar</button><button onClick={() => approve(selected)} className="btn btn-success" disabled={approvalIsBlocked(selected)} title={approvalIsBlocked(selected) ? 'Audit atual obrigatório e sem bloqueadores antes da aprovação.' : undefined}>Aprovar versão</button></> : <span className="form-help">Somente o draft mais recente pode ser aprovado ou rejeitado.</span>}</div>}
+                {selected.status === 'rascunho' && <div className="modal-footer">{selectedIsLatest && <button onClick={() => reject(selected)} className="btn btn-danger">Rejeitar</button>}<button onClick={() => approve(selected)} className="btn btn-success">Aprovar esta versão</button></div>}
               </>
             )}
           </div>
@@ -583,7 +612,7 @@ export default function Roteiros() {
           <div key={script.id} className="card">
             <div className="card-header"><h3 className="card-title">{script.estrutura.titulo}</h3><span className="status-badge" style={{ backgroundColor: statusColor(script.status) }}>{script.status}</span></div>
             <div className="card-meta"><span>Versão: {script.versao}</span><span>Origem: {script.revision_kind}</span><span>Target: {script.estrutura.duration_contract?.target_duration_seconds ? formatDuration(script.estrutura.duration_contract.target_duration_seconds) : '—'}</span><span>Predicted: {formatDuration(Math.round(script.estrutura.duration_contract?.predicted_duration_seconds || 0))}</span><span style={{ color: durationStatusColor(script.estrutura.duration_contract?.status) }}>{script.estrutura.duration_contract?.status || 'legacy/unvalidated'}</span><span style={{ color: auditStatusColor(script.estrutura.editorial_review?.editorial_status) }}>Editorial: {script.estrutura.editorial_review?.editorial_status || 'unvalidated'}</span><span style={{ color: auditStatusColor(script.estrutura.editorial_review?.factuality_status) }}>Factuality: {script.estrutura.editorial_review?.factuality_status || 'unvalidated'}</span><span>Ideia: {script.ideia_id.slice(0, 8)}…</span></div>
-            <div className="card-actions"><button onClick={() => { setSelected(script); setFeedback(''); }} className="btn btn-sm btn-secondary">Revisar detalhes</button>{script.status === 'rascunho' && script.versao === latestVersionByIdea.get(script.ideia_id) && <><button onClick={() => approve(script)} className="btn btn-sm btn-success" disabled={approvalIsBlocked(script)} title={approvalIsBlocked(script) ? 'Audit atual obrigatório e sem bloqueadores antes da aprovação.' : undefined}>Aprovar</button><button onClick={() => reject(script)} className="btn btn-sm btn-danger">Rejeitar</button></>}</div>
+            <div className="card-actions"><button onClick={() => { setSelected(script); setFeedback(''); }} className="btn btn-sm btn-secondary">Revisar detalhes</button>{script.status === 'rascunho' && <><button onClick={() => approve(script)} className="btn btn-sm btn-success">Aprovar</button>{script.versao === latestVersionByIdea.get(script.ideia_id) && <button onClick={() => reject(script)} className="btn btn-sm btn-danger">Rejeitar</button>}</>}</div>
           </div>
         ))}
       </div>

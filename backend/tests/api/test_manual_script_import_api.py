@@ -196,13 +196,15 @@ def test_runtime_import_chain_exposes_the_canonical_duration_predictor() -> None
     assert RoteiroGenerator is not None
 
 
-def test_blocked_approval_is_a_controlled_business_error() -> None:
+def test_historical_revision_approval_endpoint_returns_selected_revision() -> None:
     script_id = uuid4()
     generator = AsyncMock()
-    generator.aprovar_roteiro.side_effect = ValueError(
-        "Aprovação bloqueada pela revisão editorial "
-        "(editorial_status=needs_revision, factuality_status=blocking)"
-    )
+    approved = script_response(version=2)
+    approved["id"] = str(script_id)
+    approved["status"] = "aprovado"
+    generator.aprovar_roteiro.return_value = approved
+    repository = AsyncMock()
+    repository.get_by_id.return_value = approved
     app.dependency_overrides[get_db] = lambda: AsyncMock()
     try:
         with (
@@ -210,13 +212,20 @@ def test_blocked_approval_is_a_controlled_business_error() -> None:
                 "app.services.roteiros.gerador_roteiro.get_roteiro_generator",
                 return_value=generator,
             ),
+            patch(
+                "app.api.routers.roteiros.RoteiroRepository",
+                return_value=repository,
+            ),
             TestClient(app) as client,
         ):
             response = client.patch(f"/roteiros/{script_id}/aprovar")
     finally:
         app.dependency_overrides.clear()
-    assert response.status_code == 400
-    assert response.json()["detail"].startswith("Aprovação bloqueada")
+    assert response.status_code == 200
+    assert response.json()["id"] == str(script_id)
+    assert response.json()["versao"] == 2
+    assert response.json()["status"] == "aprovado"
+    generator.aprovar_roteiro.assert_awaited_once_with(script_id)
 
 
 def test_non_blocked_approval_endpoint_still_returns_the_script() -> None:

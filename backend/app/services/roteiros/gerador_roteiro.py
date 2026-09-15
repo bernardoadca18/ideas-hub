@@ -250,6 +250,7 @@ class RoteiroGenerator:
         revision_kind: str,
         parent_roteiro_id: UUID | None = None,
         revision_feedback: str | None = None,
+        status: str = "rascunho",
     ) -> Roteiro:
         profile = await self._profile_for_idea(ideia)
         readiness = validate_visual_readiness(estrutura, profile.visual_requirements)
@@ -269,7 +270,7 @@ class RoteiroGenerator:
                 ideia_id=ideia.id,
                 versao=latest_version + 1,
                 estrutura=estrutura,
-                status="rascunho",
+                status=status,
                 author_briefing_snapshot=snapshot,
                 author_briefing_identity=identity,
                 parent_roteiro_id=parent_roteiro_id,
@@ -277,7 +278,12 @@ class RoteiroGenerator:
                 revision_feedback=revision_feedback,
             )
         )
-        await self.ideia_repo.update(ideia.id, IdeiaUpdate(status="em_roteiro"))
+        await self.ideia_repo.update(
+            ideia.id,
+            IdeiaUpdate(
+                status="roteirizada" if status == "aprovado" else "em_roteiro"
+            ),
+        )
         logger.info(
             "script_revision_persisted",
             ideia_id=str(ideia.id),
@@ -897,23 +903,6 @@ class RoteiroGenerator:
             raise ValueError("Roteiro não encontrado")
         if roteiro.status != "rascunho":
             raise ValueError(f"Roteiro não está em rascunho (status: {roteiro.status})")
-        latest = await self.roteiro_repo.get_latest_version_by_ideia(roteiro.ideia_id)
-        if latest is None or latest.id != roteiro.id:
-            raise ValueError(
-                "Somente a versão mais recente do roteiro pode ser aprovada"
-            )
-
-        structure = RoteiroEstrutura.model_validate(roteiro.estrutura)
-        review = structure.editorial_review
-        if isinstance(review, dict) and review.get("approval_blocked") is True:
-            editorial_status = str(review.get("editorial_status") or "unknown")
-            factuality_status = str(review.get("factuality_status") or "unknown")
-            raise ValueError(
-                "Aprovação bloqueada pela revisão editorial "
-                f"(editorial_status={editorial_status}, "
-                f"factuality_status={factuality_status})"
-            )
-
         updated = await self.roteiro_repo.update(
             roteiro_id, RoteiroUpdate(status="aprovado")
         )
@@ -973,9 +962,8 @@ class RoteiroGenerator:
         source = await self.roteiro_repo.get_by_id(roteiro_id)
         if not source:
             raise ValueError("Roteiro não encontrado")
-        latest = await self.roteiro_repo.get_latest_version_by_ideia(source.ideia_id)
-        if latest is None or latest.id != source.id:
-            raise ValueError("Somente a versão mais recente pode receber media binding")
+        if source.status == "rejeitado":
+            raise ValueError("Roteiro rejeitado não pode receber media binding")
         structure = RoteiroEstrutura.model_validate(source.estrutura)
         if structure.media_context == request.media_context:
             raise ValueError("Media binding is a no-op: this scope is already current")
@@ -986,6 +974,7 @@ class RoteiroGenerator:
             estrutura=RoteiroEstrutura.model_validate(payload),
             revision_kind="media_binding",
             parent_roteiro_id=source.id,
+            status=source.status,
         )
 
     async def repair_visual_queries_revision(

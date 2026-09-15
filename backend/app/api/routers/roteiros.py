@@ -269,7 +269,7 @@ async def vincular_midia_como_nova_revisao(
     payload: MediaBindingRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    """Bind a structurally validated Media Indexer scope in an immutable draft."""
+    """Bind MediaScope in an immutable child that preserves its parent's approval."""
 
     from app.services.roteiros.gerador_roteiro import get_roteiro_generator
 

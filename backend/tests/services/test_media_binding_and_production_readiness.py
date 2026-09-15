@@ -122,6 +122,7 @@ async def test_media_binding_creates_metadata_only_child_revision() -> None:
     after = persisted["estrutura"]
     assert persisted["revision_kind"] == "media_binding"
     assert persisted["parent_roteiro_id"] == source.id
+    assert persisted["status"] == "aprovado"
     assert script_content_identity(after) == script_content_identity(before)
     assert after.tags == before.tags
     assert after.referencias == before.referencias
@@ -140,7 +141,7 @@ async def test_media_binding_creates_metadata_only_child_revision() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source_state", ["missing", "stale", "noop"])
+@pytest.mark.parametrize("source_state", ["missing", "rejected", "noop"])
 async def test_media_binding_rejects_invalid_source_state(source_state: str) -> None:
     structure = _ready_structure(media=source_state == "noop")
     source = _source(structure)
@@ -149,9 +150,8 @@ async def test_media_binding_rejects_invalid_source_state(source_state: str) -> 
     generator.roteiro_repo.get_by_id.return_value = (
         None if source_state == "missing" else source
     )
-    generator.roteiro_repo.get_latest_version_by_ideia.return_value = (
-        SimpleNamespace(id=uuid4()) if source_state == "stale" else source
-    )
+    if source_state == "rejected":
+        source.status = "rejeitado"
     generator._persist_revision = AsyncMock()
     request = MediaBindingRequest(
         media_context={
@@ -162,6 +162,98 @@ async def test_media_binding_rejects_invalid_source_state(source_state: str) -> 
     with pytest.raises(ValueError):
         await generator.bind_media_context_revision(source.id, request)
     generator._persist_revision.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_historical_approved_revision_can_create_approved_media_binding_child() -> None:
+    before = _ready_structure(media=False)
+    source = _source(before)
+    later = SimpleNamespace(id=uuid4(), ideia_id=source.ideia_id, status="rascunho")
+    generator = RoteiroGenerator(AsyncMock())
+    generator.roteiro_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = source
+    generator.roteiro_repo.get_latest_version_by_ideia.return_value = later
+    generator._persist_revision = AsyncMock(return_value=SimpleNamespace(id=uuid4()))
+
+    await generator.bind_media_context_revision(
+        source.id,
+        MediaBindingRequest(
+            media_context={
+                "media_project_id": PROJECT_ID,
+                "media_session_ids": [SESSION_ID],
+            }
+        ),
+    )
+
+    persisted = generator._persist_revision.await_args.kwargs
+    assert persisted["parent_roteiro_id"] == source.id
+    assert persisted["revision_kind"] == "media_binding"
+    assert persisted["status"] == "aprovado"
+    assert script_content_identity(persisted["estrutura"]) == script_content_identity(
+        before
+    )
+    assert [item.id for item in persisted["estrutura"].blocos[0].visual_queries] == [
+        item.id for item in before.blocos[0].visual_queries
+    ]
+    generator.roteiro_repo.get_latest_version_by_ideia.assert_not_awaited()
+    assert later.status == "rascunho"
+
+
+@pytest.mark.asyncio
+async def test_draft_media_binding_child_does_not_inherit_approval() -> None:
+    source = _source(_ready_structure(media=False))
+    source.status = "rascunho"
+    generator = RoteiroGenerator(AsyncMock())
+    generator.roteiro_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = source
+    generator._persist_revision = AsyncMock(return_value=SimpleNamespace(id=uuid4()))
+
+    await generator.bind_media_context_revision(
+        source.id,
+        MediaBindingRequest(
+            media_context={
+                "media_project_id": PROJECT_ID,
+                "media_session_ids": [],
+            }
+        ),
+    )
+
+    assert generator._persist_revision.await_args.kwargs["status"] == "rascunho"
+
+
+@pytest.mark.asyncio
+async def test_approved_operational_revision_persists_approval_and_idea_state() -> None:
+    source = _source(_ready_structure(media=True))
+    generator = RoteiroGenerator(AsyncMock())
+    generator.roteiro_repo = AsyncMock()
+    generator.ideia_repo = AsyncMock()
+    generator.roteiro_repo.get_latest_version_number_for_update.return_value = 4
+
+    async def create(payload):
+        return SimpleNamespace(
+            id=uuid4(),
+            ideia_id=payload.ideia_id,
+            versao=payload.versao,
+            status=payload.status,
+        )
+
+    generator.roteiro_repo.create.side_effect = create
+
+    created = await generator._persist_revision(
+        ideia=source.ideia,
+        estrutura=_ready_structure(media=True),
+        revision_kind="media_binding",
+        parent_roteiro_id=source.id,
+        status="aprovado",
+    )
+
+    persisted = generator.roteiro_repo.create.await_args.args[0]
+    assert persisted.versao == 5
+    assert persisted.parent_roteiro_id == source.id
+    assert persisted.status == "aprovado"
+    assert created.status == "aprovado"
+    idea_update = generator.ideia_repo.update.await_args.args[1]
+    assert idea_update.model_dump(exclude_unset=True) == {"status": "roteirizada"}
 
 
 @pytest.mark.parametrize(

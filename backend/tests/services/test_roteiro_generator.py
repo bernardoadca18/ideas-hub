@@ -258,6 +258,7 @@ async def test_human_edit_invalidates_visual_spans_when_narration_changes() -> N
     assert revision["estrutura"].blocos[0].visual_queries == []
     assert revision["revision_kind"] == "human_edit"
     assert revision["parent_roteiro_id"] == source.id
+    assert "status" not in revision
     edited = revision["estrutura"]
     assert edited.editorial_review["audit_status"] == "human_edit_unvalidated"
     assert edited.editorial_review["approval_blocked"] is True
@@ -276,16 +277,53 @@ async def test_human_edit_invalidates_visual_spans_when_narration_changes() -> N
 
 
 @pytest.mark.asyncio
-async def test_only_latest_draft_can_be_approved() -> None:
+async def test_historical_draft_can_be_approved_without_changing_later_revisions() -> None:
     generator = RoteiroGenerator(AsyncMock())
-    stale = SimpleNamespace(id=uuid4(), ideia_id=uuid4(), status="rascunho")
-    latest = SimpleNamespace(id=uuid4())
+    historical = SimpleNamespace(id=uuid4(), ideia_id=uuid4(), status="rascunho")
+    later = SimpleNamespace(id=uuid4(), ideia_id=historical.ideia_id, status="rascunho")
     generator.roteiro_repo = AsyncMock()
-    generator.roteiro_repo.get_by_id.return_value = stale
-    generator.roteiro_repo.get_latest_version_by_ideia.return_value = latest
-    with pytest.raises(ValueError, match="versão mais recente"):
-        await generator.aprovar_roteiro(stale.id)
+    generator.ideia_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = historical
+    generator.roteiro_repo.update.return_value = SimpleNamespace(status="aprovado")
+
+    result = await generator.aprovar_roteiro(historical.id)
+
+    assert result["status"] == "aprovado"
+    generator.roteiro_repo.get_latest_version_by_ideia.assert_not_awaited()
+    generator.roteiro_repo.update.assert_awaited_once()
+    assert generator.roteiro_repo.update.await_args.args[0] == historical.id
+    assert later.status == "rascunho"
+
+
+@pytest.mark.asyncio
+async def test_missing_script_cannot_be_approved() -> None:
+    generator = RoteiroGenerator(AsyncMock())
+    generator.roteiro_repo = AsyncMock()
+    generator.ideia_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = None
+
+    with pytest.raises(ValueError, match="Roteiro não encontrado"):
+        await generator.aprovar_roteiro(uuid4())
+
+    generator.roteiro_repo.get_latest_version_by_ideia.assert_not_awaited()
     generator.roteiro_repo.update.assert_not_awaited()
+    generator.ideia_repo.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_non_draft_script_cannot_be_approved_again() -> None:
+    generator = RoteiroGenerator(AsyncMock())
+    script = SimpleNamespace(id=uuid4(), ideia_id=uuid4(), status="aprovado")
+    generator.roteiro_repo = AsyncMock()
+    generator.ideia_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = script
+
+    with pytest.raises(ValueError, match="não está em rascunho"):
+        await generator.aprovar_roteiro(script.id)
+
+    generator.roteiro_repo.get_latest_version_by_ideia.assert_not_awaited()
+    generator.roteiro_repo.update.assert_not_awaited()
+    generator.ideia_repo.update.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -307,7 +345,15 @@ async def test_stale_draft_rejection_cannot_reset_idea_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_blocking_factual_review_prevents_manual_approval() -> None:
+@pytest.mark.parametrize(
+    ("editorial_status", "factuality_status"),
+    [("blocking", "pass"), ("needs_revision", "blocking")],
+    ids=["editorial-blocker", "factual-blocker"],
+)
+async def test_editorial_or_factual_blocker_does_not_veto_manual_approval(
+    editorial_status: str,
+    factuality_status: str,
+) -> None:
     generator = RoteiroGenerator(AsyncMock())
     script_id = uuid4()
     structure = {
@@ -322,9 +368,16 @@ async def test_blocking_factual_review_prevents_manual_approval() -> None:
         },
         "editorial_review": {
             "audit_status": "completed",
-            "editorial_status": "needs_revision",
-            "factuality_status": "blocking",
+            "editorial_status": editorial_status,
+            "factuality_status": factuality_status,
             "approval_blocked": True,
+            "global_issues": [
+                {
+                    "category": "factuality",
+                    "severity": "blocking",
+                    "actionable_feedback": "Confirme o fato antes de produzir.",
+                }
+            ],
         },
     }
     structure["editorial_review"]["audit_content_identity"] = script_content_identity(
@@ -340,17 +393,28 @@ async def test_blocking_factual_review_prevents_manual_approval() -> None:
     generator.ideia_repo = AsyncMock()
     generator.roteiro_repo.get_by_id.return_value = script
     generator.roteiro_repo.get_latest_version_by_ideia.return_value = script
-    with pytest.raises(
-        ValueError, match="Aprovação bloqueada.*factuality_status=blocking"
-    ):
-        await generator.aprovar_roteiro(script_id)
+    generator.roteiro_repo.update.return_value = SimpleNamespace(status="aprovado")
 
-    generator.roteiro_repo.update.assert_not_awaited()
-    generator.ideia_repo.update.assert_not_awaited()
+    result = await generator.aprovar_roteiro(script_id)
+
+    assert result["status"] == "aprovado"
+    assert script.estrutura["editorial_review"]["approval_blocked"] is True
+    assert script.estrutura["editorial_review"]["global_issues"]
+    assert "production_readiness" not in script.estrutura
+    update = generator.roteiro_repo.update.await_args.args[1]
+    assert update.model_dump(exclude_unset=True) == {"status": "aprovado"}
+    generator.ideia_repo.update.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_style_warning_does_not_block_human_approval() -> None:
+@pytest.mark.parametrize(
+    "editorial_status",
+    ["pass", "warn"],
+    ids=["review-pass", "review-warn"],
+)
+async def test_pass_or_style_warning_allows_human_approval(
+    editorial_status: str,
+) -> None:
     generator = RoteiroGenerator(AsyncMock())
     script_id = uuid4()
     structure = {
@@ -359,7 +423,7 @@ async def test_style_warning_does_not_block_human_approval() -> None:
         "blocos": [{"tipo": "corpo", "duracao_segundos": 60, "conteudo": "Texto"}],
         "editorial_review": {
             "audit_status": "completed",
-            "editorial_status": "warn",
+            "editorial_status": editorial_status,
             "factuality_status": "pass",
             "approval_blocked": False,
         },
@@ -383,6 +447,40 @@ async def test_style_warning_does_not_block_human_approval() -> None:
 
     assert result["status"] == "aprovado"
     generator.roteiro_repo.update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_audit_does_not_block_human_approval() -> None:
+    generator = RoteiroGenerator(AsyncMock())
+    script = SimpleNamespace(
+        id=uuid4(),
+        ideia_id=uuid4(),
+        status="rascunho",
+        estrutura={
+            "titulo": "Audit indisponível",
+            "duracao_total_segundos": 60,
+            "blocos": [
+                {"tipo": "corpo", "duracao_segundos": 60, "conteudo": "Texto"}
+            ],
+            "editorial_review": {
+                "audit_status": "unavailable",
+                "editorial_status": "unvalidated",
+                "factuality_status": "unvalidated",
+                "approval_blocked": True,
+                "global_summary": "Audit indisponível; revisão humana necessária.",
+            },
+        },
+    )
+    generator.roteiro_repo = AsyncMock()
+    generator.ideia_repo = AsyncMock()
+    generator.roteiro_repo.get_by_id.return_value = script
+    generator.roteiro_repo.get_latest_version_by_ideia.return_value = script
+    generator.roteiro_repo.update.return_value = SimpleNamespace(status="aprovado")
+
+    result = await generator.aprovar_roteiro(script.id)
+
+    assert result["status"] == "aprovado"
+    assert script.estrutura["editorial_review"]["audit_status"] == "unavailable"
 
 
 @pytest.mark.asyncio
@@ -429,7 +527,7 @@ async def test_stale_audit_does_not_block_manual_approval() -> None:
             "duration_contract": {"revision_required": False},
             "editorial_review": {
                 "audit_status": "completed",
-                "approval_blocked": False,
+                "approval_blocked": True,
                 "factuality_status": "pass",
                 "audit_content_identity": "identity-from-parent",
             },
