@@ -131,14 +131,31 @@ async def test_enrichment_preserves_speakable_content_and_metadata() -> None:
     with patch("app.services.llm_gateway.llm_gateway.complete", complete):
         await generator.create_visual_enrichment_revision(source.id)
     enriched = generator._persist_revision.await_args.kwargs["estrutura"]
+    persisted = generator._persist_revision.await_args.kwargs
     assert speakable_content_identity(before.blocos) == speakable_content_identity(
         enriched.blocos
     )
     assert enriched.tags == before.tags
     assert enriched.referencias == before.referencias
     assert enriched.media_context == before.media_context
+    assert persisted["status"] == "aprovado"
+    assert persisted["parent_roteiro_id"] == source.id
+    assert persisted["revision_kind"] == "visual_enrichment"
     assert validate_visual_readiness(enriched).status == "ready"
     assert len(enriched.blocos[0].visual_queries) == 2
+
+
+@pytest.mark.asyncio
+async def test_draft_visual_enrichment_child_does_not_bypass_approval() -> None:
+    source = _source(duration=20)
+    source.status = "rascunho"
+    generator = await _generator(source)
+    complete = _response_for_request()
+
+    with patch("app.services.llm_gateway.llm_gateway.complete", complete):
+        await generator.create_visual_enrichment_revision(source.id)
+
+    assert generator._persist_revision.await_args.kwargs["status"] == "rascunho"
 
 
 @pytest.mark.asyncio

@@ -280,9 +280,7 @@ class RoteiroGenerator:
         )
         await self.ideia_repo.update(
             ideia.id,
-            IdeiaUpdate(
-                status="roteirizada" if status == "aprovado" else "em_roteiro"
-            ),
+            IdeiaUpdate(status="roteirizada" if status == "aprovado" else "em_roteiro"),
         )
         logger.info(
             "script_revision_persisted",
@@ -1176,6 +1174,7 @@ class RoteiroGenerator:
             estrutura=enriched_structure,
             revision_kind="visual_enrichment",
             parent_roteiro_id=source.id,
+            status=source.status,
         )
 
     @staticmethod
