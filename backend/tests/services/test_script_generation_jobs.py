@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-
 from app.core.config import Settings
 from app.production_profiles import get_profile
 from app.schemas.generation import (
@@ -39,10 +38,12 @@ from app.services.llm_gateway import (
 from app.services.script_generation_jobs import (
     FRAGMENTED_PLANNING_VERSION,
     LEGACY_FRAGMENTED_PLANNING_VERSION,
+    MAX_VISUAL_ENRICHMENT_ATTEMPTS_PER_BATCH,
     GenerationFailureCategory,
     GenerationJobError,
     ScriptGenerationJobService,
     StructuredRepairTruncatedError,
+    VisualBeatCoverageError,
     _audit_has_factual_blockers,
     _calibrate_editorial_issue,
     _claim_extraction_max_tokens,
@@ -69,6 +70,7 @@ from app.services.script_generation_jobs import (
     _temperature_for_role,
     _writing_max_tokens,
 )
+from app.services.visual_requirements import UnknownVisualSourceNoteError
 
 
 def _config() -> Settings:
@@ -245,6 +247,26 @@ def _written_json(word_count: int, *, marker: str = "palavra") -> str:
                 }
                 for index, query_marker in enumerate(query_markers)
             ],
+        }
+    )
+
+
+def _visual_batch_json(
+    orders: tuple[int, ...], *, source_note_id: str | None = None
+) -> str:
+    return json.dumps(
+        {
+            "visual_queries": [
+                {
+                    "beat_order": order,
+                    "intent": "illustration",
+                    "query": f"imagem para beat {order}",
+                    "importance": "preferred",
+                    "source_note_id": source_note_id,
+                    "notes": None,
+                }
+                for order in orders
+            ]
         }
     )
 
@@ -2111,6 +2133,13 @@ async def test_content_driven_visual_enrichment_uses_assembled_duration() -> Non
     )
     schemas = [call.kwargs["schema"] for call in service._complete.await_args_list]
     assert all("narration_excerpt" not in json.dumps(schema) for schema in schemas)
+    prompts = [call.kwargs["prompt"] for call in service._complete.await_args_list]
+    assert "EXPECTED BEAT ORDERS: [0, 1, 2, 3, 4]" in prompts[0]
+    assert "EXPECTED BEAT ORDERS: [5, 6]" in prompts[1]
+    assert [call.kwargs["scope"] for call in service._complete.await_args_list] == [
+        "section-001:visual:0",
+        "section-001:visual:1",
+    ]
 
 
 @pytest.mark.asyncio
@@ -2224,6 +2253,231 @@ async def test_unknown_note_gets_one_visual_only_retry_with_same_narration() -> 
     assert "previous visual-only attempt" in prompts[1]
     assert section.output == {"content": content}
     assert queries[0].source_note_id is None
+
+
+@pytest.mark.asyncio
+async def test_missing_visual_beat_gets_one_visual_only_retry() -> None:
+    service, _, run, section = _writing_fixture()
+    content = "Primeiro momento. Segundo momento. Terceiro momento. Quarto momento."
+    section.section_plan["target_duration_seconds"] = 120
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(
+                _visual_batch_json((0, 1, 3)),
+                role=LLMTaskRole.WRITING,
+            ),
+            _result(
+                _visual_batch_json((0, 1, 2, 3)),
+                role=LLMTaskRole.WRITING,
+            ),
+        ]
+    )
+
+    queries = await ScriptGenerationJobService._enrich_section_visual_beats(
+        service,
+        run,
+        section,
+        content=content,
+        evidence=[],
+        profile=get_profile("faceless_general"),
+    )
+
+    assert service._complete.await_count == 2
+    assert [query.order for query in queries] == [0, 1, 2, 3]
+    prompts = [call.kwargs["prompt"] for call in service._complete.await_args_list]
+    beats_payloads = [
+        prompt.split("BEATS: ", 1)[1].split("\nSECTION CONTEXT:", 1)[0]
+        for prompt in prompts
+    ]
+    assert beats_payloads[0] == beats_payloads[1]
+    assert "EXPECTED BEAT ORDERS: [0, 1, 2, 3]" in prompts[0]
+    assert "PREVIOUS OBSERVED BEAT ORDERS: [0, 1, 3]" in prompts[1]
+    assert (
+        service._complete.await_args_list[1].kwargs["scope"].endswith(":coverage-retry")
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_orders",
+    [(0, 2, 1, 3), (0, 1, 1, 3)],
+    ids=["wrong-order", "duplicate"],
+)
+async def test_visual_beat_sequence_violation_gets_exactly_one_retry(
+    invalid_orders: tuple[int, ...],
+) -> None:
+    service, _, run, section = _writing_fixture()
+    section.section_plan["target_duration_seconds"] = 120
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_visual_batch_json(invalid_orders), role=LLMTaskRole.WRITING),
+            _result(_visual_batch_json((0, 1, 2, 3)), role=LLMTaskRole.WRITING),
+        ]
+    )
+
+    queries = await ScriptGenerationJobService._enrich_section_visual_beats(
+        service,
+        run,
+        section,
+        content="Primeiro momento. Segundo momento. Terceiro momento. Quarto momento.",
+        evidence=[],
+        profile=get_profile("faceless_general"),
+    )
+
+    assert service._complete.await_count == 2
+    assert [query.order for query in queries] == [0, 1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_second_visual_beat_coverage_mismatch_is_terminal_and_diagnostic() -> (
+    None
+):
+    service, _, run, section = _writing_fixture()
+    section.section_plan["target_duration_seconds"] = 120
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_visual_batch_json((0, 1, 3)), role=LLMTaskRole.WRITING),
+            _result(_visual_batch_json((0, 2, 3)), role=LLMTaskRole.WRITING),
+        ]
+    )
+
+    with pytest.raises(VisualBeatCoverageError) as captured:
+        await ScriptGenerationJobService._enrich_section_visual_beats(
+            service,
+            run,
+            section,
+            content=(
+                "Primeiro momento. Segundo momento. Terceiro momento. Quarto momento."
+            ),
+            evidence=[],
+            profile=get_profile("faceless_general"),
+        )
+
+    assert service._complete.await_count == MAX_VISUAL_ENRICHMENT_ATTEMPTS_PER_BATCH
+    assert captured.value.expected_orders == (0, 1, 2, 3)
+    assert captured.value.observed_orders == (0, 2, 3)
+    message = str(captured.value)
+    assert "section=section-001 batch=0" in message
+    assert "expected=[0,1,2,3] observed=[0,2,3]" in message
+    assert "expected_count=4 observed_count=3" in message
+    assert "model=provider/model provider=test prompt_identity=prompt" in message
+
+
+@pytest.mark.asyncio
+async def test_coverage_then_unknown_provenance_cannot_multiply_retries() -> None:
+    service, _, run, section = _writing_fixture()
+    section.section_plan["target_duration_seconds"] = 120
+    unknown_note_id = uuid4()
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_visual_batch_json((0, 1, 3)), role=LLMTaskRole.WRITING),
+            _result(
+                _visual_batch_json((0, 1, 2, 3), source_note_id=str(unknown_note_id)),
+                role=LLMTaskRole.WRITING,
+            ),
+        ]
+    )
+
+    with pytest.raises(UnknownVisualSourceNoteError):
+        await ScriptGenerationJobService._enrich_section_visual_beats(
+            service,
+            run,
+            section,
+            content=(
+                "Primeiro momento. Segundo momento. Terceiro momento. Quarto momento."
+            ),
+            evidence=[],
+            profile=get_profile("faceless_general"),
+        )
+
+    assert service._complete.await_count == MAX_VISUAL_ENRICHMENT_ATTEMPTS_PER_BATCH
+
+
+@pytest.mark.asyncio
+async def test_provenance_retry_cannot_add_a_third_coverage_attempt() -> None:
+    service, _, run, section = _writing_fixture()
+    section.section_plan["target_duration_seconds"] = 120
+    unknown_note_id = uuid4()
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(
+                _visual_batch_json((0, 1, 2, 3), source_note_id=str(unknown_note_id)),
+                role=LLMTaskRole.WRITING,
+            ),
+            _result(_visual_batch_json((0, 1, 3)), role=LLMTaskRole.WRITING),
+        ]
+    )
+
+    with pytest.raises(VisualBeatCoverageError):
+        await ScriptGenerationJobService._enrich_section_visual_beats(
+            service,
+            run,
+            section,
+            content=(
+                "Primeiro momento. Segundo momento. Terceiro momento. Quarto momento."
+            ),
+            evidence=[],
+            profile=get_profile("faceless_general"),
+        )
+
+    assert service._complete.await_count == MAX_VISUAL_ENRICHMENT_ATTEMPTS_PER_BATCH
+
+
+@pytest.mark.asyncio
+async def test_visual_coverage_retry_does_not_repeat_writer_audit_or_critic() -> None:
+    service, _, run, section = _writing_fixture()
+    service._enrich_section_visual_beats = (  # type: ignore[method-assign]
+        ScriptGenerationJobService._enrich_section_visual_beats.__get__(service)
+    )
+    service._global_critic_call = AsyncMock()  # type: ignore[method-assign]
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_written_json(580), role=LLMTaskRole.WRITING),
+            _result(_visual_batch_json((0, 1, 3, 4)), role=LLMTaskRole.WRITING),
+            _result(_visual_batch_json((0, 1, 2, 3, 4)), role=LLMTaskRole.WRITING),
+            _result(_visual_batch_json((5, 6, 7)), role=LLMTaskRole.WRITING),
+        ]
+    )
+
+    await service._write_section(run, section)
+
+    versions = [
+        call.kwargs["prompt_version"] for call in service._complete.await_args_list
+    ]
+    assert versions.count("section_writer_v3") == 1
+    assert versions.count("visual_beat_enrichment_v4") == 3
+    service._audit_section.assert_awaited_once()  # type: ignore[attr-defined]
+    service._global_critic_call.assert_not_awaited()  # type: ignore[attr-defined]
+    assert section.status == "completed"
+    assert section.attempt_count == 1
+
+
+@pytest.mark.asyncio
+async def test_second_visual_coverage_mismatch_does_not_rewrite_section() -> None:
+    service, _, run, section = _writing_fixture()
+    service._enrich_section_visual_beats = (  # type: ignore[method-assign]
+        ScriptGenerationJobService._enrich_section_visual_beats.__get__(service)
+    )
+    service._global_critic_call = AsyncMock()  # type: ignore[method-assign]
+    service._complete = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            _result(_written_json(580), role=LLMTaskRole.WRITING),
+            _result(_visual_batch_json((0, 1, 3, 4)), role=LLMTaskRole.WRITING),
+            _result(_visual_batch_json((0, 2, 3, 4)), role=LLMTaskRole.WRITING),
+        ]
+    )
+
+    with pytest.raises(GenerationJobError, match="expected=\\[0,1,2,3,4\\]"):
+        await service._write_section(run, section)
+
+    versions = [
+        call.kwargs["prompt_version"] for call in service._complete.await_args_list
+    ]
+    assert versions.count("section_writer_v3") == 1
+    assert versions.count("visual_beat_enrichment_v4") == 2
+    service._audit_section.assert_not_awaited()  # type: ignore[attr-defined]
+    service._global_critic_call.assert_not_awaited()  # type: ignore[attr-defined]
+    assert section.attempt_count == 1
 
 
 def test_section_claims_are_selected_only_by_explicit_approved_claim_refs() -> None:

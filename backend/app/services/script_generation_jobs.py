@@ -159,6 +159,7 @@ EXTERNAL_CLAIM_OUTPUT_TOKEN_CEILING = 6000
 SECTION_AUDIT_MIN_TOKENS = 8000
 SECTION_AUDIT_MAX_TOKENS = 8000
 GLOBAL_CRITIC_MAX_TOKENS = 8000
+MAX_VISUAL_ENRICHMENT_ATTEMPTS_PER_BATCH = 2
 EDITORIAL_AUDIT_VERSION = "section_editorial_audit_v2"
 EDITORIAL_ISSUE_CATEGORIES = (
     "hook",
@@ -271,6 +272,42 @@ class StructuredRepairTruncatedError(LLMGatewayError):
         )
         self.initial = initial
         self.repair = repair
+
+
+class VisualBeatCoverageError(VisualRequirementsError):
+    """A visual enrichment response changed the host-owned beat sequence."""
+
+    def __init__(
+        self,
+        *,
+        section_key: str,
+        batch_index: int,
+        expected_orders: list[int],
+        observed_orders: list[int],
+        provenance: dict[str, Any],
+    ) -> None:
+        initial = provenance.get("initial") or provenance
+        effective = provenance.get("repair") or provenance
+        self.section_key = section_key
+        self.batch_index = batch_index
+        self.expected_orders = tuple(expected_orders)
+        self.observed_orders = tuple(observed_orders)
+        self.actual_model = effective.get("actual_model")
+        self.provider = effective.get("provider")
+        self.prompt_identity = initial.get("prompt_identity")
+        self.output_prompt_identity = effective.get("prompt_identity")
+        expected = json.dumps(expected_orders, separators=(",", ":"))
+        observed = json.dumps(observed_orders, separators=(",", ":"))
+        super().__init__(
+            "visual beat enrichment coverage mismatch: "
+            f"section={section_key} batch={batch_index} "
+            f"expected={expected} observed={observed} "
+            f"expected_count={len(expected_orders)} observed_count={len(observed_orders)} "
+            f"model={self.actual_model or 'unknown'} "
+            f"provider={self.provider or 'unknown'} "
+            f"prompt_identity={self.prompt_identity or 'unknown'} "
+            f"output_prompt_identity={self.output_prompt_identity or 'unknown'}"
+        )
 
 
 class ScriptGenerationJobService:
@@ -2863,6 +2900,11 @@ class ScriptGenerationJobService:
                     if workflow.structured_visual_queries
                     else []
                 )
+            except VisualBeatCoverageError as exc:
+                raise GenerationJobError(
+                    GenerationFailureCategory.SCHEMA,
+                    f"section {section.section_key} visual requirements are invalid: {exc}",
+                ) from exc
             except VisualRequirementsError as exc:
                 if attempt >= self.config.generation_max_revisions_per_section + 1:
                     raise GenerationJobError(
@@ -3116,87 +3158,169 @@ class ScriptGenerationJobService:
             policy=policy,
         )
         allowed_source_note_ids = _allowed_source_note_ids(evidence)
-        for provenance_attempt in range(2):
-            generated: list[Any] = []
-            for batch_index, batch in enumerate(visual_beat_batches(beats, policy)):
-                retry_instruction = (
-                    "A previous visual-only attempt selected an unlisted note UUID. "
-                    "Correct only visual semantics and provenance; do not alter narration. "
-                    if provenance_attempt
-                    else ""
-                )
-                task = (
-                    "Describe the footage need for every HOST-OWNED VISUAL BEAT below. "
-                    "Return exactly one visual_queries item per beat, preserving beat_order. "
-                    "Choose only intent, query, importance, optional notes and source_note_id. "
-                    "Do not return narration excerpts, spans, durations, session IDs or "
-                    "timestamps. Set source_note_id only to one exact UUID from "
-                    "ALLOWED SOURCE NOTE IDS. When that list is empty or no listed note "
-                    "applies, source_note_id MUST be null. Never use a session UUID or a "
-                    "UUID parsed from source_fragment_id.\n"
-                    f"{retry_instruction}"
-                    f"SECTION KEY: {section.section_key}\n"
-                    "BEATS: "
-                    f"{json.dumps([{'beat_order': beat.order, 'narration': beat.text} for beat in batch], ensure_ascii=False)}\n"
-                    f"SECTION CONTEXT: {json.dumps(section.section_plan, ensure_ascii=False)}\n"
-                    "ALLOWED SOURCE NOTE IDS: "
-                    f"{json.dumps(allowed_source_note_ids)}\n"
-                    "RELEVANT EVIDENCE: "
-                    f"<evidence>{json.dumps(evidence, ensure_ascii=False)}</evidence>"
-                )
-                composed = compose_editorial_v3_prompt(
-                    phase="writing",
-                    profile=profile,
-                    task_prompt=task,
-                )
-                result = await self._complete(
-                    run,
-                    role=LLMTaskRole.WRITING,
-                    prompt=composed.user,
-                    system_prompt=composed.system,
-                    prompt_trace=composed.trace,
-                    prompt_version="visual_beat_enrichment_v3",
-                    scope=(
-                        f"{section.section_key}:visual:{batch_index}"
-                        if not provenance_attempt
-                        else f"{section.section_key}:visual:{batch_index}:provenance-retry"
-                    ),
+        batches = visual_beat_batches(beats, policy)
+        attempts_by_batch = [0] * len(batches)
+
+        async def enrich_batch(
+            batch_index: int,
+            *,
+            retry_kind: Literal["coverage", "provenance"] | None = None,
+            retry_instruction: str = "",
+        ) -> list[Any]:
+            batch = batches[batch_index]
+            if (
+                attempts_by_batch[batch_index]
+                >= MAX_VISUAL_ENRICHMENT_ATTEMPTS_PER_BATCH
+            ):
+                raise AssertionError("visual enrichment batch retry budget exceeded")
+            attempts_by_batch[batch_index] += 1
+            expected = [beat.order for beat in batch]
+            task = (
+                "Describe the footage need for every HOST-OWNED VISUAL BEAT below. "
+                "Return exactly one visual_queries item per beat, preserving beat_order. "
+                f"EXPECTED BEAT ORDERS: {json.dumps(expected)}\n"
+                f"You MUST return exactly {len(expected)} visual_queries. "
+                "visual_queries[i].beat_order MUST equal EXPECTED_BEAT_ORDERS[i]. "
+                "Do not omit, duplicate, merge or reorder beats. "
+                "Choose only intent, query, importance, optional notes and source_note_id. "
+                "Do not return narration excerpts, spans, durations, session IDs or "
+                "timestamps. Set source_note_id only to one exact UUID from "
+                "ALLOWED SOURCE NOTE IDS. When that list is empty or no listed note "
+                "applies, source_note_id MUST be null. Never use a session UUID or a "
+                "UUID parsed from source_fragment_id.\n"
+                f"{retry_instruction}"
+                f"SECTION KEY: {section.section_key}\n"
+                "BEATS: "
+                f"{json.dumps([{'beat_order': beat.order, 'narration': beat.text} for beat in batch], ensure_ascii=False)}\n"
+                f"SECTION CONTEXT: {json.dumps(section.section_plan, ensure_ascii=False)}\n"
+                "ALLOWED SOURCE NOTE IDS: "
+                f"{json.dumps(allowed_source_note_ids)}\n"
+                "RELEVANT EVIDENCE: "
+                f"<evidence>{json.dumps(evidence, ensure_ascii=False)}</evidence>"
+            )
+            composed = compose_editorial_v3_prompt(
+                phase="writing",
+                profile=profile,
+                task_prompt=task,
+            )
+            scope = f"{section.section_key}:visual:{batch_index}"
+            if retry_kind is not None:
+                scope = f"{scope}:{retry_kind}-retry"
+            result = await self._complete(
+                run,
+                role=LLMTaskRole.WRITING,
+                prompt=composed.user,
+                system_prompt=composed.system,
+                prompt_trace=composed.trace,
+                prompt_version="visual_beat_enrichment_v4",
+                scope=scope,
+                section_key=section.section_key,
+                schema=VisualBeatEnrichmentOutput.model_json_schema(),
+                max_tokens=2500,
+            )
+            parsed, provenance = await self._parse_or_repair(
+                run, result, VisualBeatEnrichmentOutput
+            )
+            observed = [item.beat_order for item in parsed.visual_queries]
+            if observed != expected:
+                error = VisualBeatCoverageError(
                     section_key=section.section_key,
-                    schema=VisualBeatEnrichmentOutput.model_json_schema(),
-                    max_tokens=2500,
+                    batch_index=batch_index,
+                    expected_orders=expected,
+                    observed_orders=observed,
+                    provenance=provenance,
                 )
-                parsed, _ = await self._parse_or_repair(
-                    run, result, VisualBeatEnrichmentOutput
-                )
-                expected = [beat.order for beat in batch]
-                observed = [item.beat_order for item in parsed.visual_queries]
-                if observed != expected:
-                    raise VisualRequirementsError(
-                        "visual beat enrichment must return every host-owned beat in order"
-                    )
-                generated.extend(parsed.visual_queries)
-            try:
-                return materialize_written_visual_queries(
-                    generation_run_id=run.id,
-                    section_key=section.section_key,
-                    duration_seconds=duration,
-                    content=content,
-                    generated=generated,
-                    evidence_dossier=run.evidence_dossier,
-                    policy=policy,
-                    beats=beats,
-                )
-            except UnknownVisualSourceNoteError as exc:
-                if provenance_attempt:
-                    raise
                 logger.warning(
-                    "visual_enrichment_unknown_source_note_retry",
+                    "visual_enrichment_coverage_mismatch",
                     run_id=str(run.id),
                     section_key=section.section_key,
-                    rejected_source_note_id=str(exc.source_note_id),
-                    allowed_source_note_count=len(allowed_source_note_ids),
+                    batch_index=batch_index,
+                    expected_orders=expected,
+                    observed_orders=observed,
+                    expected_count=len(expected),
+                    observed_count=len(observed),
+                    actual_model=error.actual_model,
+                    provider=error.provider,
+                    prompt_identity=error.prompt_identity,
+                    output_prompt_identity=error.output_prompt_identity,
+                    retry_scheduled=(
+                        attempts_by_batch[batch_index]
+                        < MAX_VISUAL_ENRICHMENT_ATTEMPTS_PER_BATCH
+                    ),
                 )
-        raise AssertionError("unreachable visual provenance retry state")
+                raise error
+            return list(parsed.visual_queries)
+
+        generated_by_batch: list[list[Any]] = []
+        for batch_index in range(len(batches)):
+            try:
+                generated_by_batch.append(await enrich_batch(batch_index))
+            except VisualBeatCoverageError as exc:
+                expected = json.dumps(list(exc.expected_orders))
+                observed = json.dumps(list(exc.observed_orders))
+                generated_by_batch.append(
+                    await enrich_batch(
+                        batch_index,
+                        retry_kind="coverage",
+                        retry_instruction=(
+                            "Previous enrichment violated the host-owned beat contract.\n"
+                            f"EXPECTED BEAT ORDERS: {expected}\n"
+                            f"PREVIOUS OBSERVED BEAT ORDERS: {observed}\n"
+                            "Return EXACTLY one item for each expected beat, in exactly "
+                            "that order. Do not omit, duplicate, merge or reorder beats. "
+                            "Correct only visual semantics; do not alter narration.\n"
+                        ),
+                    )
+                )
+
+        def materialize() -> list[VisualQuery]:
+            return materialize_written_visual_queries(
+                generation_run_id=run.id,
+                section_key=section.section_key,
+                duration_seconds=duration,
+                content=content,
+                generated=[item for batch in generated_by_batch for item in batch],
+                evidence_dossier=run.evidence_dossier,
+                policy=policy,
+                beats=beats,
+            )
+
+        try:
+            return materialize()
+        except UnknownVisualSourceNoteError as exc:
+            provenance_batch_index = next(
+                (
+                    batch_index
+                    for batch_index, generated in enumerate(generated_by_batch)
+                    if any(
+                        item.source_note_id == exc.source_note_id for item in generated
+                    )
+                ),
+                None,
+            )
+            if (
+                provenance_batch_index is None
+                or attempts_by_batch[provenance_batch_index]
+                >= MAX_VISUAL_ENRICHMENT_ATTEMPTS_PER_BATCH
+            ):
+                raise
+            logger.warning(
+                "visual_enrichment_unknown_source_note_retry",
+                run_id=str(run.id),
+                section_key=section.section_key,
+                batch_index=provenance_batch_index,
+                rejected_source_note_id=str(exc.source_note_id),
+                allowed_source_note_count=len(allowed_source_note_ids),
+            )
+            generated_by_batch[provenance_batch_index] = await enrich_batch(
+                provenance_batch_index,
+                retry_kind="provenance",
+                retry_instruction=(
+                    "A previous visual-only attempt selected an unlisted note UUID. "
+                    "Correct only visual semantics and provenance; do not alter narration.\n"
+                ),
+            )
+            return materialize()
 
     async def _audit_section(
         self,
