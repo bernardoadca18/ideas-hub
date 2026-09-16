@@ -32,6 +32,7 @@ from app.schemas.manual_script_import import (
     ManualScriptImportRequest,
     ManualScriptImportResponse,
 )
+from app.prompts.editorial_v3 import spoken_language_policy
 from app.schemas.roteiro import (
     ManualDraftProvenance,
     MediaBindingRequest,
@@ -252,6 +253,19 @@ class RoteiroGenerator:
         revision_feedback: str | None = None,
         status: str = "rascunho",
     ) -> Roteiro:
+        if parent_roteiro_id is not None:
+            parent = await self.roteiro_repo.get_by_id(parent_roteiro_id)
+            if parent is None:
+                raise ValueError("Roteiro pai não encontrado")
+            estrutura = estrutura.model_copy(
+                update={
+                    "content_locale": parent.estrutura.get("content_locale", "pt-BR")
+                }
+            )
+        elif "content_locale" not in estrutura.model_fields_set:
+            estrutura = estrutura.model_copy(
+                update={"content_locale": getattr(ideia, "content_locale", "pt-BR")}
+            )
         profile = await self._profile_for_idea(ideia)
         readiness = validate_visual_readiness(estrutura, profile.visual_requirements)
         structure_payload = estrutura.model_dump(mode="json")
@@ -530,6 +544,8 @@ class RoteiroGenerator:
         profile = await self._profile_for_idea(ideia)
         calibration = calibration or await duration_calibration_client.get(profile.id)
         payload = estrutura.model_dump(mode="json")
+        if "content_locale" not in estrutura.model_fields_set:
+            payload["content_locale"] = getattr(ideia, "content_locale", "pt-BR")
         # This method also backs the public manual-create endpoint. Plain-text
         # provenance is accepted only through the composite server-owned adapter.
         payload["manual_draft"] = (
@@ -560,6 +576,8 @@ class RoteiroGenerator:
         calibration = await duration_calibration_client.get(profile.id)
         normalized = normalize_manual_script(
             request.script,
+            content_locale=request.content_locale
+            or getattr(ideia, "content_locale", "pt-BR"),
             calibration=calibration,
             profile=profile,
             target_duration_seconds=self._target_duration(ideia, profile),
@@ -1116,7 +1134,18 @@ class RoteiroGenerator:
                 )
                 llm_output = await llm_gateway.complete(
                     messages=[
-                        {"role": "system", "content": composed.system},
+                        {
+                            "role": "system",
+                            "content": composed.system
+                            + (
+                                "\n\n"
+                                + spoken_language_policy(
+                                    source_structure.content_locale
+                                )
+                                if source_structure.content_locale == "en-US"
+                                else ""
+                            ),
+                        },
                         {"role": "user", "content": composed.user},
                     ],
                     role=LLMTaskRole.WRITING,

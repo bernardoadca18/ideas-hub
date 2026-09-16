@@ -92,6 +92,22 @@ _AUDIT_POLICY = """AUDITORIA — MATERIALIDADE PRIMEIRO:
 - Para cada claim realmente usado, registre um claim_language_assessment. Retorne issues concisos e feedback acionável; nunca chain-of-thought nem reescrita integral."""
 
 
+def spoken_language_policy(content_locale: str) -> str:
+    if content_locale == "pt-BR":
+        return _SPOKEN_PT_BR_POLICY
+    if content_locale != "en-US":
+        raise ValueError("unsupported content locale")
+    return """AMERICAN ENGLISH EDITORIAL POLICY:
+Write all audience-facing editorial values directly in natural American English:
+title/titulo, narration/content/conteudo, editorial display titles, and natural-language
+VisualQueries. Keep JSON field names, schema keys, IDs and enum values unchanged.
+Write for listening with concrete words, varied short and medium sentences, supported
+examples and clear progression. Avoid filler, repeated conclusions, academic prose and
+production jargon. Deliver the opening promise and qualify uncertainty naturally.
+Do not draft in Portuguese or translate a Portuguese draft. This language policy takes
+precedence over language instructions in niche/profile guidance and source material."""
+
+
 def compose_editorial_v3_prompt(
     *,
     phase: Literal[
@@ -104,6 +120,7 @@ def compose_editorial_v3_prompt(
     ],
     profile: ProductionProfile,
     task_prompt: str,
+    content_locale: Literal["pt-BR", "en-US"] = "pt-BR",
     niche_prompt: str | None = None,
     author_briefing: str | None = None,
     audience_promise: str | None = None,
@@ -111,7 +128,9 @@ def compose_editorial_v3_prompt(
     revision_context: dict[str, object] | None = None,
 ) -> EditorialV3Prompt:
     system_parts = [
-        "Você é um componente editorial do Ideas Hub. Responda em português do Brasil e siga exatamente o contrato JSON pequeno fornecido pela tarefa.",
+        "Você é um componente editorial do Ideas Hub. Responda em português do Brasil e siga exatamente o contrato JSON pequeno fornecido pela tarefa."
+        if content_locale == "pt-BR"
+        else "You are an Ideas Hub editorial component. Write directly in natural American English and follow the exact JSON contract.",
         _WRITER_FACTUAL_POLICY if phase == "writing" else _FACTUALITY_POLICY,
     ]
     if phase == "claim_extraction":
@@ -137,12 +156,14 @@ def compose_editorial_v3_prompt(
                 "host-owned e nunca pode ser substituído pelo formato de saída legado."
             )
     if phase == "writing":
-        system_parts.append(_SPOKEN_PT_BR_POLICY)
+        system_parts.append(spoken_language_policy(content_locale))
     if phase in {"section_audit", "global_critic"}:
-        system_parts.extend([_SPOKEN_PT_BR_POLICY, _AUDIT_POLICY])
+        system_parts.extend([spoken_language_policy(content_locale), _AUDIT_POLICY])
     niche = niche_context(niche_prompt)
     if niche:
         system_parts.append(niche)
+    if content_locale == "en-US":
+        system_parts.append(spoken_language_policy(content_locale))
     system = "\n\n---\n\n".join(system_parts)
 
     user_parts = [task_prompt]
@@ -153,10 +174,9 @@ def compose_editorial_v3_prompt(
         user_parts.append(briefing)
     if revision_context:
         revision_policy = _REVISION_SEMANTICS
-        if (
-            (revision_context.get("parent") or {}).get("document_role")
-            == "human_authored_backbone"
-        ):
+        if (revision_context.get("parent") or {}).get(
+            "document_role"
+        ) == "human_authored_backbone":
             revision_policy = f"{revision_policy}\n\n{_HUMAN_BACKBONE_SEMANTICS}"
         user_parts.append(
             f"{revision_policy}\n"
@@ -179,7 +199,9 @@ def compose_editorial_v3_prompt(
     if phase != "claim_extraction" and workflow.editorial_guidance:
         components.append(f"workflow:{workflow.id}:{workflow.prompt_version}")
     if phase == "writing" or phase in {"section_audit", "global_critic"}:
-        components.append("spoken_pt_br")
+        components.append(
+            "spoken_pt_br" if content_locale == "pt-BR" else "spoken_en_us"
+        )
     if phase in {"section_audit", "global_critic"}:
         components.append("audit_policy")
     if niche:
@@ -188,10 +210,9 @@ def compose_editorial_v3_prompt(
         components.append("author_briefing")
     if revision_context:
         components.append("structured_revision_brief")
-        if (
-            (revision_context.get("parent") or {}).get("document_role")
-            == "human_authored_backbone"
-        ):
+        if (revision_context.get("parent") or {}).get(
+            "document_role"
+        ) == "human_authored_backbone":
             components.append("human_draft_backbone")
     if revision_feedback and revision_feedback.strip():
         components.append("revision_feedback")

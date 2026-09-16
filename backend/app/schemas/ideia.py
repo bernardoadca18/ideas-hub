@@ -4,6 +4,7 @@ Schemas Pydantic para a entidade Ideia.
 
 from datetime import datetime
 from uuid import UUID
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -11,6 +12,7 @@ from app.services.editorial_generation import DurationMode, DurationTargetSource
 
 
 class IdeiaBase(BaseModel):
+    content_locale: Literal["pt-BR", "en-US"] = "pt-BR"
     nicho_id: UUID | None = None
     origem: str = Field(..., max_length=50)
     titulo: str = Field(..., max_length=300)
@@ -31,6 +33,7 @@ class IdeiaCreate(IdeiaBase):
 
 
 class IdeiaUpdate(BaseModel):
+    content_locale: Literal["pt-BR", "en-US"] = "pt-BR"
     nicho_id: UUID | None = None
     origem: str | None = Field(default=None, max_length=50)
     titulo: str | None = Field(default=None, max_length=300)

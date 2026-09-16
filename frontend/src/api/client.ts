@@ -73,7 +73,10 @@ export interface GenerationPreview {
   };
 }
 
+export type ContentLocale = 'pt-BR' | 'en-US';
+
 export interface Ideia {
+  content_locale: ContentLocale;
   id: string;
   nicho_id?: string;
   origem: string;
@@ -110,6 +113,7 @@ export interface Roteiro {
   ideia_id: string;
   versao: number;
   estrutura: {
+    content_locale?: ContentLocale;
     titulo: string;
     duracao_total_segundos: number;
     blocos: BlocoNarrativo[];
@@ -390,7 +394,7 @@ class ApiClient {
     return this.request<Ideia[]>(`/ideias/${query ? `?${query}` : ''}`);
   }
 
-  async createIdeia(data: { titulo: string; descricao?: string; author_briefing?: string; duration_mode: DurationMode; target_duration_seconds?: number; nicho_id?: string }): Promise<Ideia> {
+  async createIdeia(data: { content_locale?: ContentLocale; titulo: string; descricao?: string; author_briefing?: string; duration_mode: DurationMode; target_duration_seconds?: number; nicho_id?: string }): Promise<Ideia> {
     return this.request<Ideia>('/ideias/', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -426,6 +430,7 @@ class ApiClient {
   async startManualDraftImprovement(data: {
     ideia_id: string;
     draft_text: string;
+    content_locale?: ContentLocale;
     feedback?: string;
     idempotency_key: string;
     model_strategy?: 'flash_only' | 'standard' | 'hybrid' | 'strong';
@@ -436,6 +441,7 @@ class ApiClient {
         method: 'POST',
         body: JSON.stringify({
           draft_text: data.draft_text,
+          content_locale: data.content_locale,
           ...(data.feedback ? { feedback: data.feedback } : {}),
           idempotency_key: data.idempotency_key,
           model_strategy: data.model_strategy || 'standard',
@@ -553,6 +559,7 @@ class ApiClient {
   }
 
   async createManualDraft(data: {
+    content_locale?: ContentLocale;
     ideia_id: string;
     titulo: string;
     blocos: Array<{
@@ -571,6 +578,7 @@ class ApiClient {
       body: JSON.stringify({
         ideia_id: data.ideia_id,
         estrutura: {
+          content_locale: data.content_locale,
           titulo: data.titulo,
           duracao_total_segundos,
           blocos: data.blocos.map(b => ({
@@ -596,6 +604,7 @@ class ApiClient {
   async previewManualScriptImport(data: {
     ideia_id: string;
     source_filename: string;
+    content_locale?: ContentLocale;
     script: ManualScriptDocumentV1;
   }): Promise<ManualScriptImportPreview> {
     return this.request<ManualScriptImportPreview>('/roteiros/importar/preview', {
@@ -607,6 +616,7 @@ class ApiClient {
   async importManualScript(data: {
     ideia_id: string;
     source_filename: string;
+    content_locale?: ContentLocale;
     script: ManualScriptDocumentV1;
   }): Promise<ManualScriptImportResult> {
     return this.request<ManualScriptImportResult>('/roteiros/importar', {

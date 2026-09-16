@@ -114,6 +114,7 @@ class ManualScriptDocument(BaseModel):
 
 
 class ManualScriptImportRequest(BaseModel):
+    content_locale: Literal["pt-BR", "en-US"] | None = None
     model_config = ConfigDict(extra="forbid")
 
     ideia_id: UUID

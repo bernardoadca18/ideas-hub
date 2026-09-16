@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, DurationMode, GenerationPreview, GenerationRun, Ideia, Nicho, ProductionProfile } from '../api/client';
+import { api, ContentLocale, DurationMode, GenerationPreview, GenerationRun, Ideia, Nicho, ProductionProfile } from '../api/client';
 
 export default function Ideias() {
   const [ideias, setIdeias] = useState<Ideia[]>([]);
@@ -10,6 +10,8 @@ export default function Ideias() {
 
   // Form state
   const [showForm, setShowForm] = useState(false);
+  const [contentLocale, setContentLocale] = useState<ContentLocale>('pt-BR');
+  const [manualLocale, setManualLocale] = useState<ContentLocale>('pt-BR');
   const [titulo, setTitulo] = useState('');
   const [descricao, setDescricao] = useState('');
   const [authorBriefing, setAuthorBriefing] = useState('');
@@ -80,6 +82,7 @@ export default function Ideias() {
     e.preventDefault();
     try {
       await api.createIdeia({
+        content_locale: contentLocale,
         titulo,
         descricao: descricao || undefined,
         author_briefing: authorBriefing || undefined,
@@ -87,6 +90,7 @@ export default function Ideias() {
         target_duration_seconds: durationMode === 'explicit_target' ? Math.round(Number(targetMinutes) * 60) : undefined,
         nicho_id: nichoId || undefined,
       });
+      setContentLocale('pt-BR');
       setTitulo('');
       setDescricao('');
       setAuthorBriefing('');
@@ -160,6 +164,7 @@ export default function Ideias() {
 
   function openManualDraftImprovement(idea: Ideia) {
     setImprovingIdea(idea);
+    setManualLocale(idea.content_locale ?? 'pt-BR');
     setManualDraftText('');
     setManualDraftFeedback('');
     setManualDraftError(null);
@@ -186,6 +191,7 @@ export default function Ideias() {
       const result = await api.startManualDraftImprovement({
         ideia_id: improvingIdea.id,
         draft_text: manualDraftText,
+        content_locale: manualLocale,
         feedback: manualDraftFeedback.trim() || undefined,
         idempotency_key: manualDraftIdempotencyKey.current,
       });
@@ -305,6 +311,14 @@ export default function Ideias() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h2>Nova Ideia</h2>
             <form onSubmit={handleSubmit}>
+              <div className="form-group">
+                <label>Idioma
+                  <select value={contentLocale} onChange={(e) => setContentLocale(e.target.value as ContentLocale)}>
+                    <option value="pt-BR">Português (Brasil)</option>
+                    <option value="en-US">English (US)</option>
+                  </select>
+                </label>
+              </div>
               <div className="form-group">
                 <label>Título *</label>
                 <input
@@ -435,6 +449,14 @@ export default function Ideias() {
               sem substituir o original.
             </p>
             <form onSubmit={handleImproveManualDraft}>
+              <div className="form-group">
+                <label>Idioma
+                  <select value={manualLocale} onChange={(e) => { setManualLocale(e.target.value as ContentLocale); manualDraftIdempotencyKey.current = crypto.randomUUID(); }}>
+                    <option value="pt-BR">Português (Brasil)</option>
+                    <option value="en-US">English (US)</option>
+                  </select>
+                </label>
+              </div>
               <div className="form-group">
                 <label htmlFor="manual-draft-text">Seu roteiro / rascunho *</label>
                 <textarea

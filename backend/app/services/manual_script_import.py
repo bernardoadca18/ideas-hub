@@ -67,6 +67,7 @@ def normalize_manual_script(
     calibration: DurationCalibration,
     profile: ProductionProfile,
     target_duration_seconds: int | None,
+    content_locale: Literal["pt-BR", "en-US"] = "pt-BR",
 ) -> NormalizedManualScript:
     """Convert the external V1 shape into the one canonical script structure."""
 
@@ -101,6 +102,7 @@ def normalize_manual_script(
 
     structure = RoteiroEstrutura.model_validate(
         {
+            "content_locale": content_locale,
             "titulo": document.title,
             "duracao_total_segundos": sum(
                 int(block["duracao_segundos"]) for block in blocks
@@ -121,7 +123,13 @@ def normalize_manual_script(
     structure = RoteiroEstrutura.model_validate(payload)
     return NormalizedManualScript(
         structure=structure,
-        normalized_payload_sha256=normalized_manual_payload_sha256(document),
+        normalized_payload_sha256=(
+            normalized_manual_payload_sha256(document)
+            if content_locale == "pt-BR"
+            else hashlib.sha256(
+                ("en-US:" + normalized_manual_payload_sha256(document)).encode()
+            ).hexdigest()
+        ),
         block_previews=tuple(block_previews),
         word_count=sum(item.word_count for item in block_previews),
     )
@@ -134,6 +142,7 @@ def normalize_plain_text_manual_draft(
     calibration: DurationCalibration,
     profile: ProductionProfile,
     target_duration_seconds: int | None,
+    content_locale: Literal["pt-BR", "en-US"] = "pt-BR",
 ) -> NormalizedManualScript:
     """Adapt pasted text deterministically without rewriting or trimming it."""
 
@@ -146,6 +155,7 @@ def normalize_plain_text_manual_draft(
     )
     normalized = normalize_manual_script(
         document,
+        content_locale=content_locale,
         calibration=calibration,
         profile=profile,
         target_duration_seconds=target_duration_seconds,

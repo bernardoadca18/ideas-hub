@@ -143,6 +143,7 @@ async def start_manual_draft_improvement_run(
         return await ScriptGenerationJobService(db).enqueue_manual_draft_improvement(
             ideia_id,
             draft_text=payload.draft_text,
+            content_locale=payload.content_locale,
             idempotency_key=payload.idempotency_key,
             feedback=payload.feedback,
             model_strategy=payload.model_strategy,

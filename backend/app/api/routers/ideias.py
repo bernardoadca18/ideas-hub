@@ -2,7 +2,7 @@
 Router CRUD para a entidade Ideia.
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -34,6 +34,7 @@ def get_nicho_repo(db: Annotated[AsyncSession, Depends(get_db)]) -> NichoReposit
 class IdeiaBrutaInput(BaseModel):
     """Schema para entrada de ideia bruta manual."""
 
+    content_locale: Literal["pt-BR", "en-US"] = "pt-BR"
     titulo: str = Field(..., max_length=300, description="Título da ideia")
     descricao: str | None = Field(
         None, max_length=20_000, description="Descrição opcional da ideia"
@@ -161,6 +162,7 @@ async def create_ideia(
     try:
         ideia_refinada = await curador_service.processar(
             ideia_bruta=ideia_bruta,
+            content_locale=ideia_data.content_locale,
             prompt_nicho=prompt_nicho,
             ideias_similares=ideias_similares,
             perfil_id=perfil_id,
@@ -183,6 +185,7 @@ async def create_ideia(
     # Nota: eh_continuacao_de e numero_parte são definidos manualmente pelo usuário
     # após revisão da sinalização de continuação/duplicidade
     nova_ideia_data = IdeiaCreate(
+        content_locale=ideia_data.content_locale,
         nicho_id=ideia_data.nicho_id,
         origem="manual",
         titulo=ideia_refinada.titulo,
@@ -208,6 +211,7 @@ async def create_ideia(
 
     # 8. Prepara resposta com metadados de curadoria
     response = IdeiaRefinadaResponse(
+        content_locale=ideia_recarregada.content_locale,
         id=ideia_recarregada.id,
         nicho_id=ideia_recarregada.nicho_id,
         origem=ideia_recarregada.origem,

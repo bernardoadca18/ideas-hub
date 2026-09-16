@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   api,
+  ContentLocale,
   GenerationRun,
   Ideia,
   ManualScriptDocumentV1,
@@ -62,6 +63,7 @@ export default function Roteiros() {
   const [revisionRun, setRevisionRun] = useState<GenerationRun | null>(null);
 
   const [showImportModal, setShowImportModal] = useState(false);
+  const [importLocale, setImportLocale] = useState<ContentLocale>('pt-BR');
   const [importIdeaId, setImportIdeaId] = useState('');
   const [importFile, setImportFile] = useState<{
     filename: string;
@@ -78,12 +80,14 @@ export default function Roteiros() {
   const [ideias, setIdeias] = useState<Ideia[]>([]);
   const [createDraft, setCreateDraft] = useState<{
     ideia_id: string;
+    content_locale: ContentLocale;
     titulo: string;
     blocos: Array<{ tipo: string; duracao_segundos: number; conteudo: string; dicas_visual: string; dicas_audio: string }>;
     tags: string[];
     referencias: string;
   }>({
     ideia_id: '',
+    content_locale: 'pt-BR',
     titulo: '',
     blocos: [{ tipo: 'introducao', duracao_segundos: 30, conteudo: '', dicas_visual: '', dicas_audio: '' }],
     tags: [],
@@ -115,6 +119,7 @@ export default function Roteiros() {
 
   function resetImport() {
     setImportIdeaId('');
+    setImportLocale('pt-BR');
     setImportFile(null);
     setImportPreview(null);
     setImportError(null);
@@ -161,6 +166,7 @@ export default function Roteiros() {
       setValidatingImport(true);
       const preview = await api.previewManualScriptImport({
         ideia_id: importIdeaId,
+        content_locale: importLocale,
         source_filename: importFile.filename,
         script: importFile.script,
       });
@@ -179,6 +185,7 @@ export default function Roteiros() {
       setImportingScript(true);
       const result = await api.importManualScript({
         ideia_id: importIdeaId,
+        content_locale: importLocale,
         source_filename: importFile.filename,
         script: importFile.script,
       });
@@ -208,6 +215,7 @@ export default function Roteiros() {
       setCreating(true);
       await api.createManualDraft({
         ideia_id: createDraft.ideia_id,
+        content_locale: createDraft.content_locale,
         titulo: createDraft.titulo,
         blocos: createDraft.blocos.filter(b => b.conteudo.trim()),
         tags: createDraft.tags.filter(t => t.trim()),
@@ -216,6 +224,7 @@ export default function Roteiros() {
       setShowCreateModal(false);
       setCreateDraft({
         ideia_id: '',
+        content_locale: 'pt-BR',
         titulo: '',
         blocos: [{ tipo: 'introducao', duracao_segundos: 30, conteudo: '', dicas_visual: '', dicas_audio: '' }],
         tags: [],
@@ -637,6 +646,7 @@ export default function Roteiros() {
                 value={importIdeaId}
                 onChange={(event) => {
                   setImportIdeaId(event.target.value);
+                  setImportLocale(ideias.find(idea => idea.id === event.target.value)?.content_locale ?? 'pt-BR');
                   setImportPreview(null);
                   setImportError(null);
                 }}
@@ -647,6 +657,14 @@ export default function Roteiros() {
                 ))}
               </select>
             </div>
+            <div className="form-group">
+                <label>Idioma
+                  <select value={importLocale} onChange={(e) => { setImportLocale(e.target.value as ContentLocale); setImportPreview(null); }}>
+                    <option value="pt-BR">Português (Brasil)</option>
+                    <option value="en-US">English (US)</option>
+                  </select>
+                </label>
+              </div>
             <div className="form-group">
               <label>Arquivo neovids_manual_script_v1 *</label>
               <input
@@ -727,7 +745,7 @@ export default function Roteiros() {
                 <label>Ideia vinculada *</label>
                 <select
                   value={createDraft.ideia_id}
-                  onChange={(e) => setCreateDraft(d => ({ ...d, ideia_id: e.target.value }))}
+                  onChange={(e) => setCreateDraft(d => ({ ...d, ideia_id: e.target.value, content_locale: ideias.find(idea => idea.id === e.target.value)?.content_locale ?? 'pt-BR' }))}
                   required
                 >
                   <option value="">Selecionar ideia...</option>
@@ -740,6 +758,14 @@ export default function Roteiros() {
                 <small className="form-help">A ideia deve existir previamente. O roteiro será criado como rascunho versionado.</small>
               </div>
 
+              <div className="form-group">
+                <label>Idioma
+                  <select value={createDraft.content_locale} onChange={(e) => setCreateDraft(d => ({ ...d, content_locale: e.target.value as ContentLocale }))}>
+                    <option value="pt-BR">Português (Brasil)</option>
+                    <option value="en-US">English (US)</option>
+                  </select>
+                </label>
+              </div>
               <div className="form-group">
                 <label>Título do roteiro *</label>
                 <input

@@ -168,6 +168,7 @@ class RoteiroEstrutura(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    content_locale: Literal["pt-BR", "en-US"] = "pt-BR"
     production_script_schema_version: str | None = None
     titulo: str = Field(min_length=1, max_length=300)
     duracao_total_segundos: int = Field(gt=0, le=172_800)

@@ -127,6 +127,10 @@ class GlobalEditorialPlanOutput(BaseModel):
     open_loops: list[str] = Field(default_factory=list, max_length=30)
 
 
+class EnglishGlobalEditorialPlanOutput(GlobalEditorialPlanOutput):
+    titulo: str = Field(min_length=1, max_length=300)
+
+
 class PlannedSectionBatchOutput(BaseModel):
     """Bounded V2 enrichment with beat-level claim provenance."""
 
@@ -366,6 +370,7 @@ class RevisionGenerationRunCreate(GenerationRunCreate):
 class ManualDraftImprovementRunCreate(RevisionGenerationRunCreate):
     """Paste-friendly human draft input; server-owned fields stay out of the API."""
 
+    content_locale: Literal["pt-BR", "en-US"] | None = None
     draft_text: str = Field(min_length=1, max_length=100_000)
 
     @field_validator("draft_text")

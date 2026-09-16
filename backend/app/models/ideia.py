@@ -62,6 +62,9 @@ class Ideia(Base, TimestampMixin):
         ForeignKey("nichos.id", ondelete="SET NULL"),
         nullable=True,
     )
+    content_locale: Mapped[str] = mapped_column(
+        String(5), nullable=False, default="pt-BR", server_default="pt-BR"
+    )
     origem: Mapped[str] = mapped_column(OrigemIdeia, nullable=False)
     titulo: Mapped[str] = mapped_column(String(300), nullable=False)
     descricao_breve: Mapped[str | None] = mapped_column(Text, nullable=True)

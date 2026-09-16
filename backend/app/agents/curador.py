@@ -20,6 +20,7 @@ from app.core.logging import curador_logger
 from app.core.retry import retry_tavily
 from app.production_profiles import get_profile
 from app.prompts.builder import PromptBuilder
+from app.prompts.editorial_v3 import spoken_language_policy
 from app.prompts.workflows import IDEACAO_BRUTA, REFINAMENTO_IDEIA
 from app.schemas.llm_outputs import (
     IdeaRefinementOutput,
@@ -141,6 +142,7 @@ class CuradorService:
         prompt_nicho: str | None = None,
         ideias_similares: list[dict[str, Any]] | None = None,
         perfil_id: str | None = None,
+        content_locale: str = "pt-BR",
     ) -> IdeiaRefinada:
         """
         Processa uma ideia bruta e retorna versão refinada.
@@ -215,7 +217,15 @@ class CuradorService:
 
             resposta_llm = await self._call_llm(
                 [
-                    {"role": "system", "content": composed.system},
+                    {
+                        "role": "system",
+                        "content": composed.system
+                        + (
+                            "\n\n" + spoken_language_policy(content_locale)
+                            if content_locale == "en-US"
+                            else ""
+                        ),
+                    },
                     {"role": "user", "content": composed.user},
                 ]
             )
