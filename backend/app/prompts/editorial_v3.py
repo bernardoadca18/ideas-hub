@@ -162,7 +162,9 @@ def compose_editorial_v3_prompt(
     niche = niche_context(niche_prompt)
     if niche:
         system_parts.append(niche)
-    if content_locale == "en-US":
+    if content_locale == "en-US" and phase not in {
+        "writing", "section_audit", "global_critic"
+    }:
         system_parts.append(spoken_language_policy(content_locale))
     system = "\n\n---\n\n".join(system_parts)
 

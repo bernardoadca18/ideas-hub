@@ -48,6 +48,10 @@ def test_idea_locale_and_editorial_policy():
     assert "natural American English" in prompt.system
     assert "VisualQueries" in prompt.system
     assert _SPOKEN_PT_BR_POLICY not in prompt.system
+    for phase in ("writing", "section_audit", "global_critic", "global_planning", "section_planning", "claim_extraction"):
+        composed = compose_editorial_v3_prompt(**{**kwargs, "phase": phase}, content_locale="en-US")
+        assert composed.system.count(spoken_language_policy("en-US")) == 1
+
 
 
 @pytest.mark.asyncio
