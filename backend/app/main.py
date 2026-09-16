@@ -32,7 +32,7 @@ app = FastAPI(title="ideas-hub", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins.split(","),
+    allow_origins=[item.strip() for item in settings.cors_origins.split(",") if item.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
