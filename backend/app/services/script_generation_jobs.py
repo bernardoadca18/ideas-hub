@@ -401,7 +401,13 @@ class ScriptGenerationJobService:
             requested_target_seconds=idea.target_duration_seconds,
             profile=profile,
         )
-        calibration = await duration_calibration_client.get(profile.id)
+        content_locale = getattr(idea, "content_locale", "pt-BR")
+        if parent_roteiro_id is not None:
+            parent = await RoteiroRepository(self.session).get_by_id(parent_roteiro_id)
+            if parent is None:
+                raise ValueError("Roteiro pai não encontrado")
+            content_locale = parent.estrutura.get("content_locale", "pt-BR")
+        calibration = await duration_calibration_client.get(profile.id, content_locale)
         evidence_chars = len(idea.descricao_breve or "") + len(
             idea.author_briefing or ""
         )
@@ -412,12 +418,6 @@ class ScriptGenerationJobService:
             config=self.config,
         )
         plan_payload = _plan_payload(plan)
-        content_locale = getattr(idea, "content_locale", "pt-BR")
-        if parent_roteiro_id is not None:
-            parent = await RoteiroRepository(self.session).get_by_id(parent_roteiro_id)
-            if parent is None:
-                raise ValueError("Roteiro pai não encontrado")
-            content_locale = parent.estrutura.get("content_locale", "pt-BR")
         plan_payload["content_locale"] = content_locale
         if revision_brief_override is not None:
             plan_payload["revision_brief"] = revision_brief_override
@@ -687,7 +687,9 @@ class ScriptGenerationJobService:
 
             generator = RoteiroGenerator(self.session)
             profile = await generator._profile_for_idea(idea)
-            calibration = await duration_calibration_client.get(profile.id)
+            calibration = await duration_calibration_client.get(
+                profile.id, content_locale or getattr(idea, "content_locale", "pt-BR")
+            )
             normalized = normalize_plain_text_manual_draft(
                 draft_text,
                 title=idea.titulo,
@@ -748,6 +750,7 @@ class ScriptGenerationJobService:
         )
         idea = await IdeiaRepository(self.session).create(
             IdeiaCreate(
+                content_locale=request.content_locale,
                 nicho_id=request.nicho_id,
                 origem="notas_gameplay",
                 titulo=request.titulo_provisorio,
@@ -1267,7 +1270,9 @@ class ScriptGenerationJobService:
                 "duration_contract": evaluate_duration(
                     source_structure.blocos,
                     target_seconds=run.target_duration_seconds,
-                    calibration=await duration_calibration_client.get(profile.id),
+                    calibration=await duration_calibration_client.get(
+                        profile.id, source_structure.content_locale
+                    ),
                     profile=profile,
                 ),
                 "editorial_quality": evaluate_editorial_quality(
@@ -3860,7 +3865,9 @@ class ScriptGenerationJobService:
             run.sections,
             claim_ledger=run.plan.get("editorial", {}).get("claim_ledger", []),
         )
-        calibration = await duration_calibration_client.get(run.production_profile)
+        calibration = await duration_calibration_client.get(
+            run.production_profile, run.plan.get("content_locale", "pt-BR")
+        )
         profile = get_profile(run.production_profile)
         references = list(
             dict.fromkeys(

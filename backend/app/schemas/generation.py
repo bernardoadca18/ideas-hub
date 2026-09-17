@@ -390,6 +390,7 @@ class GameGenerationRunCreate(AnaliseJogoRequest):
 
 
 class GenerationPreviewRequest(BaseModel):
+    content_locale: Literal["pt-BR", "en-US"] = "pt-BR"
     production_profile: str
     duration_mode: DurationMode
     target_duration_seconds: int | None = Field(default=None, ge=60, le=28_800)

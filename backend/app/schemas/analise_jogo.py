@@ -1,5 +1,6 @@
 """Schemas para o workflow de Análise de Jogos (notas -> roteiro)."""
 
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -8,6 +9,7 @@ from app.services.editorial_generation import DurationMode
 
 
 class AnaliseJogoRequest(BaseModel):
+    content_locale: Literal["pt-BR", "en-US"] = "pt-BR"
     titulo_provisorio: str = Field(..., max_length=300)
     anotacoes: str = Field(..., min_length=20, max_length=500_000)
     nome_jogo: str | None = Field(None, max_length=200)

@@ -337,7 +337,9 @@ class RoteiroGenerator:
         profile = get_profile(perfil_id)
         duration_intent = self._duration_intent(ideia, profile)
         target_seconds = duration_intent.target_seconds
-        calibration = await duration_calibration_client.get(profile.id)
+        calibration = await duration_calibration_client.get(
+            profile.id, getattr(ideia, "content_locale", "pt-BR")
+        )
         budget_prompt = duration_budget_prompt(target_seconds, calibration)
 
         roteiro_anterior = None
@@ -542,10 +544,12 @@ class RoteiroGenerator:
         if not ideia:
             raise ValueError("Ideia não encontrada")
         profile = await self._profile_for_idea(ideia)
-        calibration = calibration or await duration_calibration_client.get(profile.id)
         payload = estrutura.model_dump(mode="json")
         if "content_locale" not in estrutura.model_fields_set:
             payload["content_locale"] = getattr(ideia, "content_locale", "pt-BR")
+        calibration = calibration or await duration_calibration_client.get(
+            profile.id, payload["content_locale"]
+        )
         # This method also backs the public manual-create endpoint. Plain-text
         # provenance is accepted only through the composite server-owned adapter.
         payload["manual_draft"] = (
@@ -573,7 +577,9 @@ class RoteiroGenerator:
         if not ideia:
             raise ValueError("Ideia não encontrada")
         profile = await self._profile_for_idea(ideia)
-        calibration = await duration_calibration_client.get(profile.id)
+        calibration = await duration_calibration_client.get(
+            profile.id, request.content_locale or getattr(ideia, "content_locale", "pt-BR")
+        )
         normalized = normalize_manual_script(
             request.script,
             content_locale=request.content_locale
@@ -789,7 +795,9 @@ class RoteiroGenerator:
         )
         estrutura = RoteiroEstrutura.model_validate(structure_payload)
         profile = await self._profile_for_idea(source.ideia)
-        calibration = await duration_calibration_client.get(profile.id)
+        calibration = await duration_calibration_client.get(
+            profile.id, source_structure.content_locale
+        )
         structure_payload["duration_contract"] = evaluate_duration(
             estrutura.blocos,
             target_seconds=self._target_duration(source.ideia, profile),
@@ -842,7 +850,9 @@ class RoteiroGenerator:
         profile = get_profile(perfil_id)
         duration_intent = self._duration_intent(ideia, profile)
         target_seconds = duration_intent.target_seconds
-        calibration = await duration_calibration_client.get(profile.id)
+        calibration = await duration_calibration_client.get(
+            profile.id, source.estrutura.get("content_locale", "pt-BR")
+        )
         budget_prompt = duration_budget_prompt(target_seconds, calibration)
 
         generated = await self._call_script_agent(
@@ -939,7 +949,9 @@ class RoteiroGenerator:
             raise ValueError("Roteiro não encontrado")
         structure = RoteiroEstrutura.model_validate(roteiro.estrutura)
         profile = await self._profile_for_idea(roteiro.ideia)
-        calibration = await duration_calibration_client.get(profile.id)
+        calibration = await duration_calibration_client.get(
+            profile.id, structure.content_locale
+        )
         report = evaluate_duration(
             structure.blocos,
             target_seconds=self._target_duration(roteiro.ideia),

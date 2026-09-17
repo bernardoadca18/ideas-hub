@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, DurationMode, GenerationRun } from '../api/client';
+import { api, ContentLocale, DurationMode, GenerationRun } from '../api/client';
 
 export default function GameAnalysis() {
+  const [contentLocale, setContentLocale] = useState<ContentLocale>('pt-BR');
   const [title, setTitle] = useState('');
   const [game, setGame] = useState('');
   const [notes, setNotes] = useState('');
@@ -19,6 +20,7 @@ export default function GameAnalysis() {
     event.preventDefault();
     try {
       const created = await api.startGameGeneration({
+        content_locale: contentLocale,
         titulo_provisorio: title,
         nome_jogo: game || undefined,
         anotacoes: notes,
@@ -66,6 +68,7 @@ export default function GameAnalysis() {
       <div className="form-group"><label>Jogo</label><input maxLength={200} value={game} onChange={(event) => setGame(event.target.value)} /></div>
       <div className="form-group"><label>Notas de gameplay</label><textarea required minLength={20} rows={14} value={notes} onChange={(event) => setNotes(event.target.value)} /></div>
       <div className="form-group"><label>Contexto do autor</label><textarea rows={5} value={briefing} onChange={(event) => setBriefing(event.target.value)} /></div>
+      <div className="form-group"><label htmlFor="game-content-locale">Idioma</label><select id="game-content-locale" value={contentLocale} onChange={(event) => setContentLocale(event.target.value as ContentLocale)}><option value="pt-BR">Português (Brasil)</option><option value="en-US">English (US)</option></select></div>
       <div className="form-group"><label>Duração</label><select value={durationMode} onChange={(event) => setDurationMode(event.target.value as DurationMode)}><option value="content_driven">Content-driven</option><option value="explicit_target">Target explícito</option></select></div>
       {durationMode === 'explicit_target' && <div className="form-group"><label>Minutos</label><input type="number" min={5} max={480} value={minutes} onChange={(event) => setMinutes(event.target.value)} required /></div>}
       <div className="form-group"><label>Política de modelo</label><select value={modelStrategy} onChange={(event) => setModelStrategy(event.target.value as typeof modelStrategy)}><option value="standard">Standard</option><option value="flash_only">Flash-only</option><option value="hybrid">Strong planner/critic + standard writer</option><option value="strong">Strong em todas as fases</option></select></div>

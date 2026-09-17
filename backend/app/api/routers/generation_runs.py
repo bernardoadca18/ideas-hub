@@ -72,7 +72,7 @@ async def generation_preview(payload: GenerationPreviewRequest):
         requested_target_seconds=payload.target_duration_seconds,
         profile=profile,
     )
-    calibration = await duration_calibration_client.get(profile.id)
+    calibration = await duration_calibration_client.get(profile.id, payload.content_locale)
     plan = build_generation_plan(
         intent=intent,
         words_per_minute=calibration.words_per_minute,

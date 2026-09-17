@@ -108,6 +108,7 @@ export default function Ideias() {
     if (!selectedProfile) return;
     try {
       setGenerationPreview(await api.getGenerationPreview({
+        content_locale: contentLocale,
         production_profile: selectedProfile.id,
         duration_mode: durationMode,
         target_duration_seconds: durationMode === 'explicit_target' ? Math.round(Number(targetMinutes) * 60) : undefined,

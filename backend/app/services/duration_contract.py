@@ -8,7 +8,7 @@ import re
 import statistics
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -170,15 +170,19 @@ class DurationCalibration:
     production_profile: str | None
 
     @classmethod
-    def fallback_for(cls, *, production_profile: str | None) -> DurationCalibration:
-        version = "speaking_rate_fallback_v1"
+    def fallback_for(
+        cls, *, production_profile: str | None,
+        content_locale: Literal["pt-BR", "en-US"] = "pt-BR",
+    ) -> DurationCalibration:
+        version = "speaking_rate_fallback_v2"
         words_per_minute = float(settings.duration_fallback_words_per_minute)
         chars_per_second = float(settings.duration_fallback_chars_per_second)
         payload = {
             "version": version,
             "words_per_minute": words_per_minute,
             "chars_per_second": chars_per_second,
-            "language": "pt-BR",
+            "language": content_locale,
+            "content_locale": content_locale,
             "production_profile": production_profile,
         }
         return cls(
@@ -190,7 +194,7 @@ class DurationCalibration:
             source_window="configured_fallback",
             generated_at=None,
             fallback=True,
-            language="pt-BR",
+            language=content_locale,
             voice_profile=None,
             generation_profile=None,
             production_profile=production_profile,
@@ -200,9 +204,12 @@ class DurationCalibration:
 class DurationCalibrationClient:
     """Read accepted-take telemetry from Orchestrator, with an explicit fallback."""
 
-    async def get(self, production_profile: str | None) -> DurationCalibration:
+    async def get(
+        self, production_profile: str | None,
+        content_locale: Literal["pt-BR", "en-US"] = "pt-BR",
+    ) -> DurationCalibration:
         fallback = DurationCalibration.fallback_for(
-            production_profile=production_profile
+            production_profile=production_profile, content_locale=content_locale
         )
         try:
             async with httpx.AsyncClient(
@@ -210,12 +217,15 @@ class DurationCalibrationClient:
             ) as client:
                 response = await client.get(
                     f"{settings.orchestrator_base_url.rstrip('/')}/workflow/calibration/speaking-rate",
-                    params={"production_profile": production_profile}
-                    if production_profile
-                    else None,
+                    params={
+                        "content_locale": content_locale,
+                        **({"production_profile": production_profile} if production_profile else {}),
+                    },
                 )
                 response.raise_for_status()
                 payload = response.json()
+            if payload.get("language") != content_locale:
+                return fallback
             return DurationCalibration(
                 version=str(payload["version"]),
                 identity=str(payload["identity"]),
@@ -225,7 +235,7 @@ class DurationCalibrationClient:
                 source_window=str(payload["source_window"]),
                 generated_at=payload.get("generated_at"),
                 fallback=bool(payload["fallback"]),
-                language=str(payload.get("language") or "pt-BR"),
+                language=content_locale,
                 voice_profile=payload.get("voice_profile"),
                 generation_profile=payload.get("generation_profile"),
                 production_profile=payload.get("production_profile"),

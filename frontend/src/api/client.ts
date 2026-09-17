@@ -459,6 +459,7 @@ class ApiClient {
   }
 
   async getGenerationPreview(data: {
+    content_locale?: ContentLocale;
     production_profile: string;
     duration_mode: DurationMode;
     target_duration_seconds?: number;
@@ -471,6 +472,7 @@ class ApiClient {
   }
 
   async startGameGeneration(data: {
+    content_locale?: ContentLocale;
     titulo_provisorio: string;
     anotacoes: string;
     nome_jogo?: string;
