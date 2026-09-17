@@ -421,6 +421,11 @@ class RoteiroGenerator:
         return self._summary(created, estrutura)
 
     async def generate_from_notas(self, request: AnaliseJogoRequest) -> dict[str, Any]:
+        if request.content_locale != "pt-BR":
+            raise ValueError(
+                "Legacy generate_from_notas does not support en-US; "
+                "use durable Game Analysis generation"
+            )
         prompt_nicho = None
         if request.nicho_id:
             nicho = await self.nicho_repo.get_by_id(request.nicho_id)
@@ -433,7 +438,9 @@ class RoteiroGenerator:
             requested_target_seconds=request.target_duration_seconds,
             profile=game_profile,
         )
-        calibration = await duration_calibration_client.get("game_analysis")
+        calibration = await duration_calibration_client.get(
+            "game_analysis", request.content_locale
+        )
 
         generated = await self._call_script_agent(
             lambda: analise_jogos_service.gerar_roteiro_de_notas(
@@ -456,6 +463,7 @@ class RoteiroGenerator:
 
         ideia = await self.ideia_repo.create(
             IdeiaCreate(
+                content_locale=request.content_locale,
                 nicho_id=request.nicho_id,
                 origem="notas_gameplay",
                 titulo=generated.titulo,

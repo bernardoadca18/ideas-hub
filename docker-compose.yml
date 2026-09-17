@@ -35,6 +35,7 @@ services:
     logging: *neovids-logging
     env_file: .env
     environment:
+      ORCHESTRATOR_BASE_URL: ${ORCHESTRATOR_BASE_URL_DOCKER:-http://host.docker.internal:8011}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-mxbai-embed-large:latest}
       EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
@@ -95,6 +96,7 @@ services:
     logging: *neovids-logging
     env_file: .env
     environment:
+      ORCHESTRATOR_BASE_URL: ${ORCHESTRATOR_BASE_URL_DOCKER:-http://host.docker.internal:8011}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-mxbai-embed-large:latest}
       EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}

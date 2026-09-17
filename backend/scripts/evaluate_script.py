@@ -45,9 +45,14 @@ async def main() -> int:
     profile = get_profile(args.profile)
     structure = _load_script(args.script)
     calibration = (
-        DurationCalibration.fallback_for(production_profile=profile.id)
+        DurationCalibration.fallback_for(
+            production_profile=profile.id,
+            content_locale=structure.content_locale,
+        )
         if args.offline
-        else await duration_calibration_client.get(profile.id)
+        else await duration_calibration_client.get(
+            profile.id, structure.content_locale
+        )
     )
     result = {
         "duration_contract": evaluate_duration(
