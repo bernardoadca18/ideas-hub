@@ -284,3 +284,57 @@ class TestCuradorService:
 
             assert captured.value.category is LLMFailureCategory.TRANSPORT
             assert client_instance.post.call_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("locale", ["pt-BR", "en-US"])
+async def test_refinement_sends_schema_to_gateway(curador_service, locale):
+    from types import SimpleNamespace
+
+    from app.agents.curador import IdeiaBruta
+    from app.prompts.editorial_v3 import spoken_language_policy
+    from app.schemas.llm_outputs import IdeaRefinementOutput
+    from app.services.llm_gateway import LLMTaskRole
+
+    output = {
+        "titulo": "Refined idea" if locale == "en-US" else "Ideia refinada",
+        "descricao_breve": "Description" if locale == "en-US" else "Descrição",
+        "justificativa": "Grounded angle",
+    }
+    curador_service._search_tavily = AsyncMock(return_value="")
+    result = SimpleNamespace(
+        content=json.dumps(output), model_alias="test", total_tokens=10, latency_seconds=0.1
+    )
+    with patch("app.agents.curador.llm_gateway.complete", AsyncMock(return_value=result)) as complete:
+        refined = await curador_service.processar(
+            IdeiaBruta(titulo="Source idea"), content_locale=locale
+        )
+    assert refined.titulo == output["titulo"]
+    assert refined.descricao_breve == output["descricao_breve"]
+    complete.assert_awaited_once()
+    kwargs = complete.call_args.kwargs
+    assert kwargs["response_schema"] == IdeaRefinementOutput.model_json_schema()
+    assert kwargs["role"] is LLMTaskRole.FAST
+    assert kwargs["temperature"] == 0.7 and kwargs["max_tokens"] == 1000
+    assert (spoken_language_policy("en-US") in kwargs["messages"][0]["content"]) == (locale == "en-US")
+
+
+@pytest.mark.asyncio
+async def test_raw_idea_sends_schema_to_gateway(curador_service):
+    from types import SimpleNamespace
+
+    from app.schemas.llm_outputs import RawIdeaOutput
+    from app.services.llm_gateway import LLMTaskRole
+
+    result = SimpleNamespace(
+        content=json.dumps({"titulo": "Ideia bruta", "descricao": "Descrição"}),
+        model_alias="test", total_tokens=10, latency_seconds=0.1,
+    )
+    with patch("app.agents.curador.llm_gateway.complete", AsyncMock(return_value=result)) as complete:
+        raw = await curador_service.gerar_ideia_bruta("trend", None, None, 1, 1)
+    assert raw.titulo == "Ideia bruta" and raw.descricao == "Descrição"
+    complete.assert_awaited_once()
+    kwargs = complete.call_args.kwargs
+    assert kwargs["response_schema"] == RawIdeaOutput.model_json_schema()
+    assert kwargs["role"] is LLMTaskRole.FAST
+    assert kwargs["temperature"] == 0.8 and kwargs["max_tokens"] == 1000

@@ -63,13 +63,19 @@ class CuradorService:
         self.tavily_api_key = settings.tavily_api_key
         self.similarity_threshold = settings.ideia_similarity_threshold
 
-    async def _call_llm(self, messages: list[dict], temperature: float = 0.7) -> str:
+    async def _call_llm(
+        self,
+        messages: list[dict],
+        temperature: float = 0.7,
+        response_schema: dict[str, Any] | None = None,
+    ) -> str:
         """Faz chamada para o LLM pelo gateway compartilhado."""
         result = await llm_gateway.complete(
             messages=messages,
             role=LLMTaskRole.FAST,
             temperature=temperature,
             max_tokens=1000,
+            response_schema=response_schema,
         )
         curador_logger.log_llm_call(
             model=result.model_alias,
@@ -227,7 +233,8 @@ class CuradorService:
                         ),
                     },
                     {"role": "user", "content": composed.user},
-                ]
+                ],
+                response_schema=IdeaRefinementOutput.model_json_schema(),
             )
             parsed = validate_model_output(IdeaRefinementOutput, resposta_llm)
             assert isinstance(parsed, IdeaRefinementOutput)
@@ -303,6 +310,7 @@ class CuradorService:
                 {"role": "user", "content": composed.user},
             ],
             temperature=0.8,
+            response_schema=RawIdeaOutput.model_json_schema(),
         )
         parsed = validate_model_output(RawIdeaOutput, resposta_llm)
         assert isinstance(parsed, RawIdeaOutput)
