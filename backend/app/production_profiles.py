@@ -175,6 +175,7 @@ class ProductionProfile:
         default_factory=VisualRequirementsPolicy
     )
     requires_media_scope: bool = True
+    burned_in_captions: bool = True
 
 
 FACELESS_POP_CULTURE_LISTS = ProductionProfile(
@@ -220,6 +221,7 @@ FACELESS_POP_CULTURE_LISTS = ProductionProfile(
         "Diferencie claramente fato canônico de teoria/especulação do fandom.",
     ],
     workflow_roteiro="roteiro_padrao",
+    burned_in_captions=False,
 )
 
 FACELESS_INFORMATIONAL = ProductionProfile(
