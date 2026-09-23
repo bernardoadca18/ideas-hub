@@ -14,6 +14,41 @@ perfil = adicionar uma entrada aqui.
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field
+from typing import Literal
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionCapabilities:
+    delivery_mode: Literal["rendered_video", "manual_edit_package"] = "rendered_video"
+    visual_mode: Literal["semantic_match", "background_fill", "storyboard"] = (
+        "semantic_match"
+    )
+    requires_media_scope: bool = True
+    caption_policy: Literal["burned_in", "none"] = "burned_in"
+    render_profile: str | None = None
+    version: str = "production_capabilities_v1"
+
+    def __post_init__(self) -> None:
+        if self.delivery_mode not in {"rendered_video", "manual_edit_package"}:
+            raise ValueError("invalid delivery mode")
+        if self.visual_mode not in {"semantic_match", "background_fill", "storyboard"}:
+            raise ValueError("invalid visual mode")
+        if self.caption_policy not in {"burned_in", "none"}:
+            raise ValueError("invalid caption policy")
+        if not isinstance(self.requires_media_scope, bool):
+            raise ValueError("invalid production capabilities")
+        if not isinstance(self.version, str) or not self.version:
+            raise ValueError("invalid production capabilities version")
+        if self.render_profile is not None and (
+            not isinstance(self.render_profile, str) or not self.render_profile.strip()
+        ):
+            raise ValueError("render profile must be nonempty")
+
+    @property
+    def identity(self) -> str:
+        return hashlib.sha256(
+            json.dumps(asdict(self), sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,8 +209,15 @@ class ProductionProfile:
     visual_requirements: VisualRequirementsPolicy = field(
         default_factory=VisualRequirementsPolicy
     )
-    requires_media_scope: bool = True
-    burned_in_captions: bool = True
+    capabilities: ProductionCapabilities = field(default_factory=ProductionCapabilities)
+
+    @property
+    def requires_media_scope(self) -> bool:
+        return self.capabilities.requires_media_scope
+
+    @property
+    def burned_in_captions(self) -> bool:
+        return self.capabilities.caption_policy == "burned_in"
 
 
 FACELESS_POP_CULTURE_LISTS = ProductionProfile(
@@ -221,7 +263,7 @@ FACELESS_POP_CULTURE_LISTS = ProductionProfile(
         "Diferencie claramente fato canônico de teoria/especulação do fandom.",
     ],
     workflow_roteiro="roteiro_padrao",
-    burned_in_captions=False,
+    capabilities=ProductionCapabilities(caption_policy="none"),
 )
 
 FACELESS_INFORMATIONAL = ProductionProfile(

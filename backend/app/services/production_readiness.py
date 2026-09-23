@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from dataclasses import asdict
 
 from app.production_profiles import ProductionProfile
 from app.schemas.roteiro import RoteiroEstrutura
@@ -15,11 +16,20 @@ def evaluate_production_readiness(
     script_status: str,
     profile: ProductionProfile,
 ) -> dict[str, Any]:
-    visual = validate_visual_readiness(structure, profile.visual_requirements)
+    capabilities = profile.capabilities
+    visual_required = (
+        capabilities.delivery_mode == "rendered_video"
+        and capabilities.visual_mode == "semantic_match"
+    )
+    visual = (
+        validate_visual_readiness(structure, profile.visual_requirements)
+        if visual_required
+        else None
+    )
     issues: list[dict[str, Any]] = []
     if script_status != "aprovado":
         issues.append({"code": "editorial_approval_missing"})
-    if visual.status != "ready":
+    if visual is not None and visual.status != "ready":
         issues.append({"code": "visual_readiness_not_ready"})
 
     context = structure.media_context
@@ -34,8 +44,17 @@ def evaluate_production_readiness(
     return {
         "status": "ready" if not issues else "not_ready",
         "profile": profile.id,
+        "capabilities": asdict(capabilities),
         "editorial_status": script_status,
-        "visual": visual.to_dict(),
+        "visual": (
+            {**visual.to_dict(), "required": True, "mode": capabilities.visual_mode}
+            if visual is not None
+            else {
+                "required": False,
+                "mode": capabilities.visual_mode,
+                "status": "not_required",
+            }
+        ),
         "media_scope": {
             "required": profile.requires_media_scope,
             "status": media_status,

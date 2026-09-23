@@ -165,7 +165,9 @@ async def test_media_binding_rejects_invalid_source_state(source_state: str) -> 
 
 
 @pytest.mark.asyncio
-async def test_historical_approved_revision_can_create_approved_media_binding_child() -> None:
+async def test_historical_approved_revision_can_create_approved_media_binding_child() -> (
+    None
+):
     before = _ready_structure(media=False)
     source = _source(before)
     later = SimpleNamespace(id=uuid4(), ideia_id=source.ideia_id, status="rascunho")
@@ -377,7 +379,10 @@ def test_production_readiness_is_profile_aware() -> None:
     scope_optional = evaluate_production_readiness(
         _ready_structure(media=False),
         script_status="aprovado",
-        profile=replace(profile, requires_media_scope=False),
+        profile=replace(
+            profile,
+            capabilities=replace(profile.capabilities, requires_media_scope=False),
+        ),
     )
     assert scope_optional["status"] == "ready"
     assert scope_optional["media_scope"]["status"] == "not_required"
@@ -435,3 +440,36 @@ async def test_visual_query_repair_changes_only_selected_query_text() -> None:
         before.blocos[0].visual_queries[0].coverage_start_char,
         before.blocos[0].visual_queries[0].coverage_end_char,
     )
+
+
+@pytest.mark.parametrize(
+    ("delivery_mode", "visual_mode", "requires_scope", "media", "expected"),
+    [
+        ("manual_edit_package", "semantic_match", False, False, "ready"),
+        ("rendered_video", "background_fill", True, False, "not_ready"),
+        ("rendered_video", "storyboard", False, False, "ready"),
+    ],
+)
+def test_future_capabilities_do_not_require_semantic_queries(
+    delivery_mode, visual_mode, requires_scope, media, expected
+):
+    profile = get_profile("faceless_general")
+    profile = replace(
+        profile,
+        capabilities=replace(
+            profile.capabilities,
+            delivery_mode=delivery_mode,
+            visual_mode=visual_mode,
+            requires_media_scope=requires_scope,
+        ),
+    )
+    structure = _ready_structure(media=media)
+    structure.blocos[0].visual_queries = []
+    report = evaluate_production_readiness(
+        structure, script_status="aprovado", profile=profile
+    )
+    assert report["status"] == expected
+    assert report["visual"]["status"] == "not_required"
+    assert "visual_readiness_not_ready" not in {
+        item["code"] for item in report["issues"]
+    }

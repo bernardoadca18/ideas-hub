@@ -30,11 +30,14 @@ router = APIRouter(tags=["script-generation"])
 
 @router.get("/editorial/production-profiles")
 async def production_profiles():
+    from dataclasses import asdict
+
     return [
         {
             "id": profile.id,
             "name": profile.nome,
             "description": profile.descricao,
+            "capabilities": asdict(profile.capabilities),
             "duration_policy": {
                 "preferred_min_seconds": profile.duracao.target_min_seconds,
                 "preferred_max_seconds": profile.duracao.target_max_seconds,
@@ -72,7 +75,9 @@ async def generation_preview(payload: GenerationPreviewRequest):
         requested_target_seconds=payload.target_duration_seconds,
         profile=profile,
     )
-    calibration = await duration_calibration_client.get(profile.id, payload.content_locale)
+    calibration = await duration_calibration_client.get(
+        profile.id, payload.content_locale
+    )
     plan = build_generation_plan(
         intent=intent,
         words_per_minute=calibration.words_per_minute,

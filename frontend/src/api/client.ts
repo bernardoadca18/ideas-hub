@@ -15,6 +15,14 @@ export interface Nicho {
 export type DurationMode = 'explicit_target' | 'profile_default' | 'content_driven';
 
 export interface ProductionProfile {
+  capabilities: {
+    delivery_mode: 'rendered_video' | 'manual_edit_package';
+    visual_mode: 'semantic_match' | 'background_fill' | 'storyboard';
+    requires_media_scope: boolean;
+    caption_policy: 'burned_in' | 'none';
+    render_profile: string | null;
+    version: string;
+  };
   id: string;
   name: string;
   description: string;
