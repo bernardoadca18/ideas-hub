@@ -17,7 +17,7 @@ export type DurationMode = 'explicit_target' | 'profile_default' | 'content_driv
 export interface ProductionProfile {
   capabilities: {
     delivery_mode: 'rendered_video' | 'manual_edit_package';
-    visual_mode: 'semantic_match' | 'background_fill' | 'storyboard';
+    visual_mode: 'none' | 'semantic_match' | 'background_fill' | 'storyboard';
     requires_media_scope: boolean;
     caption_policy: 'burned_in' | 'none';
     render_profile: string | null;

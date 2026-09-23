@@ -586,7 +586,8 @@ class RoteiroGenerator:
             raise ValueError("Ideia não encontrada")
         profile = await self._profile_for_idea(ideia)
         calibration = await duration_calibration_client.get(
-            profile.id, request.content_locale or getattr(ideia, "content_locale", "pt-BR")
+            profile.id,
+            request.content_locale or getattr(ideia, "content_locale", "pt-BR"),
         )
         normalized = normalize_manual_script(
             request.script,
@@ -615,12 +616,10 @@ class RoteiroGenerator:
                 "media_session_ids": [str(value) for value in media.session_ids],
             }
         preview_structure = RoteiroEstrutura.model_validate(preview_payload)
-        visual = validate_visual_readiness(
-            preview_structure, profile.visual_requirements
-        ).to_dict()
         production = evaluate_production_readiness(
             preview_structure, script_status="rascunho", profile=profile
         )
+        visual = production["visual"]
         warnings = [
             "O arquivo manual não possui auditoria factual automática; use o re-audit explicitamente se necessário."
         ]

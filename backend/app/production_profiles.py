@@ -13,14 +13,14 @@ perfil = adicionar uma entrada aqui.
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
 class ProductionCapabilities:
     delivery_mode: Literal["rendered_video", "manual_edit_package"] = "rendered_video"
-    visual_mode: Literal["semantic_match", "background_fill", "storyboard"] = (
+    visual_mode: Literal["none", "semantic_match", "background_fill", "storyboard"] = (
         "semantic_match"
     )
     requires_media_scope: bool = True
@@ -31,7 +31,12 @@ class ProductionCapabilities:
     def __post_init__(self) -> None:
         if self.delivery_mode not in {"rendered_video", "manual_edit_package"}:
             raise ValueError("invalid delivery mode")
-        if self.visual_mode not in {"semantic_match", "background_fill", "storyboard"}:
+        if self.visual_mode not in {
+            "none",
+            "semantic_match",
+            "background_fill",
+            "storyboard",
+        }:
             raise ValueError("invalid visual mode")
         if self.caption_policy not in {"burned_in", "none"}:
             raise ValueError("invalid caption policy")
@@ -420,6 +425,19 @@ GAME_ANALYSIS = ProductionProfile(
     ),
 )
 
+GAMEDEV_MANUAL = replace(
+    FACELESS_GENERAL,
+    id="gamedev_manual",
+    nome="Gamedev / Edição Manual",
+    descricao="Roteiro manual de gamedev, programação e IA para narração e edição em NLE.",
+    capabilities=ProductionCapabilities(
+        delivery_mode="manual_edit_package",
+        visual_mode="none",
+        requires_media_scope=False,
+        caption_policy="none",
+    ),
+)
+
 _REGISTRY: dict[str, ProductionProfile] = {
     p.id: p
     for p in [
@@ -428,6 +446,7 @@ _REGISTRY: dict[str, ProductionProfile] = {
         FACELESS_GENERAL,
         FACELESS_POP_CULTURE,
         GAME_ANALYSIS,
+        GAMEDEV_MANUAL,
     ]
 }
 
