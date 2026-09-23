@@ -122,6 +122,16 @@ async def create_ideia(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    if profile.capabilities.visual_mode == "storyboard":
+        created = await ideia_repo.create(IdeiaCreate(
+            content_locale=ideia_data.content_locale, nicho_id=ideia_data.nicho_id,
+            origem="manual", titulo=ideia_data.titulo, descricao_breve=ideia_data.descricao,
+            author_briefing=ideia_data.author_briefing, status="rascunho",
+            duration_mode=duration_intent.mode, duration_target_source=duration_intent.source,
+            target_duration_seconds=duration_intent.target_seconds,
+        ))
+        return await ideia_repo.get_by_id(created.id)
+
     # 2. Gera embedding para busca de similaridade
     embedding = await embedding_service.generate_for_ideia(
         ideia_data.titulo, ideia_data.descricao

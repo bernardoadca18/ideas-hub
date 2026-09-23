@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.pov_script import POVScriptDocument
 from app.schemas.roteiro import RoteiroResponse
 
 MANUAL_SCRIPT_SCHEMA_VERSION: Literal["neovids_manual_script_v1"] = (
@@ -119,7 +120,7 @@ class ManualScriptImportRequest(BaseModel):
 
     ideia_id: UUID
     source_filename: str = Field(min_length=1, max_length=255)
-    script: ManualScriptDocument
+    script: ManualScriptDocument | POVScriptDocument
 
     @field_validator("source_filename")
     @classmethod
@@ -156,6 +157,8 @@ class ManualImportIdeaPreview(BaseModel):
 class ManualImportNormalizedPreview(BaseModel):
     title: str
     block_count: int
+    scene_count: int = 0
+    content_locale: str = "pt-BR"
     word_count: int
     duration_total_seconds: int
     normalized_payload_sha256: str
@@ -171,7 +174,7 @@ class ManualImportMediaPreview(BaseModel):
 
 class ManualScriptImportPreviewResponse(BaseModel):
     importable: bool
-    schema_version: Literal["neovids_manual_script_v1"]
+    schema_version: Literal["neovids_manual_script_v1", "neovids_pov_script_v1"]
     idea: ManualImportIdeaPreview
     normalized: ManualImportNormalizedPreview
     duration: dict[str, Any]

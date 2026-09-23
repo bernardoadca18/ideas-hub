@@ -145,6 +145,7 @@ export default function Roteiros() {
       if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
         throw new Error('O conteúdo JSON precisa ser um objeto.');
       }
+      if ('content_locale' in parsed && (parsed.content_locale === 'pt-BR' || parsed.content_locale === 'en-US')) setImportLocale(parsed.content_locale);
       setImportFile({ filename: file.name, script: parsed as ManualScriptDocumentV1 });
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'JSON inválido.');
@@ -699,11 +700,13 @@ export default function Roteiros() {
                   <div><dt>Production Profile</dt><dd>{importPreview.idea.production_profile}</dd></div>
                   <div><dt>Título</dt><dd>{importPreview.normalized.title}</dd></div>
                   <div><dt>Blocos</dt><dd>{importPreview.normalized.block_count}</dd></div>
+                  <div><dt>Cenas</dt><dd>{importPreview.normalized.scene_count ?? 0}</dd></div>
+                  <div><dt>Idioma</dt><dd>{importPreview.normalized.content_locale}</dd></div>
                   <div><dt>Palavras</dt><dd>{importPreview.normalized.word_count}</dd></div>
                   <div><dt>Duração editorial</dt><dd>{formatDuration(importPreview.normalized.duration_total_seconds)}</dd></div>
                   <div><dt>Target</dt><dd>{importPreview.idea.target_duration_seconds ? formatDuration(importPreview.idea.target_duration_seconds) : 'content-driven'}</dd></div>
                   <div><dt>Media scope</dt><dd>{importPreview.media_scope.scope.replace(/_/g, ' ')}</dd></div>
-                  <div><dt>Visual Readiness</dt><dd>PENDING ENRICHMENT</dd></div>
+                  <div><dt>Visual Readiness</dt><dd>{importPreview.visual.status}</dd></div>
                   <div><dt>Approval</dt><dd>PENDING</dd></div>
                   <div><dt>Production Readiness</dt><dd>{importPreview.production_readiness.expected_status_after_import.toUpperCase()}</dd></div>
                 </dl>

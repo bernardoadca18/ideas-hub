@@ -20,6 +20,13 @@ from app.schemas import NichoCreate, NichoUpdate
 
 NICHOS_DATA = [
     {
+        "slug": "pov_storyboard", "nome": "POV / Histórias em primeira pessoa",
+        "descricao": "Histórias de autoria externa importadas em JSON com storyboard.",
+        "perfil_producao": "pov_storyboard", "categoria_google_trends": None,
+        "prompt_ideacao": "Autoria externa. Importe JSON manual.",
+        "prompt_roteiro": "Autoria externa. Importe neovids_pov_script_v1.",
+    },
+    {
         "slug": "cultura_pop",
         "nome": "Cultura Pop — Listas e Explicações",
         "descricao": (

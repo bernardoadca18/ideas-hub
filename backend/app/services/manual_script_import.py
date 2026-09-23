@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID
 
+from app.schemas.pov_script import POVScriptDocument
 from app.production_profiles import ProductionProfile
 from app.schemas.manual_script_import import (
     ManualImportBlockPreview,
@@ -71,6 +72,19 @@ def normalize_manual_script(
 ) -> NormalizedManualScript:
     """Convert the external V1 shape into the one canonical script structure."""
 
+    imported_storyboard = None
+    original_document = document
+    if isinstance(document, POVScriptDocument):
+        if profile.capabilities.visual_mode != "storyboard":
+            raise ValueError("POV JSON requires a storyboard production profile")
+        content_locale = document.content_locale
+        imported_storyboard = document.canonical_storyboard()
+        document = ManualScriptDocument.model_validate({
+            "schema": "neovids_manual_script_v1", "title": document.title,
+            "blocks": [{"type": b.key, "text": b.text} for b in document.narration.blocks],
+        })
+    elif profile.capabilities.visual_mode == "storyboard":
+        raise ValueError("storyboard_missing: import a neovids_pov_script_v1 document")
     blocks: list[dict[str, Any]] = []
     block_previews: list[ManualImportBlockPreview] = []
     for index, block in enumerate(document.blocks):
@@ -113,6 +127,9 @@ def normalize_manual_script(
         }
     )
     payload = structure.model_dump(mode="json")
+    if imported_storyboard is not None:
+        payload["imported_storyboard"] = imported_storyboard
+        payload["production_script_schema_version"] = "neovids_pov_script_v1"
     payload["duration_contract"] = evaluate_duration(
         structure.blocos,
         target_seconds=target_duration_seconds,
@@ -124,10 +141,10 @@ def normalize_manual_script(
     return NormalizedManualScript(
         structure=structure,
         normalized_payload_sha256=(
-            normalized_manual_payload_sha256(document)
+            normalized_manual_payload_sha256(original_document)
             if content_locale == "pt-BR"
             else hashlib.sha256(
-                ("en-US:" + normalized_manual_payload_sha256(document)).encode()
+                ("en-US:" + normalized_manual_payload_sha256(original_document)).encode()
             ).hexdigest()
         ),
         block_previews=tuple(block_previews),

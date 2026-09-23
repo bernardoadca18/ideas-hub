@@ -396,6 +396,8 @@ class ScriptGenerationJobService:
         if generation_intent == "initial" and idea.status != "aprovada":
             raise ValueError(f"Ideia não está aprovada (status: {idea.status})")
         profile = get_profile(profile_id_override or idea.perfil_producao)
+        if profile.capabilities.visual_mode == "storyboard":
+            raise ValueError("Storyboard requires external authorship via POV JSON import")
         intent = resolve_duration_intent(
             mode=idea.duration_mode,
             requested_target_seconds=idea.target_duration_seconds,

@@ -447,7 +447,7 @@ async def test_visual_query_repair_changes_only_selected_query_text() -> None:
     [
         ("manual_edit_package", "semantic_match", False, False, "ready"),
         ("rendered_video", "background_fill", True, False, "not_ready"),
-        ("rendered_video", "storyboard", False, False, "ready"),
+        ("rendered_video", "storyboard", False, False, "not_ready"),
     ],
 )
 def test_future_capabilities_do_not_require_semantic_queries(

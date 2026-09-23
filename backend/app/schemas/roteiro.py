@@ -146,7 +146,7 @@ class ManualImportProvenance(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["neovids_manual_script_v1"]
+    schema_version: Literal["neovids_manual_script_v1", "neovids_pov_script_v1"]
     source_filename: str = Field(min_length=1, max_length=255)
     normalized_payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source: Literal["manual_file_import"] = "manual_file_import"
@@ -370,6 +370,7 @@ class ProductionReadinessResponse(BaseModel):
     status: Literal["ready", "not_ready"]
     profile: str
     capabilities: ProductionCapabilitiesResponse
+    storyboard: dict[str, Any] | None = None
     editorial_status: str
     visual: VisualReadinessResponse
     media_scope: dict[str, Any]

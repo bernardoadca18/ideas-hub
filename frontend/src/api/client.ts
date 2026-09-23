@@ -287,6 +287,8 @@ export interface ManualScriptImportPreview {
   normalized: {
     title: string;
     block_count: number;
+    scene_count: number;
+    content_locale: string;
     word_count: number;
     duration_total_seconds: number;
     normalized_payload_sha256: string;

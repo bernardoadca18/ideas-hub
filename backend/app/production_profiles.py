@@ -438,6 +438,18 @@ GAMEDEV_MANUAL = replace(
     ),
 )
 
+POV_STORYBOARD = replace(
+    GAMEDEV_MANUAL,
+    id="pov_storyboard",
+    nome="POV / Histórias em primeira pessoa",
+    descricao="Autoria externa em JSON com storyboard e imagens manuais de produção.",
+    capabilities=ProductionCapabilities(
+        delivery_mode="rendered_video", visual_mode="storyboard",
+        requires_media_scope=False, caption_policy="burned_in",
+    ),
+    visual_requirements=VisualRequirementsPolicy(requires_visual_queries_for_final=False),
+)
+
 _REGISTRY: dict[str, ProductionProfile] = {
     p.id: p
     for p in [
@@ -447,6 +459,7 @@ _REGISTRY: dict[str, ProductionProfile] = {
         FACELESS_POP_CULTURE,
         GAME_ANALYSIS,
         GAMEDEV_MANUAL,
+        POV_STORYBOARD,
     ]
 }
 

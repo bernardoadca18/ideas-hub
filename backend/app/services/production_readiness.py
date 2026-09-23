@@ -32,6 +32,32 @@ def evaluate_production_readiness(
     if visual is not None and visual.status != "ready":
         issues.append({"code": "visual_readiness_not_ready"})
 
+    storyboard_gate = None
+    if capabilities.visual_mode == "storyboard":
+        from app.schemas.pov_script import POVScriptDocument
+        imported = getattr(structure, "imported_storyboard", None)
+        storyboard_gate = {"status": "not_ready", "required": True}
+        try:
+            if not isinstance(imported, dict):
+                raise ValueError("storyboard_missing")
+            scenes = []
+            for scene in imported["scenes"]:
+                anchor = scene["narration_anchor"]
+                scenes.append({**scene, "narration_anchor": {
+                    k: anchor[k] for k in ("block", "start_char", "end_char")
+                }})
+            document = POVScriptDocument.model_validate({
+                "schema_version": "neovids_pov_script_v1",
+                "content_locale": structure.content_locale, "title": structure.titulo,
+                "narration": {"blocks": [{"key": b.tipo, "text": b.conteudo} for b in structure.blocos]},
+                "storyboard": {"style": imported["style"], "continuity": imported["continuity"], "scenes": scenes},
+            })
+            if document.canonical_storyboard() != imported:
+                raise ValueError("storyboard_anchor_invalid")
+            storyboard_gate.update(status="ready", identity=imported["identity"], scene_count=len(scenes))
+        except (ValueError, KeyError, TypeError):
+            issues.append({"code": "storyboard_missing" if not imported else "storyboard_anchor_invalid"})
+
     context = structure.media_context
     if profile.requires_media_scope and context is None:
         media_status = "missing"
@@ -46,6 +72,7 @@ def evaluate_production_readiness(
         "profile": profile.id,
         "capabilities": asdict(capabilities),
         "editorial_status": script_status,
+        "storyboard": storyboard_gate,
         "visual": (
             {**visual.to_dict(), "required": True, "mode": capabilities.visual_mode}
             if visual is not None

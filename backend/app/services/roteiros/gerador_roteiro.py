@@ -269,11 +269,11 @@ class RoteiroGenerator:
         profile = await self._profile_for_idea(ideia)
         readiness = validate_visual_readiness(estrutura, profile.visual_requirements)
         structure_payload = estrutura.model_dump(mode="json")
-        if readiness.status == "ready":
+        if profile.capabilities.visual_mode == "semantic_match" and readiness.status == "ready":
             structure_payload["production_script_schema_version"] = (
                 VISUAL_PRODUCTION_SCRIPT_SCHEMA_VERSION
             )
-        structure_payload["visual_readiness"] = readiness.to_dict()
+        structure_payload["visual_readiness"] = (readiness.to_dict() if profile.capabilities.visual_mode == "semantic_match" else {"status": "not_required", "required": False, "mode": profile.capabilities.visual_mode})
         estrutura = RoteiroEstrutura.model_validate(structure_payload)
         latest_version = await self.roteiro_repo.get_latest_version_number_for_update(
             ideia.id
@@ -335,6 +335,8 @@ class RoteiroGenerator:
                 perfil_id = nicho.perfil_producao
 
         profile = get_profile(perfil_id)
+        if profile.capabilities.visual_mode == "storyboard":
+            raise ValueError("Storyboard requires external authorship via POV JSON import")
         duration_intent = self._duration_intent(ideia, profile)
         target_seconds = duration_intent.target_seconds
         calibration = await duration_calibration_client.get(
@@ -585,6 +587,8 @@ class RoteiroGenerator:
         if not ideia:
             raise ValueError("Ideia não encontrada")
         profile = await self._profile_for_idea(ideia)
+        if hasattr(request.script, "content_locale"):
+            request.content_locale = request.script.content_locale
         calibration = await duration_calibration_client.get(
             profile.id,
             request.content_locale or getattr(ideia, "content_locale", "pt-BR"),
@@ -635,7 +639,7 @@ class RoteiroGenerator:
         duration_intent = self._duration_intent(ideia, profile)
         return ManualScriptImportPreviewResponse(
             importable=True,
-            schema_version=MANUAL_SCRIPT_SCHEMA_VERSION,
+            schema_version=request.script.schema_version,
             idea=ManualImportIdeaPreview(
                 id=ideia.id,
                 title=ideia.titulo,
@@ -647,6 +651,8 @@ class RoteiroGenerator:
             normalized=ManualImportNormalizedPreview(
                 title=normalized.structure.titulo,
                 block_count=len(normalized.structure.blocos),
+                scene_count=len((getattr(normalized.structure, "imported_storyboard", None) or {}).get("scenes", [])),
+                content_locale=normalized.structure.content_locale,
                 word_count=normalized.word_count,
                 duration_total_seconds=normalized.structure.duracao_total_segundos,
                 normalized_payload_sha256=normalized.normalized_payload_sha256,
@@ -666,10 +672,11 @@ class RoteiroGenerator:
                 ),
             ),
             visual={
-                "status": "pending_enrichment",
+                "status": "pending_enrichment" if visual["required"] else "not_required",
                 "current_readiness": visual,
                 "message": (
                     "VisualQueries serão produzidas posteriormente pelo Visual Enrichment canônico."
+                    if visual["required"] else "Storyboard editorial preservado; imagens serão vinculadas na produção."
                 ),
             },
             production_readiness={
@@ -705,7 +712,7 @@ class RoteiroGenerator:
 
         payload = normalized.structure.model_dump(mode="json")
         payload["manual_import"] = {
-            "schema_version": MANUAL_SCRIPT_SCHEMA_VERSION,
+            "schema_version": request.script.schema_version,
             "source_filename": request.source_filename,
             "normalized_payload_sha256": normalized.normalized_payload_sha256,
             "source": "manual_file_import",
@@ -855,6 +862,8 @@ class RoteiroGenerator:
                 perfil_id = nicho.perfil_producao
 
         profile = get_profile(perfil_id)
+        if profile.capabilities.visual_mode == "storyboard":
+            raise ValueError("Storyboard requires external authorship via POV JSON import")
         duration_intent = self._duration_intent(ideia, profile)
         target_seconds = duration_intent.target_seconds
         calibration = await duration_calibration_client.get(
