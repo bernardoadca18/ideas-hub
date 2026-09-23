@@ -342,22 +342,34 @@ class RoteiroResponse(RoteiroBase):
 
 
 class VisualReadinessResponse(BaseModel):
-    status: Literal["ready", "not_ready"]
-    policy_version: str
-    policy_identity: str
-    speakable_content_identity: str
-    block_count: int = Field(ge=0)
-    visual_beat_count: int = Field(ge=0)
-    textual_coverage_ratio: float = Field(ge=0, le=1)
+    status: Literal["ready", "not_ready", "not_required"]
+    required: bool = True
+    mode: Literal["none", "semantic_match", "background_fill", "storyboard"] = "semantic_match"
+    policy_version: str | None = None
+    policy_identity: str | None = None
+    speakable_content_identity: str | None = None
+    block_count: int = Field(default=0, ge=0)
+    visual_beat_count: int = Field(default=0, ge=0)
+    textual_coverage_ratio: float = Field(default=0, ge=0, le=1)
     missing_ranges: list[dict[str, int]] = Field(default_factory=list)
     overlap_ranges: list[dict[str, int]] = Field(default_factory=list)
     issues: list[dict[str, Any]] = Field(default_factory=list)
     blocks: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ProductionCapabilitiesResponse(BaseModel):
+    delivery_mode: Literal["rendered_video", "manual_edit_package"]
+    visual_mode: Literal["none", "semantic_match", "background_fill", "storyboard"]
+    requires_media_scope: bool
+    caption_policy: Literal["burned_in", "none"]
+    render_profile: str | None = None
+    version: str = Field(min_length=1)
+
+
 class ProductionReadinessResponse(BaseModel):
     status: Literal["ready", "not_ready"]
     profile: str
+    capabilities: ProductionCapabilitiesResponse
     editorial_status: str
     visual: VisualReadinessResponse
     media_scope: dict[str, Any]
