@@ -119,6 +119,7 @@ class ManualScriptImportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ideia_id: UUID
+    new_content_niche_id: UUID | None = None
     source_filename: str = Field(min_length=1, max_length=255)
     script: ManualScriptDocument | POVScriptDocument
 
@@ -155,6 +156,7 @@ class ManualImportIdeaPreview(BaseModel):
 
 
 class ManualImportNormalizedPreview(BaseModel):
+    pacing: dict[str, Any] | None = None
     title: str
     block_count: int
     scene_count: int = 0

@@ -584,6 +584,23 @@ class RoteiroGenerator:
         self, request: ManualScriptImportRequest
     ) -> tuple[Ideia, ProductionProfile, DurationCalibration, NormalizedManualScript]:
         ideia = await self.ideia_repo.get_by_id(request.ideia_id)
+        if request.new_content_niche_id is not None:
+            niche = await self.nicho_repo.get_by_id(request.new_content_niche_id)
+            if niche is None or niche.perfil_producao not in {"pov_storyboard", "gamedev_manual"}:
+                raise ValueError("Novo conteúdo exige um nicho GameDev ou POV")
+            locale = getattr(request.script, "content_locale", None) or request.content_locale or "pt-BR"
+            if ideia is not None and (
+                ideia.nicho_id != niche.id or ideia.titulo != request.script.title
+                or ideia.content_locale != locale
+            ):
+                raise ValueError("Identidade de novo conteúdo já usada com outros dados")
+            if ideia is None:
+                ideia = Ideia(
+                    id=request.ideia_id, nicho_id=niche.id, nicho=niche,
+                    titulo=request.script.title, content_locale=locale, origem="manual",
+                    status="rascunho", duration_mode="content_driven",
+                    duration_target_source="content", target_duration_seconds=None,
+                )
         if not ideia:
             raise ValueError("Ideia não encontrada")
         profile = await self._profile_for_idea(ideia)
@@ -637,6 +654,8 @@ class RoteiroGenerator:
         if profile.requires_media_scope and media is None:
             warnings.append("O ProductionProfile exige media scope antes da produção.")
         duration_intent = self._duration_intent(ideia, profile)
+        from app.services.pov_quality import preview_pacing
+        pacing = preview_pacing(normalized.structure)
         return ManualScriptImportPreviewResponse(
             importable=True,
             schema_version=request.script.schema_version,
@@ -649,6 +668,7 @@ class RoteiroGenerator:
                 duration_mode=duration_intent.mode.value,
             ),
             normalized=ManualImportNormalizedPreview(
+                pacing=pacing,
                 title=normalized.structure.titulo,
                 block_count=len(normalized.structure.blocos),
                 scene_count=len((getattr(normalized.structure, "imported_storyboard", None) or {}).get("scenes", [])),
@@ -676,7 +696,11 @@ class RoteiroGenerator:
                 "current_readiness": visual,
                 "message": (
                     "VisualQueries serão produzidas posteriormente pelo Visual Enrichment canônico."
-                    if visual["required"] else "Storyboard editorial preservado; imagens serão vinculadas na produção."
+                    if visual["required"] else (
+                        "Storyboard editorial preservado; imagens serão vinculadas na produção."
+                        if profile.capabilities.visual_mode == "storyboard"
+                        else "Pacote para edição: narração, legendas e markers, sem mídia visual."
+                    )
                 ),
             },
             production_readiness={
@@ -693,6 +717,18 @@ class RoteiroGenerator:
         """Persist one idempotent manual_create and optional media_binding lineage."""
 
         ideia, _, calibration, normalized = await self._normalize_manual_import(request)
+        if request.new_content_niche_id is not None:
+            from sqlalchemy.dialects.postgresql import insert
+            # Same transaction as the revision. Preview never persists an Idea;
+            # a repeated/concurrent import uses the caller's stable content UUID.
+            await self.ideia_repo.session.execute(insert(Ideia).values(
+                id=ideia.id, nicho_id=ideia.nicho_id, titulo=ideia.titulo,
+                content_locale=ideia.content_locale, origem="manual", status="rascunho",
+                duration_mode="content_driven", duration_target_source="content",
+            ).on_conflict_do_nothing(index_elements=[Ideia.id]))
+            stored = await self.ideia_repo.get_by_id(ideia.id)
+            if stored.nicho_id != ideia.nicho_id or stored.titulo != ideia.titulo or stored.content_locale != ideia.content_locale:
+                raise ValueError("Identidade de novo conteúdo já usada com outros dados")
         await self.roteiro_repo.lock_revision_stream(ideia.id)
         existing = await self.roteiro_repo.get_manual_import_result(
             ideia.id, normalized.normalized_payload_sha256

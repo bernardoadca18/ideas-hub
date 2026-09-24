@@ -122,7 +122,10 @@ async def create_ideia(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    if profile.capabilities.visual_mode == "storyboard":
+    if (
+        profile.capabilities.visual_mode == "storyboard"
+        or profile.capabilities.delivery_mode == "manual_edit_package"
+    ):
         created = await ideia_repo.create(IdeiaCreate(
             content_locale=ideia_data.content_locale, nicho_id=ideia_data.nicho_id,
             origem="manual", titulo=ideia_data.titulo, descricao_breve=ideia_data.descricao,

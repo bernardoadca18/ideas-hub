@@ -337,10 +337,10 @@ export function MediaStudioPage() {
             <div className="space-y-2">
               {searchResults.map((result, i) => (
                 <div key={i} className="p-3 bg-slate-800 border border-slate-700 rounded-lg">
-                  <p className="text-sm text-slate-300">{result.search_text}</p>
+                  <p className="text-sm text-slate-300">{result.transcript_preview}</p>
                   <div className="text-xs text-slate-500 mt-1">
-                    {formatSeconds(result.start_ms / 1000)} - {formatSeconds(result.end_ms / 1000)}
-                    <span className="ml-2">Similarity: {(result.similarity * 100).toFixed(1)}%</span>
+                    {formatSeconds(result.start_seconds)} - {formatSeconds(result.end_seconds)}
+                    <span className="ml-2">Similarity: {(result.score * 100).toFixed(1)}%</span>
                   </div>
                 </div>
               ))}

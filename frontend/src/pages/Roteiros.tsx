@@ -4,7 +4,8 @@ import {
   ContentLocale,
   GenerationRun,
   Ideia,
-  ManualScriptDocumentV1,
+  ManualImportDocument,
+  Nicho,
   ManualScriptImportPreview,
   Roteiro,
   ScriptEditRevision,
@@ -65,9 +66,14 @@ export default function Roteiros() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [importLocale, setImportLocale] = useState<ContentLocale>('pt-BR');
   const [importIdeaId, setImportIdeaId] = useState('');
+  const [newContent, setNewContent] = useState(false);
+  const [contentId, setContentId] = useState(() => crypto.randomUUID());
+  const [contentNiche, setContentNiche] = useState('');
+  const [contentNiches, setContentNiches] = useState<Nicho[]>([]);
+
   const [importFile, setImportFile] = useState<{
     filename: string;
-    script: ManualScriptDocumentV1;
+    script: ManualImportDocument;
   } | null>(null);
   const [importPreview, setImportPreview] = useState<ManualScriptImportPreview | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
@@ -119,6 +125,9 @@ export default function Roteiros() {
 
   function resetImport() {
     setImportIdeaId('');
+    setNewContent(false);
+    setContentNiche('');
+    setContentId(crypto.randomUUID());
     setImportLocale('pt-BR');
     setImportFile(null);
     setImportPreview(null);
@@ -146,7 +155,7 @@ export default function Roteiros() {
         throw new Error('O conteúdo JSON precisa ser um objeto.');
       }
       if ('content_locale' in parsed && (parsed.content_locale === 'pt-BR' || parsed.content_locale === 'en-US')) setImportLocale(parsed.content_locale);
-      setImportFile({ filename: file.name, script: parsed as ManualScriptDocumentV1 });
+      setImportFile({ filename: file.name, script: parsed as ManualImportDocument });
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'JSON inválido.');
     }
@@ -155,8 +164,8 @@ export default function Roteiros() {
   async function validateImport() {
     setImportPreview(null);
     setImportError(null);
-    if (!importIdeaId) {
-      setImportError('Selecione uma Idea antes de validar.');
+    if (!newContent && !importIdeaId || newContent && !contentNiche) {
+      setImportError('Selecione o tipo de conteúdo ou uma entidade editorial existente.');
       return;
     }
     if (!importFile) {
@@ -166,7 +175,8 @@ export default function Roteiros() {
     try {
       setValidatingImport(true);
       const preview = await api.previewManualScriptImport({
-        ideia_id: importIdeaId,
+        ideia_id: newContent ? contentId : importIdeaId,
+        new_content_niche_id: newContent ? contentNiche : undefined,
         content_locale: importLocale,
         source_filename: importFile.filename,
         script: importFile.script,
@@ -180,12 +190,13 @@ export default function Roteiros() {
   }
 
   async function persistImport() {
-    if (!importIdeaId || !importFile || !importPreview?.importable) return;
+    if ((!newContent && !importIdeaId) || !importFile || !importPreview?.importable) return;
     setImportError(null);
     try {
       setImportingScript(true);
       const result = await api.importManualScript({
-        ideia_id: importIdeaId,
+        ideia_id: newContent ? contentId : importIdeaId,
+        new_content_niche_id: newContent ? contentNiche : undefined,
         content_locale: importLocale,
         source_filename: importFile.filename,
         script: importFile.script,
@@ -407,13 +418,13 @@ export default function Roteiros() {
         <div className="actions">
           <button
             className="btn btn-primary"
-            onClick={() => { resetImport(); setShowImportModal(true); void loadIdeias(); }}
+            onClick={() => { resetImport(); setShowImportModal(true); void loadIdeias(); void api.getNichos().then(setContentNiches); }}
           >
             Importar roteiro
           </button>
           <button
             className="btn btn-secondary"
-            onClick={() => { setShowCreateModal(true); void loadIdeias(); }}
+            onClick={() => { setShowCreateModal(true); void loadIdeias(); void api.getNichos().then(setContentNiches); }}
           >
             + Criar manualmente
           </button>
@@ -638,11 +649,22 @@ export default function Roteiros() {
                 onClick={() => { setShowImportModal(false); resetImport(); }}
               >×</button>
             </div>
-            <p className="form-help">
-              O arquivo entra como rascunho canônico. VisualQueries, aprovação e readiness continuam server-owned.
+            <p>
+              <a href={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/roteiros/importar/exemplos/gamedev`}>Baixar exemplo GameDev JSON</a>{' · '}
+              <a href={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/roteiros/importar/exemplos/pov`}>Baixar exemplo POV JSON</a>
             </p>
-            <div className="form-group">
-              <label>Idea existente *</label>
+            <p className="form-help">
+              Importe seu conteúdo como uma revisão para aprovação e produção. O texto do arquivo será preservado.
+            </p>
+            <label><input type="checkbox" checked={newContent} onChange={e => { setNewContent(e.target.checked); setImportPreview(null); }} /> Novo conteúdo GameDev / POV</label>
+            {newContent ? <div className="form-group">
+              <label>Tipo de conteúdo<select value={contentNiche} onChange={e => { setContentNiche(e.target.value); setImportPreview(null); }}>
+                <option value="">Selecionar GameDev ou POV…</option>
+                {contentNiches.filter(n => ['gamedev_manual', 'pov_storyboard'].includes(n.perfil_producao)).map(n => <option key={n.id} value={n.id}>{n.nome}</option>)}
+              </select></label>
+              <p>Ao importar, criaremos um registro editorial com o título do JSON e sua primeira revisão. O preview não salva nada.</p>
+            </div> : <div className="form-group">
+              <label>Conteúdo existente *</label>
               <select
                 value={importIdeaId}
                 onChange={(event) => {
@@ -657,7 +679,7 @@ export default function Roteiros() {
                   <option key={ideia.id} value={ideia.id}>{ideia.titulo} ({ideia.status})</option>
                 ))}
               </select>
-            </div>
+            </div>}
             <div className="form-group">
                 <label>Idioma
                   <select value={importLocale} onChange={(e) => { setImportLocale(e.target.value as ContentLocale); setImportPreview(null); }}>
@@ -667,7 +689,8 @@ export default function Roteiros() {
                 </label>
               </div>
             <div className="form-group">
-              <label>Arquivo neovids_manual_script_v1 *</label>
+              <label>Arquivo JSON GameDev ou POV *</label>
+              {importFile && <p>Formato: {'schema_version' in importFile.script ? importFile.script.schema_version : importFile.script.schema}</p>}
               <input
                 type="file"
                 accept="application/json,.json"
@@ -686,7 +709,7 @@ export default function Roteiros() {
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={validatingImport || importingScript || !importIdeaId || !importFile}
+                disabled={validatingImport || importingScript || (newContent ? !contentNiche : !importIdeaId) || !importFile}
                 onClick={() => void validateImport()}
               >{validatingImport ? 'Validando…' : 'Validar'}</button>
             </div>
@@ -710,6 +733,12 @@ export default function Roteiros() {
                   <div><dt>Approval</dt><dd>PENDING</dd></div>
                   <div><dt>Production Readiness</dt><dd>{importPreview.production_readiness.expected_status_after_import.toUpperCase()}</dd></div>
                 </dl>
+                {importPreview.normalized.pacing && <div>
+                  <h4>Ritmo estimado antes da narração</h4>
+                  <p>Média: {importPreview.normalized.pacing.average_scene_duration.toFixed(1)}s · Mais curta: {importPreview.normalized.pacing.min_scene_duration.toFixed(1)}s · Mais longa: {importPreview.normalized.pacing.max_scene_duration.toFixed(1)}s</p>
+                  <p>Sem movimento: {importPreview.normalized.pacing.motion_distribution.none} · Pan: {importPreview.normalized.pacing.motion_distribution.pan} · Zoom: {importPreview.normalized.pacing.motion_distribution.zoom} (pan + zoom conta em ambos)</p>
+                  <ul>{importPreview.normalized.pacing.warnings.map(w => <li key={w}>{w}</li>)}</ul>
+                </div>}
                 <details>
                   <summary>Duração por bloco</summary>
                   <ul>{importPreview.normalized.blocks.map((block) => (

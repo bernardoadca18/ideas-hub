@@ -139,7 +139,7 @@ export interface Roteiro {
     media_context?: { media_project_id: string; media_session_ids: string[] };
     visual_readiness?: Record<string, unknown>;
     manual_import?: {
-      schema_version: 'neovids_manual_script_v1';
+      schema_version: 'neovids_manual_script_v1' | 'neovids_pov_script_v1';
       source_filename: string;
       normalized_payload_sha256: string;
       source: 'manual_file_import';
@@ -273,9 +273,18 @@ export interface ManualScriptDocumentV1 {
   };
 }
 
+export interface POVScriptDocumentV1 {
+  schema_version: 'neovids_pov_script_v1';
+  title: string;
+  content_locale: ContentLocale;
+  narration: { blocks: Array<{ key: string; text: string }> };
+  storyboard: Record<string, unknown>;
+}
+export type ManualImportDocument = ManualScriptDocumentV1 | POVScriptDocumentV1;
+
 export interface ManualScriptImportPreview {
   importable: boolean;
-  schema_version: 'neovids_manual_script_v1';
+  schema_version: 'neovids_manual_script_v1' | 'neovids_pov_script_v1';
   idea: {
     id: string;
     title: string;
@@ -285,6 +294,7 @@ export interface ManualScriptImportPreview {
     duration_mode: string;
   };
   normalized: {
+    pacing?: { average_scene_duration: number; min_scene_duration: number; max_scene_duration: number; motion_distribution: { none: number; pan: number; zoom: number }; warnings: string[] } | null;
     title: string;
     block_count: number;
     scene_count: number;
@@ -617,7 +627,8 @@ class ApiClient {
     ideia_id: string;
     source_filename: string;
     content_locale?: ContentLocale;
-    script: ManualScriptDocumentV1;
+    script: ManualImportDocument;
+    new_content_niche_id?: string;
   }): Promise<ManualScriptImportPreview> {
     return this.request<ManualScriptImportPreview>('/roteiros/importar/preview', {
       method: 'POST',
@@ -629,7 +640,8 @@ class ApiClient {
     ideia_id: string;
     source_filename: string;
     content_locale?: ContentLocale;
-    script: ManualScriptDocumentV1;
+    script: ManualImportDocument;
+    new_content_niche_id?: string;
   }): Promise<ManualScriptImportResult> {
     return this.request<ManualScriptImportResult>('/roteiros/importar', {
       method: 'POST',

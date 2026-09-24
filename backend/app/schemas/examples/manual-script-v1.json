@@ -1,0 +1,25 @@
+{
+  "schema": "neovids_manual_script_v1",
+  "title": "GTA IV fazia algumas coisas melhor que GTA V",
+  "blocks": [
+    {
+      "type": "abertura",
+      "text": "Existe uma coisa estranha quando você volta para GTA IV. Liberty City ainda parece reagir a cada pequena decisão."
+    },
+    {
+      "type": "desenvolvimento",
+      "text": "Quando Niko atravessa a cidade, física, trânsito e pedestres colidem de maneiras que parecem menos ensaiadas.",
+      "duration_seconds": 35
+    },
+    {
+      "type": "conclusao",
+      "text": "Talvez seja justamente essa margem para o inesperado que mantém o jogo tão vivo."
+    }
+  ],
+  "tags": [
+    "GTA IV",
+    "GTA V",
+    "Rockstar"
+  ],
+  "references": []
+}

@@ -73,6 +73,30 @@ async def create_roteiro(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/importar/exemplos/{kind}")
+async def manual_import_example(kind: str):
+    import json
+    from pathlib import Path
+    from app.schemas.manual_script_import import ManualScriptDocument
+    from app.schemas.pov_script import POVScriptDocument
+
+    examples = {
+        "gamedev": ("manual-script-v1.json", ManualScriptDocument),
+        "pov": ("pov-pt-BR.json", POVScriptDocument),
+    }
+    if kind not in examples:
+        raise HTTPException(404, "Exemplo não encontrado")
+    filename, schema = examples[kind]
+    document = schema.model_validate_json(
+        (Path(__file__).parents[2] / "schemas" / "examples" / filename).read_text()
+    )
+    return Response(
+        json.dumps(document.model_dump(mode="json", by_alias=True, exclude_none=True), ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post(
     "/importar/preview",
     response_model=ManualScriptImportPreviewResponse,
