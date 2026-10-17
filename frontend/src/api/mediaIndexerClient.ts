@@ -3,7 +3,8 @@
  * Provides typed access to Media Indexer endpoints for Phase 3 integration.
  */
 
-const MEDIA_INDEXER_BASE = import.meta.env.VITE_MEDIA_INDEXER_URL || 'http://localhost:8001';
+const MEDIA_INDEXER_BASE =
+  import.meta.env?.VITE_MEDIA_INDEXER_URL || "http://localhost:8001";
 
 // Media Indexer Types (matching backend schemas)
 
@@ -161,7 +162,7 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${MEDIA_INDEXER_BASE}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       ...options?.headers,
     },
   });
@@ -177,8 +178,7 @@ export const mediaIndexerApi = {
   listProjects: (offset = 0, limit = 50) =>
     fetchJSON<MediaProject[]>(`/projects?offset=${offset}&limit=${limit}`),
 
-  getProject: (id: string) =>
-    fetchJSON<MediaProject>(`/projects/${id}`),
+  getProject: (id: string) => fetchJSON<MediaProject>(`/projects/${id}`),
 
   // Sessions
   listSessions: (projectId: string) =>
@@ -201,34 +201,41 @@ export const mediaIndexerApi = {
       end_seconds?: number;
       offset?: number;
       limit?: number;
-    }
+    },
   ) => {
     const searchParams = new URLSearchParams();
-    searchParams.set('temporal_index_id', params.temporal_index_id);
-    if (params.alignment_run_id) searchParams.set('alignment_run_id', params.alignment_run_id);
-    if (params.start_seconds !== undefined) searchParams.set('start_seconds', String(params.start_seconds));
-    if (params.end_seconds !== undefined) searchParams.set('end_seconds', String(params.end_seconds));
-    if (params.offset !== undefined) searchParams.set('offset', String(params.offset));
-    if (params.limit !== undefined) searchParams.set('limit', String(params.limit));
-    return fetchJSON<SemanticTimeline>(`/sessions/${sessionId}/semantic-timeline?${searchParams}`);
+    searchParams.set("temporal_index_id", params.temporal_index_id);
+    if (params.alignment_run_id)
+      searchParams.set("alignment_run_id", params.alignment_run_id);
+    if (params.start_seconds !== undefined)
+      searchParams.set("start_seconds", String(params.start_seconds));
+    if (params.end_seconds !== undefined)
+      searchParams.set("end_seconds", String(params.end_seconds));
+    if (params.offset !== undefined)
+      searchParams.set("offset", String(params.offset));
+    if (params.limit !== undefined)
+      searchParams.set("limit", String(params.limit));
+    return fetchJSON<SemanticTimeline>(
+      `/sessions/${sessionId}/semantic-timeline?${searchParams}`,
+    );
   },
 
   // Search
   searchProject: (projectId: string, query: string, limit = 20) =>
-    fetchJSON<{ results: SearchResult[] }>(`/media-search/projects/${projectId}`, {
-      method: 'POST',
-      body: JSON.stringify({ query, limit }),
-    }).then(r => r.results),
-
-  searchGlobal: (query: string, limit = 20) =>
-    fetchJSON<{ results: SearchResult[] }>(`/media-search/global`, {
-      method: 'POST',
-      body: JSON.stringify({ query, limit }),
-    }).then(r => r.results),
+    fetchJSON<{ results: SearchResult[] }>(
+      `/media-search/projects/${projectId}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ query, max_results: limit }),
+      },
+    ).then((r) => r.results),
 
   searchSession: (sessionId: string, query: string, limit = 20) =>
-    fetchJSON<{ results: SearchResult[] }>(`/media-search/sessions/${sessionId}`, {
-      method: 'POST',
-      body: JSON.stringify({ query, limit }),
-    }).then(r => r.results),
+    fetchJSON<{ results: SearchResult[] }>(
+      `/media-search/sessions/${sessionId}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ query, max_results: limit }),
+      },
+    ).then((r) => r.results),
 };

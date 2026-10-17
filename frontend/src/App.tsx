@@ -1,42 +1,87 @@
-import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
-import Ideias from './pages/Ideias';
-import Trends from './pages/Trends';
-import Roteiros from './pages/Roteiros';
-import GameAnalysis from './pages/GameAnalysis';
-import { MediaStudioPage } from './components/MediaStudioPage';
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  NavLink,
+  useLocation,
+} from "react-router-dom";
+import { Lightbulb, FileText, Film, TrendingUp, Gamepad2 } from "lucide-react";
+import Ideias from "./pages/Ideias";
+import Trends from "./pages/Trends";
+import Roteiros from "./pages/Roteiros";
+import GameAnalysis from "./pages/GameAnalysis";
+import { MediaStudioPage } from "./components/MediaStudioPage";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-export default function App() {
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { refetchOnWindowFocus: false, staleTime: 5000 } },
+});
+
+const areas = [
+  { path: "/ideias", label: "Ideias", icon: Lightbulb },
+  { path: "/roteiros", label: "Roteiros", icon: FileText },
+  { path: "/studio", label: "Studio de mídia", icon: Film },
+  { path: "/trends", label: "Tendências", icon: TrendingUp },
+  { path: "/game-analysis", label: "Análise de jogos", icon: Gamepad2 },
+];
+function StudioShell() {
+  const { pathname } = useLocation();
+  const current = areas.find((a) => a.path === pathname)?.label || "Ideias";
   return (
-    <BrowserRouter>
-      <div className="app">
-        <nav className="nav">
-          <NavLink to="/ideias" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-            Ideias
-          </NavLink>
-          <NavLink to="/trends" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-            Trends
-          </NavLink>
-          <NavLink to="/roteiros" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-            Roteiros
-          </NavLink>
-          <NavLink to="/game-analysis" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-            Game Analysis
-          </NavLink>
-          <NavLink to="/studio" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-            Studio
-          </NavLink>
+    <div className="app">
+      <a className="skip-link" href="#main-content">
+        Pular para o conteúdo
+      </a>
+      <aside className="studio-sidebar">
+        <NavLink to="/ideias" className="studio-brand">
+          <b>N</b>
+          <span>
+            NeoVids<small>ESTÚDIO EDITORIAL</small>
+          </span>
+        </NavLink>
+        <nav className="nav" aria-label="Navegação principal">
+          {areas.map(({ path, label, icon: Icon }) => (
+            <NavLink
+              key={path}
+              to={path}
+              className={({ isActive }) =>
+                "nav-link" +
+                (isActive || (path === "/ideias" && pathname === "/")
+                  ? " active"
+                  : "")
+              }
+            >
+              <Icon size={18} aria-hidden="true" />
+              <span>{label}</span>
+            </NavLink>
+          ))}
         </nav>
-        <main className="main">
+        <footer>Bolas Industries</footer>
+      </aside>
+      <div className="studio-body">
+        <header className="studio-topbar">
+          NeoVids <span>/</span> <strong>{current}</strong>
+        </header>
+        <main className="main" id="main-content" tabIndex={-1}>
           <Routes>
             <Route path="/" element={<Ideias />} />
             <Route path="/ideias" element={<Ideias />} />
             <Route path="/trends" element={<Trends />} />
             <Route path="/roteiros" element={<Roteiros />} />
             <Route path="/game-analysis" element={<GameAnalysis />} />
-          <Route path="/studio" element={<MediaStudioPage />} />
+            <Route path="/studio" element={<MediaStudioPage />} />
           </Routes>
         </main>
       </div>
-    </BrowserRouter>
+    </div>
+  );
+}
+export default function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        <StudioShell />
+      </BrowserRouter>
+    </QueryClientProvider>
   );
 }
